@@ -5,7 +5,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from src.retrieval.config import (
-    INDEX_STORE_DIR, SEMANTIC_LAYER_DIR,
+    SEMANTIC_LAYER_DIR,
     TABLE_SEARCH_TOP_K, RERANK_INPUT_TOP_K, FEWSHOT_TOP_K,
     ENABLE_RERANKER,
 )
@@ -45,7 +45,6 @@ class SchemaRetriever:
         self,
         connection_string: str | None = None,
         semantic_layer_dir: str | Path | None = None,
-        index_dir: str | Path | None = None,
         offline: bool = False,
     ):
         self.schema_loader = SchemaLoader(
@@ -53,7 +52,7 @@ class SchemaRetriever:
             semantic_layer_dir=semantic_layer_dir or SEMANTIC_LAYER_DIR,
             offline=offline,
         )
-        self.index_manager = IndexManager(index_dir=index_dir or INDEX_STORE_DIR)
+        self.index_manager = IndexManager()
         self.formatter = SchemaFormatter()
         self.glossary_resolver = GlossaryResolver()
 
@@ -87,20 +86,15 @@ class SchemaRetriever:
             logger.info("开始全量构建索引...")
             indices = self.index_manager.build_and_save(schemas, embedding)
         else:
-            logger.info("索引未变更，从磁盘加载...")
+            logger.info("索引未变更，加载已有索引...")
             indices = self.index_manager.load_all(embedding)
-            # 加载时需要恢复 table_docs 中的 schema 引用
-            table_schemas = indices["table_schemas"]
-            for doc in indices["table_docs"]:
-                doc["schema"] = table_schemas.get(doc["table_name"], {})
 
         # 4. 初始化混合检索器
         self.searcher = HybridSearcher(
             embedding=embedding,
             table_index=indices["table_index"],
             column_index=indices["column_index"],
-            table_docs=indices["table_docs"],
-            column_docs=indices["column_docs"],
+            table_schemas=indices["table_schemas"],
         )
 
         self.fewshot = indices["fewshot_selector"]

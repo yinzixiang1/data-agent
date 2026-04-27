@@ -190,9 +190,72 @@ class MilvusIndex:
             ))
         return output
 
+    def query_all(self) -> list[dict]:
+        """查询所有文档（按 id 排序），返回 [{"id": int, "doc_json": str}, ...]"""
+        if not self.exists():
+            return []
+        results = self.client.query(
+            collection_name=self.collection_name,
+            filter="id >= 0",
+            output_fields=["doc_json"],
+            limit=10000,
+        )
+        results.sort(key=lambda x: x["id"])
+        return results
+
     @property
     def count(self) -> int:
         if not self.exists():
             return 0
         stats = self.client.get_collection_stats(self.collection_name)
         return stats.get("row_count", 0)
+
+
+class MilvusMetaStore:
+    """Milvus 元数据存储 — 用于存储 schema_hash 等非向量键值数据"""
+
+    COLLECTION = "nl2sql_metadata"
+
+    def __init__(self):
+        self.client = get_milvus_client()
+
+    def _ensure_collection(self):
+        if not self.client.has_collection(self.COLLECTION):
+            schema = self.client.create_schema(auto_id=False)
+            schema.add_field("key", DataType.VARCHAR, is_primary=True, max_length=256)
+            schema.add_field("value", DataType.VARCHAR, max_length=65535)
+            # Milvus 要求至少一个向量字段
+            schema.add_field("_dummy_vec", DataType.FLOAT_VECTOR, dim=2)
+
+            index_params = self.client.prepare_index_params()
+            index_params.add_index(field_name="_dummy_vec", index_type="FLAT", metric_type="L2")
+
+            self.client.create_collection(
+                collection_name=self.COLLECTION,
+                schema=schema,
+                index_params=index_params,
+            )
+            logger.info(f"创建元数据 Collection: {self.COLLECTION}")
+
+    def set(self, key: str, value: str):
+        """设置元数据（upsert 语义）"""
+        self._ensure_collection()
+        self.client.upsert(self.COLLECTION, [{"key": key, "value": value, "_dummy_vec": [0.0, 0.0]}])
+
+    def get(self, key: str) -> str | None:
+        """获取元数据"""
+        if not self.client.has_collection(self.COLLECTION):
+            return None
+        results = self.client.query(
+            self.COLLECTION,
+            filter=f'key == "{key}"',
+            output_fields=["value"],
+        )
+        if results:
+            return results[0]["value"]
+        return None
+
+    def drop(self):
+        if self.client.has_collection(self.COLLECTION):
+            self.client.drop_collection(self.COLLECTION)
+            logger.info(f"已删除元数据 Collection: {self.COLLECTION}")

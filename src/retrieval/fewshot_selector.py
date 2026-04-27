@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class FewShotSelector:
     """
-    动态 Few-shot 示例选择器（Milvus 版）。
+    动态 Few-shot 示例选择器。
 
     示例来源：语义层 YAML 中的 common_queries。
     """

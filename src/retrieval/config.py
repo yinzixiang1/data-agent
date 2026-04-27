@@ -29,9 +29,6 @@ ENABLE_RERANKER = os.getenv("ENABLE_RERANKER", "true").lower() == "true"
 # 语义层目录
 SEMANTIC_LAYER_DIR = PROJECT_ROOT / os.getenv("SEMANTIC_LAYER_DIR", "semantic_layer")
 
-# 索引持久化目录
-INDEX_STORE_DIR = PROJECT_ROOT / os.getenv("INDEX_STORE_DIR", "index_store")
-
 # Milvus
 MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
 MILVUS_DB = os.getenv("MILVUS_DB", "nl2sql")

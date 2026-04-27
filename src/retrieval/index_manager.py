@@ -1,14 +1,12 @@
-"""索引生命周期管理 — Milvus 版"""
+"""索引生命周期管理"""
 
 import json
 import hashlib
 import logging
-from pathlib import Path
 
-from src.retrieval.config import INDEX_STORE_DIR
 from src.retrieval.document_builder import DocumentBuilder
 from src.retrieval.embedding import BGEEmbedding
-from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.milvus_store import MilvusIndex, MilvusMetaStore
 from src.retrieval.fewshot_selector import FewShotSelector
 
 logger = logging.getLogger(__name__)
@@ -20,11 +18,10 @@ FEWSHOT_COLLECTION = "nl2sql_fewshot"
 
 
 class IndexManager:
-    """索引生命周期管理（Milvus 版）"""
+    """索引生命周期管理"""
 
-    def __init__(self, index_dir: str | Path = INDEX_STORE_DIR):
-        self.index_dir = Path(index_dir)
-        self.index_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self):
+        self.meta_store = MilvusMetaStore()
 
     def compute_schema_hash(self, schemas: list[dict]) -> str:
         """计算 Schema 内容 hash"""
@@ -48,31 +45,24 @@ class IndexManager:
 
     def need_rebuild(self, schemas: list[dict]) -> bool:
         """检查是否需要重建索引"""
-        hash_file = self.index_dir / "schema_hash.txt"
         current_hash = self.compute_schema_hash(schemas)
 
-        if not hash_file.exists():
+        stored_hash = self.meta_store.get("schema_hash")
+        if not stored_hash:
+            logger.info("无 schema_hash，需要构建索引")
             return True
 
-        stored_hash = hash_file.read_text().strip()
         if stored_hash != current_hash:
             logger.info("Schema 内容已变更，需要重建索引")
             return True
 
         # 检查 Milvus Collection 是否存在
         table_idx = MilvusIndex(TABLE_COLLECTION)
-        column_idx = MilvusIndex(COLUMN_COLLECTION)
         fewshot_idx = MilvusIndex(FEWSHOT_COLLECTION)
 
         if not table_idx.exists() or not fewshot_idx.exists():
-            logger.info("Milvus Collection 不存在，需要重建")
+            logger.info("Collection 不存在，需要重建")
             return True
-
-        # 检查元数据文件
-        for f in ["table_docs.json", "column_docs.json", "fewshot_examples.json", "table_schemas.json"]:
-            if not (self.index_dir / f).exists():
-                logger.info(f"元数据文件缺失: {f}，需要重建")
-                return True
 
         return False
 
@@ -82,14 +72,12 @@ class IndexManager:
         embedding: BGEEmbedding,
     ) -> dict:
         """
-        全量构建索引: 编码文档 → 写入 Milvus → 保存元数据。
+        全量构建索引: 编码文档 → 写入向量存储。
 
         Returns:
             {
                 "table_index": MilvusIndex,
                 "column_index": MilvusIndex,
-                "table_docs": list[dict],
-                "column_docs": list[dict],
                 "fewshot_selector": FewShotSelector,
                 "table_schemas": dict,
             }
@@ -100,7 +88,7 @@ class IndexManager:
         table_docs, column_docs = builder.build_all(schemas)
         logger.info(f"文档构建: {len(table_docs)} 表级, {len(column_docs)} 列级")
 
-        # 2. 表级索引 → Milvus
+        # 2. 表级索引 → Milvus（doc_json 含完整 schema）
         table_index = MilvusIndex(TABLE_COLLECTION)
         table_index.create()
 
@@ -108,7 +96,12 @@ class IndexManager:
         table_output = embedding.encode(table_texts, return_dense=True, return_sparse=True)
 
         table_doc_jsons = [
-            json.dumps({"table_name": d["table_name"], "text": d["text"]}, ensure_ascii=False)
+            json.dumps({
+                "table_name": d["table_name"],
+                "doc_type": d.get("doc_type", "table"),
+                "text": d["text"],
+                "schema": d["schema"],
+            }, ensure_ascii=False)
             for d in table_docs
         ]
         table_index.insert(
@@ -126,7 +119,12 @@ class IndexManager:
             column_output = embedding.encode(column_texts, return_dense=True, return_sparse=True)
 
             col_doc_jsons = [
-                json.dumps({"table_name": d["table_name"], "column_name": d["column_name"], "text": d["text"]}, ensure_ascii=False)
+                json.dumps({
+                    "table_name": d["table_name"],
+                    "column_name": d["column_name"],
+                    "doc_type": d.get("doc_type", "column"),
+                    "text": d["text"],
+                }, ensure_ascii=False)
                 for d in column_docs
             ]
             column_index.insert(
@@ -152,71 +150,56 @@ class IndexManager:
         # 5. table_name → schema 映射
         table_schemas = {s["table_name"]: s for s in schemas}
 
-        # 6. 保存元数据到本地（Milvus 存向量，本地存文档元数据）
-        self._save_metadata(table_docs, column_docs, all_examples, table_schemas, schemas)
+        # 6. 保存 schema_hash 到 Milvus 元数据
+        schema_hash = self.compute_schema_hash(schemas)
+        self.meta_store.set("schema_hash", schema_hash)
+        logger.info("索引构建完成")
 
         return {
             "table_index": table_index,
             "column_index": column_index,
-            "table_docs": table_docs,
-            "column_docs": column_docs,
             "fewshot_selector": fewshot,
             "table_schemas": table_schemas,
         }
 
     def load_all(self, embedding: BGEEmbedding) -> dict:
-        """从 Milvus + 本地元数据加载"""
-        logger.info("从 Milvus + 本地元数据加载索引")
+        """加载已有索引和元数据"""
+        logger.info("加载索引和元数据")
 
         table_index = MilvusIndex(TABLE_COLLECTION)
         column_index = MilvusIndex(COLUMN_COLLECTION)
         fewshot_index = MilvusIndex(FEWSHOT_COLLECTION)
 
-        # 本地元数据
-        table_docs = json.loads((self.index_dir / "table_docs.json").read_text(encoding="utf-8"))
-        column_docs = json.loads((self.index_dir / "column_docs.json").read_text(encoding="utf-8"))
-        examples = json.loads((self.index_dir / "fewshot_examples.json").read_text(encoding="utf-8"))
-        table_schemas = json.loads((self.index_dir / "table_schemas.json").read_text(encoding="utf-8"))
+        # 加载表级文档 → 重建 table_schemas
+        table_rows = table_index.query_all()
+        table_schemas = {}
+        for row in table_rows:
+            doc = json.loads(row["doc_json"])
+            if "schema" in doc:
+                table_schemas[doc["table_name"]] = doc["schema"]
+
+        # 加载 Few-shot 示例
+        fewshot_rows = fewshot_index.query_all()
+        examples = [json.loads(row["doc_json"]) for row in fewshot_rows]
 
         # 恢复 FewShotSelector（需要 embeddings 做 MMR）
         fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
         if examples:
             fewshot.examples = examples
             fewshot.example_table_sets = [set(ex.get("tables", [])) for ex in examples]
-            # 重新编码以获取 embeddings（MMR 需要）
             texts = [ex["question"] for ex in examples]
             output = embedding.encode(texts, return_dense=True, return_sparse=False)
             fewshot.embeddings = output["dense_vecs"]
 
         logger.info(
             f"索引加载完成: table={table_index.count}, "
-            f"column={column_index.count}, fewshot={fewshot_index.count}"
+            f"column={column_index.count}, fewshot={fewshot_index.count}, "
+            f"schemas={len(table_schemas)}"
         )
 
         return {
             "table_index": table_index,
             "column_index": column_index,
-            "table_docs": table_docs,
-            "column_docs": column_docs,
             "fewshot_selector": fewshot,
             "table_schemas": table_schemas,
         }
-
-    def _save_metadata(self, table_docs, column_docs, examples, table_schemas, schemas):
-        """保存文档元数据到本地（向量已在 Milvus 中）"""
-        table_docs_save = [{k: v for k, v in d.items() if k != "schema"} for d in table_docs]
-        (self.index_dir / "table_docs.json").write_text(
-            json.dumps(table_docs_save, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (self.index_dir / "column_docs.json").write_text(
-            json.dumps(column_docs, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (self.index_dir / "fewshot_examples.json").write_text(
-            json.dumps(examples, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (self.index_dir / "table_schemas.json").write_text(
-            json.dumps(table_schemas, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        schema_hash = self.compute_schema_hash(schemas)
-        (self.index_dir / "schema_hash.txt").write_text(schema_hash)
-        logger.info(f"元数据保存完成: {self.index_dir}")

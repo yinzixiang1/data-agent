@@ -43,7 +43,7 @@ data-agen/
 ├── src/retrieval/                    # RAG 检索核心模块
 │   ├── config.py                    # 集中配置
 │   ├── embedding.py                 # BGE-M3 封装（Dense + Sparse 混合编码）
-│   ├── milvus_store.py              # Milvus 向量存储（Dense + Sparse 混合索引）
+│   ├── milvus_store.py              # Milvus 向量存储（Dense + Sparse 混合索引 + 元数据）
 │   ├── schema_loader.py             # Doris DDL + 语义层 YAML 加载合并
 │   ├── document_builder.py          # Schema → 表级/列级检索文档
 │   ├── hybrid_searcher.py           # Milvus 混合检索 + 表/列联合
@@ -51,7 +51,7 @@ data-agen/
 │   ├── fewshot_selector.py          # Few-shot 示例检索（Milvus + MMR）
 │   ├── glossary_resolver.py         # 业务术语解析
 │   ├── schema_formatter.py          # 检索结果 → DDL Prompt 文本
-│   ├── index_manager.py             # 索引生命周期管理（Milvus 版）
+│   ├── index_manager.py             # 索引生命周期管理（全 Milvus 版，无本地文件）
 │   └── retriever.py                 # 对外统一入口
 │
 ├── semantic_layer/                   # 语义层（人工维护的业务知识）
@@ -60,8 +60,6 @@ data-agen/
 │   │   └── pmt_finance_payout.yaml  # 账户代付表
 │   └── glossary/
 │       └── glossary.yaml            # 业务术语表（8 条）
-│
-├── index_store/                      # 本地元数据（table_docs.json 等）
 │
 ├── milvus/                           # Milvus 数据持久化目录（Docker 挂载）
 │
@@ -214,9 +212,8 @@ Doris DDL + 语义层 YAML
   → 合并为完整 Schema dict
   → 构建表级/列级文档
   → BGE-M3 encode（一次调用同时输出 Dense + Sparse）
-  → 写入 Milvus（3 个 Collection: table / column / fewshot）
-  → 元数据保存到 index_store/
-  → 下次启动如果 Schema 未变则直接使用 Milvus 中的索引
+  → 全部写入 Milvus（4 个 Collection: table / column / fewshot / metadata）
+  → 下次启动如果 Schema 未变则直接从 Milvus 加载（无本地文件依赖）
 ```
 
 ### 在线阶段（每次用户提问）
@@ -236,16 +233,17 @@ Doris DDL + 语义层 YAML
 
 | Collection | 数据量 | 字段 | 用途 |
 |------------|--------|------|------|
-| nl2sql_table | 表数 | id, dense_vec(1024), sparse_vec, doc_json | 表级混合检索 |
+| nl2sql_table | 表数 | id, dense_vec(1024), sparse_vec, doc_json | 表级混合检索（doc_json 含完整 Schema） |
 | nl2sql_column | 列数 | id, dense_vec(1024), sparse_vec, doc_json | 列级混合检索 → 反推表 |
 | nl2sql_fewshot | 示例数 | id, dense_vec(1024), sparse_vec, doc_json | Few-shot 示例检索 |
+| nl2sql_metadata | 少量 | key(VARCHAR PK), value, _dummy_vec | 元数据存储（schema_hash 等） |
 
-每个 Collection 同时存储 Dense 向量（FLAT 索引）和 Sparse 向量（SPARSE_INVERTED_INDEX），检索时通过 Milvus 内置的 `hybrid_search` + `RRFRanker` 完成融合。
+所有数据（向量 + 元数据）全部存储在 Milvus 中，无本地文件依赖。每个向量 Collection 同时存储 Dense 向量（FLAT 索引）和 Sparse 向量（SPARSE_INVERTED_INDEX），检索时通过 Milvus 内置的 `hybrid_search` + `RRFRanker` 完成融合。
 
 ### 管理
 
 - **Attu GUI**: http://localhost:8000 — 可视化查看 Collection、数据、执行搜索
-- **Schema 变更检测**: 基于 SHA-256 hash，YAML 变更后重启自动重建索引
+- **Schema 变更检测**: 基于 SHA-256 hash（存储在 Milvus metadata Collection），YAML 变更后重启自动重建索引
 
 ## 语义层维护
 

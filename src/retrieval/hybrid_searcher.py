@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class HybridSearcher:
     """
-    混合检索器（Milvus 版）：
+    混合检索器：
     1. Milvus hybrid search: Dense + Sparse → RRF 融合（Milvus 内置）
     2. 表级 + 列级联合，列级命中反推表
     """
@@ -22,14 +22,12 @@ class HybridSearcher:
         embedding: BGEEmbedding,
         table_index: MilvusIndex,
         column_index: MilvusIndex,
-        table_docs: list[dict],
-        column_docs: list[dict],
+        table_schemas: dict,
     ):
         self.embedding = embedding
         self.table_index = table_index
         self.column_index = column_index
-        self.table_docs = table_docs
-        self.column_docs = column_docs
+        self.table_schemas = table_schemas
 
     def search(self, query: str, top_k: int = 5, recall_k: int = RECALL_TOP_K) -> list[dict]:
         """
@@ -79,19 +77,18 @@ class HybridSearcher:
         # 按分数排序
         sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-        # 组装结果（从 table_docs 获取完整 schema）
-        full_doc_map = {doc["table_name"]: doc for doc in self.table_docs}
-
+        # 组装结果（从 table_schemas 获取完整 schema）
         results = []
         for table_name, score in sorted_tables:
-            doc = full_doc_map.get(table_name, table_doc_map.get(table_name, {}))
+            doc = table_doc_map.get(table_name, {})
+            schema = self.table_schemas.get(table_name, doc.get("schema", {}))
             results.append({
                 "table_name": table_name,
                 "score": score,
                 "source": "hybrid",
                 "hit_by_column": table_name in column_hit_tables,
                 "doc": doc,
-                "schema": doc.get("schema", {}),
+                "schema": schema,
             })
 
         logger.info(
