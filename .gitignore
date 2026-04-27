@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Milvus data (Docker volumes)
+milvus/
+
+# Index store (auto-generated)
+index_store/
+
+# Model cache
+*.bin
+*.safetensors

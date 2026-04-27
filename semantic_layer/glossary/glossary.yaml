@@ -1,0 +1,48 @@
+glossary:
+  - term: KYC通过率
+    definition: KYC认证通过的账户数占总账户数的比例
+    sql_hint: "COUNT(CASE WHEN verification_status = 1 THEN 1 END) / COUNT(*)"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.verification_status]
+
+  - term: 活跃商户
+    definition: account_status = 1 且 is_delete = 0 的账户
+    sql_hint: "account_status = 1 AND is_delete = 0"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_status, pmt_account.is_delete]
+
+  - term: LPSP
+    definition: License Payment Service Provider，持牌支付服务商
+    sql_hint: "account_type = 2000"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: TPSP
+    definition: Technical Payment Service Provider，技术支付服务商
+    sql_hint: "account_type = 2001"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: RPSP
+    definition: Referral Payment Service Provider，推荐支付服务商
+    sql_hint: "account_type = 3000"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: 高风险商户
+    definition: 风险等级为 HIGH 或 VERY_HIGH 的商户
+    sql_hint: "risk_rating_level IN ('HIGH', 'VERY_HIGH')"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.risk_rating_level]
+
+  - term: 白标商户
+    definition: 开通了白标功能的商户
+    sql_hint: "white_label_status = 1"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.white_label_status]
+
+  - term: 新开户
+    definition: 最近30天内创建的账户
+    sql_hint: "create_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.create_time]

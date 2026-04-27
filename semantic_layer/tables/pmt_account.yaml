@@ -1,0 +1,165 @@
+table:
+  name: pmt_account
+  database: dwd_banking
+  display_name: 商户账户表
+  description: |
+    支付系统的核心账户表，记录所有商户/个人的账户信息，
+    包含基本信息、法人实体信息、KYC认证状态、风险评级、账户状态、结算配置等。
+    每行代表一个独立账户。
+  tags: [账户, 商户, KYC, 风险, 支付, 开户]
+  query_tips: 查询时需带 is_delete=0 过滤已删除记录
+
+columns:
+  - name: paid
+    display_name: 账户主键ID
+  - name: customer_id
+    display_name: 客户ID
+    description: 关联客户维度表的唯一标识
+  - name: account_type
+    display_name: 账户类型
+    enum_values:
+      - {value: 1000, label: 普通账户}
+      - {value: 2000, label: "LPSP(License Payment Service Provider)"}
+      - {value: 2001, label: "TPSP(Technical Payment Service Provider)"}
+      - {value: 3000, label: "RPSP(Referral Payment Service Provider)"}
+  - name: legal_entity_type
+    display_name: 法人实体类型
+    enum_values:
+      - {value: 1000, label: "个人(individual)"}
+      - {value: 2000, label: "企业(company)"}
+  - name: risk_rating_level
+    display_name: 风险等级
+    enum_values: [LOW, MEDIUM, HIGH, VERY_HIGH, MANUAL_REVIEW, NONE, NORMAL]
+  - name: verification_status
+    display_name: KYC/KYB认证状态
+    enum_values:
+      - {value: -1, label: 拒绝}
+      - {value: 0, label: "默认/未认证"}
+      - {value: 1, label: 已通过}
+      - {value: 2, label: "审核中(pending)"}
+  - name: account_status
+    display_name: 账户状态
+    enum_values:
+      - {value: 0, label: 默认}
+      - {value: 1, label: "活跃(active)"}
+      - {value: 2, label: "停用(inactive)"}
+  - name: country
+    display_name: 国家
+    description: 商户所在国家代码
+  - name: monthly_revenue
+    display_name: 月营业额
+    description: 商户月收入/营业额
+  - name: white_label_status
+    display_name: 白标状态
+    enum_values:
+      - {value: 0, label: 未开通}
+      - {value: 1, label: 已开通}
+  - name: is_delete
+    display_name: 是否删除
+    description: 软删除标记，查询时通常需要 is_delete = 0
+    enum_values:
+      - {value: 0, label: 未删除}
+      - {value: 1, label: 已删除}
+  - name: identification_value
+    sensitive: true
+  - name: metadata
+    skip_index: true
+  - name: business_scope
+    skip_index: true
+  - name: business_owners
+    skip_index: true
+  - name: payment_authorisation
+    skip_index: true
+  - name: automatic_settlement_config
+    skip_index: true
+  - name: ref_bnb_sub_uid
+    skip_index: true
+  - name: ref_bnb_sub_email
+    skip_index: true
+  - name: ref_metacomp_uid
+    skip_index: true
+  - name: sync_to_uq
+    skip_index: true
+  - name: temp_product
+    skip_index: true
+  - name: trading_address
+    skip_index: true
+
+relations:
+  - column: customer_id
+    target_table: dim_customer
+    target_column: customer_id
+    join_type: LEFT JOIN
+    description: 关联客户维度表获取客户详细信息
+
+common_queries:
+  - question: 目前有多少活跃商户
+    sql: |
+      SELECT COUNT(*) AS "活跃商户数"
+      FROM dwd_banking.pmt_account
+      WHERE account_status = 1
+        AND is_delete = 0
+    tables: [pmt_account]
+    difficulty: easy
+
+  - question: 各国家的商户数量分布
+    sql: |
+      SELECT country AS "国家", COUNT(*) AS "商户数"
+      FROM dwd_banking.pmt_account
+      WHERE is_delete = 0
+      GROUP BY country
+      ORDER BY COUNT(*) DESC
+      LIMIT 100
+    tables: [pmt_account]
+    difficulty: easy
+
+  - question: KYC认证通过率
+    sql: |
+      SELECT
+        COUNT(CASE WHEN verification_status = 1 THEN 1 END) AS "已通过",
+        COUNT(*) AS "总数",
+        ROUND(COUNT(CASE WHEN verification_status = 1 THEN 1 END) / COUNT(*) * 100, 2) AS "通过率(%)"
+      FROM dwd_banking.pmt_account
+      WHERE is_delete = 0
+    tables: [pmt_account]
+    difficulty: medium
+
+  - question: 各风险等级的商户数量
+    sql: |
+      SELECT risk_rating_level AS "风险等级", COUNT(*) AS "商户数"
+      FROM dwd_banking.pmt_account
+      WHERE is_delete = 0
+        AND risk_rating_level IS NOT NULL
+      GROUP BY risk_rating_level
+      ORDER BY COUNT(*) DESC
+      LIMIT 100
+    tables: [pmt_account]
+    difficulty: easy
+
+  - question: 最近一个月新开户的商户数
+    sql: |
+      SELECT COUNT(*) AS "新开户数"
+      FROM dwd_banking.pmt_account
+      WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND is_delete = 0
+    tables: [pmt_account]
+    difficulty: easy
+
+  - question: 各账户类型的商户占比
+    sql: |
+      SELECT
+        CASE account_type
+          WHEN 1000 THEN '普通账户'
+          WHEN 2000 THEN 'LPSP'
+          WHEN 2001 THEN 'TPSP'
+          WHEN 3000 THEN 'RPSP'
+          ELSE '其他'
+        END AS "账户类型",
+        COUNT(*) AS "数量",
+        ROUND(COUNT(*) / SUM(COUNT(*)) OVER() * 100, 2) AS "占比(%)"
+      FROM dwd_banking.pmt_account
+      WHERE is_delete = 0
+      GROUP BY account_type
+      ORDER BY COUNT(*) DESC
+    tables: [pmt_account]
+    difficulty: medium

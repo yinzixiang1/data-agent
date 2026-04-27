@@ -1,0 +1,274 @@
+table:
+  name: pmt_finance_payout
+  database: dwd_banking
+  display_name: 账户代付表
+  description: |
+    记录所有代付（Payout）交易的明细，包含付款方/受益人信息、金额币种、渠道信息、
+    扣款/退款/审核状态、风险等级等。每行代表一笔独立的代付单。
+    支持国内转账、跨境汇款、内部转账等多种场景。
+  tags: [代付, 转账, 汇款, 渠道, 退款, 跨境, payout，出金]
+  query_tips: |
+    查询时注意 payout_status 过滤：1=completed 为成功，-1=失败，0=pending。
+    金额相关查询区分 source（源）和 target（目标）币种。
+
+columns:
+  - name: poid
+    display_name: 代付主键ID
+    key: UNI
+  - name: payout_id
+    display_name: 代付单号
+  - name: direct_id
+    display_name: 指令ID
+  - name: account_id
+    display_name: 账户ID
+    description: 发起代付的商户/机构账户ID
+  - name: account_name
+    display_name: 账户名称
+  - name: source_amount
+    display_name: 源金额
+    description: 代付的源币种金额
+  - name: source_currency
+    display_name: 源币种
+  - name: target_amount
+    display_name: 目标金额
+    description: 代付的目标币种金额（到账金额）
+  - name: target_currency
+    display_name: 目标币种
+  - name: fee_amount
+    display_name: 手续费
+  - name: fee_paid_by
+    display_name: 手续费承担方
+    enum_values: [shared, our]
+  - name: guaranteed_rate
+    display_name: 保证费率
+  - name: guaranteed_date
+    display_name: 保证费率时间
+  - name: beneficiary_id
+    display_name: 受益人ID
+  - name: beneficiary_name
+    display_name: 受益人名称
+  - name: payer_id
+    display_name: 付款人ID
+    description: 如果为0，表示当前账户（机构/商户）自身
+  - name: payout_date
+    display_name: 转账时间
+  - name: purpose_code
+    display_name: 转账用途
+  - name: payout_reason
+    display_name: 代付原因
+  - name: payout_reference
+    display_name: 渠道交易附言
+    description: 收款行可见的附言信息
+  - name: channel_code
+    display_name: 渠道编码
+  - name: channel_resp_status
+    display_name: 渠道响应状态
+  - name: payment_scope
+    display_name: 支付范围
+    enum_values: [internal, domestic, cross-border]
+  - name: transaction_id
+    display_name: 关联交易ID
+  - name: create_time
+    display_name: 创建时间
+  - name: update_time
+    display_name: 更新时间
+  - name: complete_time
+    display_name: 完成时间
+    description: 渠道完成或退款成功的时间
+  - name: debit_status
+    display_name: 扣款状态
+    enum_values:
+      - {value: -1, label: 异常}
+      - {value: 0, label: 默认}
+      - {value: 1, label: 已扣款}
+  - name: refund_status
+    display_name: 退款状态
+    enum_values:
+      - {value: -1, label: "退款失败(REFUND_FAILURE)"}
+      - {value: 0, label: "默认(NOT_NEED_REFUND)"}
+      - {value: 1, label: "退款成功(REFUND_SUCCESS)"}
+      - {value: 2, label: "退款审核(REFUND_APPROVE)"}
+      - {value: 3, label: "退款拒绝(REFUND_REFUSE)"}
+  - name: refund_reason
+    display_name: 退款原因
+  - name: review_status
+    display_name: 审查状态
+    enum_values:
+      - {value: -1, label: "拒绝(rejected)"}
+      - {value: 0, label: "审核中(in_review)"}
+      - {value: 1, label: "通过(passed)"}
+  - name: payout_status
+    display_name: 代付状态
+    enum_values:
+      - {value: -1, label: 失败}
+      - {value: 0, label: "待处理(pending)"}
+      - {value: 1, label: "已完成(completed)"}
+      - {value: 2, label: 已提交渠道}
+      - {value: 3, label: "客户挂起(可取消)"}
+      - {value: 9, label: 提交渠道失败}
+  - name: status_type
+    display_name: 状态类型
+    description: 标记流转来源
+    enum_values: [normal, reverse]
+  - name: payout_way
+    display_name: 创建方式
+    enum_values:
+      - {value: 0, label: 商户端创建}
+      - {value: 1, label: 接口创建}
+  - name: risk_level
+    display_name: 风险等级
+    description: 0=无风险，数值越大风险越高
+  - name: payment_mode
+    display_name: 支付模式
+    enum_values: [house, client]
+  - name: quote_id
+    display_name: 报价ID
+  - name: money_movement
+    display_name: 资金流动类型
+    enum_values:
+      - {value: 0, label: 正常payout}
+      - {value: 1, label: 跨业务线转账}
+  - name: exchange_rate
+    display_name: 汇率
+    description: USD和当前币种的汇率
+  - name: channel_customer_number
+    display_name: 渠道商户号
+  # 敏感字段
+  - name: creator_ip
+    sensitive: true
+  # 跳过索引的字段（大文本/JSON/内部技术字段）
+  - name: beneficiary_body
+    skip_index: true
+  - name: channel_req_body
+    skip_index: true
+  - name: channel_resp_body
+    skip_index: true
+  - name: channel_resp_id
+    skip_index: true
+  - name: channel_code_before
+    skip_index: true
+  - name: execute_reason
+    skip_index: true
+  - name: mt103_id
+    skip_index: true
+  - name: submission
+    skip_index: true
+  - name: short_account_id
+    skip_index: true
+  - name: short_reference_id
+    skip_index: true
+  - name: unique_request_id
+    skip_index: true
+  - name: payment_internal_info
+    skip_index: true
+  - name: creator_id
+    skip_index: true
+  - name: creator_name
+    skip_index: true
+  - name: risk_remark
+    skip_index: true
+  - name: remark
+    skip_index: true
+  - name: client_idempotency_key
+    skip_index: true
+  - name: client_request_fingerprint
+    skip_index: true
+
+relations:
+  - column: account_id
+    target_table: pmt_account
+    target_column: paid
+    join_type: LEFT JOIN
+    description: 关联商户账户表获取账户信息
+
+common_queries:
+  - question: 今天的代付总额
+    sql: |
+      SELECT
+        source_currency AS "币种",
+        COUNT(*) AS "笔数",
+        SUM(source_amount) AS "总金额"
+      FROM dwd_banking.pmt_finance_payout
+      WHERE DATE(create_time) = CURDATE()
+        AND payout_status = 1
+      GROUP BY source_currency
+      ORDER BY SUM(source_amount) DESC
+    tables: [pmt_finance_payout]
+    difficulty: easy
+
+  - question: 代付成功率
+    sql: |
+      SELECT
+        ROUND(COUNT(CASE WHEN payout_status = 1 THEN 1 END) / COUNT(*) * 100, 2) AS "成功率(%)",
+        COUNT(*) AS "总笔数",
+        COUNT(CASE WHEN payout_status = 1 THEN 1 END) AS "成功笔数",
+        COUNT(CASE WHEN payout_status = -1 THEN 1 END) AS "失败笔数"
+      FROM dwd_banking.pmt_finance_payout
+    tables: [pmt_finance_payout]
+    difficulty: medium
+
+  - question: 各渠道的代付量分布
+    sql: |
+      SELECT
+        channel_code AS "渠道",
+        COUNT(*) AS "笔数",
+        SUM(source_amount) AS "总金额"
+      FROM dwd_banking.pmt_finance_payout
+      WHERE payout_status = 1
+      GROUP BY channel_code
+      ORDER BY SUM(source_amount) DESC
+      LIMIT 100
+    tables: [pmt_finance_payout]
+    difficulty: easy
+
+  - question: 跨境代付笔数和金额
+    sql: |
+      SELECT
+        COUNT(*) AS "笔数",
+        SUM(source_amount) AS "源币总额",
+        SUM(target_amount) AS "目标币总额"
+      FROM dwd_banking.pmt_finance_payout
+      WHERE payment_scope = 'cross-border'
+        AND payout_status = 1
+    tables: [pmt_finance_payout]
+    difficulty: easy
+
+  - question: 各代付状态的分布
+    sql: |
+      SELECT
+        CASE payout_status
+          WHEN -1 THEN '失败'
+          WHEN 0 THEN '待处理'
+          WHEN 1 THEN '已完成'
+          WHEN 2 THEN '已提交渠道'
+          WHEN 3 THEN '客户挂起'
+          WHEN 9 THEN '提交渠道失败'
+          ELSE '其他'
+        END AS "状态",
+        COUNT(*) AS "笔数"
+      FROM dwd_banking.pmt_finance_payout
+      GROUP BY payout_status
+      ORDER BY COUNT(*) DESC
+    tables: [pmt_finance_payout]
+    difficulty: easy
+
+  - question: 最近一个月代付退款情况
+    sql: |
+      SELECT
+        CASE refund_status
+          WHEN -1 THEN '退款失败'
+          WHEN 0 THEN '无需退款'
+          WHEN 1 THEN '退款成功'
+          WHEN 2 THEN '退款审核中'
+          WHEN 3 THEN '退款拒绝'
+          ELSE '其他'
+        END AS "退款状态",
+        COUNT(*) AS "笔数",
+        SUM(source_amount) AS "涉及金额"
+      FROM dwd_banking.pmt_finance_payout
+      WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND refund_status != 0
+      GROUP BY refund_status
+      ORDER BY COUNT(*) DESC
+    tables: [pmt_finance_payout]
+    difficulty: medium
