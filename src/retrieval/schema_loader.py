@@ -1,12 +1,11 @@
 """
 数据源加载 — 从 Doris DDL + 语义层 YAML 合并出完整 Schema。
 
-在线模式: 连接 Doris 读取 DDL，再用语义层 YAML 补充业务信息（display_name, description 等）。
-离线模式: 仅从语义层 YAML 构建 Schema（不依赖 Doris）。
+连接 Doris 读取 DDL，再用语义层 YAML 补充业务信息（display_name, description 等）。
 
 使用示例::
 
-    loader = SchemaLoader(offline=True)  # 离线模式
+    loader = SchemaLoader()
     schemas, glossary, enums = loader.load_all()
     # schemas: [{"table_name": "pmt_account", "columns": [...], ...}, ...]
     # glossary: {"活跃商户": {"definition": ..., "sql_hint": ...}, ...}
@@ -32,8 +31,7 @@ class SchemaLoader:
     加载 Doris Schema + 语义层 YAML，合并为完整 Schema dict 列表。
 
     Attributes:
-        offline: 是否为离线模式（不连接 Doris）
-        engine: SQLAlchemy Engine 实例（离线模式为 None）
+        engine: SQLAlchemy Engine 实例
         semantic_layer_dir: 语义层 YAML 根目录路径
     """
 
@@ -41,7 +39,6 @@ class SchemaLoader:
         self,
         connection_string: str | None = None,
         semantic_layer_dir: str | Path | None = None,
-        offline: bool = False,
     ):
         """
         Args:
@@ -49,17 +46,13 @@ class SchemaLoader:
                 "mysql+pymysql://root:@localhost:9030/dwd_banking?charset=utf8mb4"
                 为 None 时自动从 config 中的 DORIS_* 参数拼接
             semantic_layer_dir: 语义层 YAML 根目录，默认使用 config.SEMANTIC_LAYER_DIR
-            offline: 是否启用离线模式。True 时不创建数据库连接，仅从 YAML 读取
         """
-        self.offline = offline
-        self.engine = None
-        if not offline:
-            if connection_string is None:
-                connection_string = (
-                    f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}"
-                    f"@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
-                )
-            self.engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
+        if connection_string is None:
+            connection_string = (
+                f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}"
+                f"@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+            )
+        self.engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
         self.semantic_layer_dir = Path(semantic_layer_dir or SEMANTIC_LAYER_DIR)
 
     # ── Doris 元数据加载 ──
@@ -111,7 +104,6 @@ class SchemaLoader:
                 ).fetchone()
                 if create_rows:
                     ddl_text = create_rows[1]
-                    # 从 DDL 中提取 COMMENT
                     import re
                     match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", ddl_text)
                     if match:
@@ -194,11 +186,7 @@ class SchemaLoader:
 
     def load_enums(self) -> list[dict]:
         """
-        加载枚举字典。优先从 Doris 在线查询，失败时回退到本地 YAML。
-
-        数据来源:
-            - 在线模式: Doris warehouse_sys.sys_dim_enum_dict 表
-            - 离线模式: semantic_layer/enums/*.yaml 文件
+        从 Doris warehouse_sys.sys_dim_enum_dict 加载枚举字典。
 
         Returns:
             list[dict]: 扁平化的枚举条目列表，每条包含:
@@ -210,17 +198,11 @@ class SchemaLoader:
                     - "label" (str): 英文标签
                     - "label_cn" (str): 中文标签，如 "普通账户"
         """
-        if not self.offline and self.engine:
-            try:
-                enums = self._load_enums_from_doris()
-                logger.info(f"枚举层从 Doris 加载完成: {len(enums)} 个字段组")
-                return enums
-            except Exception as e:
-                logger.warning(f"从 Doris 加载枚举失败，回退到本地 YAML: {e}")
-
-        enums = self._load_enums_from_yaml()
-        logger.info(f"枚举层从本地 YAML 加载完成: {len(enums)} 个字段组")
-        return enums
+        try:
+            return self._load_enums_from_doris()
+        except Exception as e:
+            logger.warning(f"从 Doris 加载枚举失败，回退到本地 YAML: {e}")
+            return self._load_enums_from_yaml()
 
     def _load_enums_from_doris(self) -> list[dict]:
         """从 Doris warehouse_sys.sys_dim_enum_dict 查询枚举字典"""
@@ -233,11 +215,10 @@ class SchemaLoader:
         with self.engine.connect() as conn:
             rows = conn.execute(sql).fetchall()
 
-        # 按 (table_name, field_name) 分组
         from collections import OrderedDict
         groups: dict[tuple, dict] = OrderedDict()
         for row in rows:
-            key = (row[0], row[1])  # (src_table_name, src_field_name)
+            key = (row[0], row[1])
             if key not in groups:
                 groups[key] = {
                     "table_name": row[0],
@@ -254,7 +235,7 @@ class SchemaLoader:
         return list(groups.values())
 
     def _load_enums_from_yaml(self) -> list[dict]:
-        """从本地 semantic_layer/enums/*.yaml 加载枚举"""
+        """从本地 semantic_layer/enums/*.yaml 加载枚举（Doris 查询失败时的回退）"""
         enums = []
         enums_dir = self.semantic_layer_dir / "enums"
         if enums_dir.exists():
@@ -326,66 +307,19 @@ class SchemaLoader:
 
     # ── 统一入口 ──
 
-    def _build_schema_from_yaml(self, semantic: dict) -> dict:
-        """
-        仅从语义层 YAML 构建 Schema（离线模式使用，不依赖 Doris）。
-
-        Args:
-            semantic: 单张表的语义层 YAML 解析结果，需包含 "table" 和 "columns" 键
-
-        Returns:
-            dict: 与 merge_schema 输出格式一致的 Schema dict
-        """
-        table_info = semantic.get("table", {})
-        columns = []
-        for col in semantic.get("columns", []):
-            columns.append({
-                "name": col["name"],
-                "type": col.get("type", "VARCHAR(255)"),
-                "nullable": col.get("nullable", True),
-                "key": col.get("key", ""),
-                "default": col.get("default"),
-                "comment": col.get("description", col.get("display_name", "")),
-                **{k: v for k, v in col.items() if k not in ("name", "type", "nullable", "key", "default", "description")},
-            })
-
-        return {
-            "database": table_info.get("database", DORIS_DATABASE),
-            "table_name": table_info["name"],
-            "table_comment": table_info.get("display_name", ""),
-            "display_name": table_info.get("display_name", ""),
-            "description": table_info.get("description", ""),
-            "tags": table_info.get("tags", []),
-            "query_tips": table_info.get("query_tips", ""),
-            "columns": columns,
-            "relations": semantic.get("relations", []),
-            "common_queries": semantic.get("common_queries", []),
-        }
-
     def load_all(self) -> tuple[list[dict], dict, list[dict]]:
         """
-        加载并合并所有 Schema。
+        加载并合并所有 Schema（Doris DDL + 语义层 YAML）。
 
         Returns:
-            (schemas, glossary, enums)
-            - schemas: 完整 Schema dict 列表
-            - glossary: 业务术语表
-            - enums: 独立枚举条目列表
+            tuple: (schemas, glossary, enums)
+                - schemas: 完整 Schema dict 列表
+                - glossary: 业务术语表
+                - enums: 独立枚举条目列表
         """
-        # 语义层
         table_semantics, glossary = self.load_semantic_layer()
         enums = self.load_enums()
 
-        if self.offline:
-            # 离线模式：仅从语义层 YAML 构建
-            schemas = []
-            for table_name, semantic in table_semantics.items():
-                schema = self._build_schema_from_yaml(semantic)
-                schemas.append(schema)
-            logger.info(f"离线模式: 从语义层加载 {len(schemas)} 张表")
-            return schemas, glossary, enums
-
-        # 在线模式：Doris DDL + 语义层合并
         table_names = self.get_all_tables()
         logger.info(f"从 Doris 加载到 {len(table_names)} 张表")
 

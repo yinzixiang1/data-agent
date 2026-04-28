@@ -1,11 +1,11 @@
 """
-Milvus 向量存储 — Collection 管理、混合检索、元数据存储。
+Milvus 向量存储 — Collection 管理、混合检索。
 
 封装了 MilvusClient，提供 Dense + Sparse 混合检索（RRF 融合）和标量过滤能力。
 
 使用示例::
 
-    from src.retrieval.milvus_store import MilvusIndex, MilvusMetaStore
+    from src.retrieval.milvus_store import MilvusIndex
 
     # 创建表级 Collection 并插入数据
     idx = MilvusIndex("nl2sql_table", dim=1024)
@@ -17,11 +17,6 @@ Milvus 向量存储 — Collection 管理、混合检索、元数据存储。
     # 混合检索
     hits = idx.hybrid_search(q_dense, q_sparse, top_k=5)
     # hits: [(doc_id, score, {"table_name": "pmt_account", ...}), ...]
-
-    # 元数据存储
-    meta = MilvusMetaStore()
-    meta.set("schema_hash", "abc123")
-    print(meta.get("schema_hash"))  # "abc123"
 """
 
 import logging
@@ -279,27 +274,6 @@ class MilvusIndex:
 
         return [(hit["id"], hit["distance"], hit["entity"]) for hit in results[0]]
 
-    def query_all(self, output_fields: list[str] | None = None) -> list[dict]:
-        """
-        查询 Collection 中所有文档（按 id 升序排列）。
-
-        Args:
-            output_fields: 需要返回的字段名列表，None 表示返回所有标量字段
-
-        Returns:
-            list[dict]: 按 id 升序排列的文档列表，最多 10000 条
-        """
-        if not self.exists():
-            return []
-        results = self.client.query(
-            collection_name=self.collection_name,
-            filter="id >= 0",
-            output_fields=output_fields or ["*"],
-            limit=10000,
-        )
-        results.sort(key=lambda x: x["id"])
-        return results
-
     @property
     def count(self) -> int:
         """Collection 中的文档总数，不存在时返回 0。"""
@@ -307,77 +281,3 @@ class MilvusIndex:
             return 0
         stats = self.client.get_collection_stats(self.collection_name)
         return stats.get("row_count", 0)
-
-
-class MilvusMetaStore:
-    """
-    元数据键值存储 — 基于 Milvus Collection 实现，用于持久化 schema_hash 等配置。
-
-    由于 Milvus 要求至少一个向量字段，内部使用 _dummy_vec 占位。
-
-    Attributes:
-        COLLECTION: 元数据 Collection 名称，固定为 "nl2sql_metadata"
-        client: MilvusClient 实例
-    """
-
-    COLLECTION = "nl2sql_metadata"
-
-    def __init__(self):
-        self.client = get_milvus_client()
-
-    def _ensure_collection(self):
-        """确保元数据 Collection 存在，不存在则创建。"""
-        if not self.client.has_collection(self.COLLECTION):
-            schema = self.client.create_schema(auto_id=False)
-            schema.add_field("key", DataType.VARCHAR, is_primary=True, max_length=256)
-            schema.add_field("value", DataType.VARCHAR, max_length=65535)
-            # Milvus 要求至少一个向量字段
-            schema.add_field("_dummy_vec", DataType.FLOAT_VECTOR, dim=2)
-
-            index_params = self.client.prepare_index_params()
-            index_params.add_index(field_name="_dummy_vec", index_type="FLAT", metric_type="L2")
-
-            self.client.create_collection(
-                collection_name=self.COLLECTION,
-                schema=schema,
-                index_params=index_params,
-            )
-            logger.info(f"创建元数据 Collection: {self.COLLECTION}")
-
-    def set(self, key: str, value: str):
-        """
-        设置元数据（upsert 语义，key 存在则覆盖）。
-
-        Args:
-            key: 键名，如 "schema_hash"
-            value: 值，如 SHA256 哈希字符串
-        """
-        self._ensure_collection()
-        self.client.upsert(self.COLLECTION, [{"key": key, "value": value, "_dummy_vec": [0.0, 0.0]}])
-
-    def get(self, key: str) -> str | None:
-        """
-        获取元数据值。
-
-        Args:
-            key: 键名
-
-        Returns:
-            对应的值字符串，key 不存在或 Collection 不存在时返回 None
-        """
-        if not self.client.has_collection(self.COLLECTION):
-            return None
-        results = self.client.query(
-            self.COLLECTION,
-            filter=f'key == "{key}"',
-            output_fields=["value"],
-        )
-        if results:
-            return results[0]["value"]
-        return None
-
-    def drop(self):
-        """删除元数据 Collection（如果存在）。"""
-        if self.client.has_collection(self.COLLECTION):
-            self.client.drop_collection(self.COLLECTION)
-            logger.info(f"已删除元数据 Collection: {self.COLLECTION}")

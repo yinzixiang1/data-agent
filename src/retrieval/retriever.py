@@ -6,8 +6,8 @@ SchemaRetriever 是外部调用的唯一接口，封装了完整的检索流程:
 
 使用示例::
 
-    retriever = SchemaRetriever(offline=True)
-    retriever.initialize()  # 首次启动，加载模型 + 构建/加载索引
+    retriever = SchemaRetriever()
+    retriever.initialize()  # 首次启动，加载模型 + 构建索引
 
     result = retriever.retrieve("目前有多少活跃商户")
     print(result.relevant_tables)   # [{"table_name": "pmt_account", ...}]
@@ -63,7 +63,7 @@ class SchemaRetriever:
 
     使用方式:
         retriever = SchemaRetriever()
-        retriever.initialize()  # 启动时调用一次
+        retriever.initialize()  # 启动时调用一次（强制重建索引）
         result = retriever.retrieve("目前有多少活跃商户")
     """
 
@@ -71,18 +71,15 @@ class SchemaRetriever:
         self,
         connection_string: str | None = None,
         semantic_layer_dir: str | Path | None = None,
-        offline: bool = False,
     ):
         """
         Args:
             connection_string: SQLAlchemy 连接字符串，None 时从 config 自动拼接
             semantic_layer_dir: 语义层目录路径，None 时使用 config.SEMANTIC_LAYER_DIR
-            offline: 是否启用离线模式（不连接 Doris）
         """
         self.schema_loader = SchemaLoader(
             connection_string=connection_string,
             semantic_layer_dir=semantic_layer_dir or SEMANTIC_LAYER_DIR,
-            offline=offline,
         )
         self.index_manager = IndexManager()
         self.formatter = SchemaFormatter()
@@ -94,13 +91,8 @@ class SchemaRetriever:
         self.table_schemas: dict = {}
         self._initialized = False
 
-    def initialize(self, force_rebuild: bool = False):
-        """
-        启动初始化：加载 Schema → 加载术语 → 判断是否需重建索引 → 构建/加载索引。
-
-        Args:
-            force_rebuild: 是否强制重建索引（忽略 schema_hash 检测）
-        """
+    def initialize(self):
+        """启动初始化：加载 Schema → 加载术语 → 强制重建索引 → 构建混合检索器。"""
         logger.info("=" * 60)
         logger.info("RAG 检索体系初始化开始")
         logger.info("=" * 60)
@@ -113,13 +105,9 @@ class SchemaRetriever:
         # 2. 加载业务术语
         self.glossary_resolver.load(glossary)
 
-        # 3. 判断是否需要重建索引
-        if force_rebuild or self.index_manager.need_rebuild(schemas, enums):
-            logger.info("开始全量构建索引...")
-            indices = self.index_manager.build_and_save(schemas, embedding, enums)
-        else:
-            logger.info("索引未变更，加载已有索引...")
-            indices = self.index_manager.load_all(embedding)
+        # 3. 全量构建索引
+        logger.info("开始全量构建索引...")
+        indices = self.index_manager.build(schemas, embedding, enums)
 
         # 4. 初始化混合检索器
         self.searcher = HybridSearcher(

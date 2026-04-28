@@ -5,10 +5,8 @@ NL2SQL RAG 检索系统 — 交互式入口。
 
 运行方式::
 
-    python main.py                  # 自动检测 Doris 连接
-    python main.py --offline        # 强制离线模式（仅用语义层 YAML，跳过 EXPLAIN）
-    python main.py --rebuild        # 强制重建 Milvus 索引
-    python main.py --debug          # 开启 DEBUG 日志
+    python main.py              # 连接 Doris 启动（连不上则失败）
+    python main.py --debug      # 开启 DEBUG 日志
 
 交互命令::
 
@@ -46,25 +44,6 @@ Doris 日期函数注意：
 - 按月分组: DATE_FORMAT(create_time, '%Y-%m')"""
 
 MAX_FIX_RETRIES = 5
-
-
-def check_doris_connection() -> bool:
-    """
-    检测 Doris 是否可连接（3 秒超时）。
-
-    Returns:
-        bool: True 表示连接成功
-    """
-    try:
-        from sqlalchemy import create_engine, text
-        url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        engine.dispose()
-        return True
-    except Exception:
-        return False
 
 
 def create_doris_engine():
@@ -119,37 +98,35 @@ def main():
     """
     主函数 — 初始化系统并进入交互式 REPL 循环。
 
-    流程: 检测 Doris → 初始化 RAG → 初始化 LLM → 交互循环
-        (每轮: 用户输入 → RAG 检索 → LLM 生成 SQL → EXPLAIN 校验 → 执行计划分析)
+    流程: 连接 Doris → 初始化 RAG（强制重建索引） → 初始化 LLM → EXPLAIN 校验器 → 交互循环
     """
-    force_offline = "--offline" in sys.argv
-    force_rebuild = "--rebuild" in sys.argv
     debug_mode = "--debug" in sys.argv
 
-    if force_offline:
-        offline = True
-        print("强制离线模式: 仅从 semantic_layer/ YAML 加载 Schema")
-    else:
-        print(f"检测 Doris 连接 ({DORIS_HOST}:{DORIS_PORT})...")
-        if check_doris_connection():
-            offline = False
-            print("Doris 连接成功, 使用在线模式")
-        else:
-            offline = True
-            print("Doris 不可达, 自动切换为离线模式 (仅从 semantic_layer/ YAML 加载)")
+    # 连接 Doris（失败则直接退出）
+    print(f"连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
+    try:
+        from sqlalchemy import create_engine, text
+        url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        engine.dispose()
+        print("Doris 连接成功")
+    except Exception as e:
+        print(f"Doris 连接失败，无法启动: {e}")
+        sys.exit(1)
 
-    retriever = SchemaRetriever(offline=offline)
-    retriever.initialize(force_rebuild=force_rebuild)
+    # 初始化 RAG（每次启动强制重建索引）
+    retriever = SchemaRetriever()
+    retriever.initialize()
 
     llm = init_llm()
     print("LLM (DeepSeek) 已就绪")
 
-    # EXPLAIN 校验器（仅在线模式可用）
-    validator = None
-    if not offline:
-        from src.retrieval.sql_validator import SQLValidator
-        validator = SQLValidator(create_doris_engine())
-        print("EXPLAIN 校验已启用")
+    # EXPLAIN 校验器
+    from src.retrieval.sql_validator import SQLValidator
+    validator = SQLValidator(create_doris_engine())
+    print("EXPLAIN 校验已启用")
 
     # 交互阶段降低日志级别
     if not debug_mode:
@@ -218,71 +195,69 @@ def main():
             continue
 
         # EXPLAIN 校验循环
-        if validator:
-            from src.retrieval.sql_validator import SQLValidator
-            extracted_sql = SQLValidator.extract_sql(answer)
+        extracted_sql = SQLValidator.extract_sql(answer)
 
-            if not extracted_sql:
-                print("[EXPLAIN] LLM 未生成 SQL，重新请求...")
-                messages.append({"role": "user", "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。"})
-                try:
-                    answer = llm_chat(llm, messages)
-                    extracted_sql = SQLValidator.extract_sql(answer)
-                except Exception as e:
-                    print(f"LLM 重新调用失败: {e}")
+        if not extracted_sql:
+            print("[EXPLAIN] LLM 未生成 SQL，重新请求...")
+            messages.append({"role": "user", "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。"})
+            try:
+                answer = llm_chat(llm, messages)
+                extracted_sql = SQLValidator.extract_sql(answer)
+            except Exception as e:
+                print(f"LLM 重新调用失败: {e}")
 
-            syntax_ok = False
-            check = None
-            if extracted_sql:
-                for attempt in range(MAX_FIX_RETRIES):
-                    check = validator.validate(answer)
+        syntax_ok = False
+        check = None
+        if extracted_sql:
+            for attempt in range(MAX_FIX_RETRIES):
+                check = validator.validate(answer)
 
-                    if check["valid"]:
-                        if attempt > 0:
-                            print(f"[EXPLAIN] 第 {attempt + 1} 次生成，语法通过 ✓")
-                        else:
-                            print("[EXPLAIN] 语法通过 ✓")
-                        syntax_ok = True
+                if check["valid"]:
+                    if attempt > 0:
+                        print(f"[EXPLAIN] 第 {attempt + 1} 次生成，语法通过 ✓")
+                    else:
+                        print("[EXPLAIN] 语法通过 ✓")
+                    syntax_ok = True
+                    break
+
+                print(f"[EXPLAIN] 语法失败 (第 {attempt + 1}/{MAX_FIX_RETRIES} 次): {check['error']}")
+                if attempt < MAX_FIX_RETRIES - 1:
+                    print("[修复中] 分析错误原因并重新生成...")
+                    messages.append({"role": "user", "content":
+                        f"你生成的 SQL 执行 EXPLAIN 校验失败。\n\n"
+                        f"## EXPLAIN 报错\n{check['error']}\n\n"
+                        f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
+                    })
+                    try:
+                        answer = llm_chat(llm, messages)
+                    except Exception as e:
+                        print(f"LLM 修复调用失败: {e}")
                         break
+                else:
+                    print(f"[EXPLAIN] 已达最大重试次数 ({MAX_FIX_RETRIES})，输出最后结果")
 
-                    print(f"[EXPLAIN] 语法失败 (第 {attempt + 1}/{MAX_FIX_RETRIES} 次): {check['error']}")
-                    if attempt < MAX_FIX_RETRIES - 1:
-                        print("[修复中] 分析错误原因并重新生成...")
-                        messages.append({"role": "user", "content":
-                            f"你生成的 SQL 执行 EXPLAIN 校验失败。\n\n"
-                            f"## EXPLAIN 报错\n{check['error']}\n\n"
-                            f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
-                        })
-                        try:
-                            answer = llm_chat(llm, messages)
-                        except Exception as e:
-                            print(f"LLM 修复调用失败: {e}")
-                            break
+        if syntax_ok and check and check["plan"]:
+            print("[执行计划分析] 将 EXPLAIN 结果交给 LLM 分析...")
+            messages.append({"role": "user", "content":
+                f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
+                f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
+                f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
+                f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
+            })
+            try:
+                review_result = llm_chat(llm, messages)
+                if "LGTM" in review_result.upper():
+                    print("[执行计划分析] 无明显性能问题 ✓")
+                else:
+                    print("[执行计划分析] 发现优化空间，校验优化后 SQL...")
+                    recheck = validator.validate(review_result)
+                    if recheck["valid"]:
+                        answer = review_result
+                        print("[执行计划分析] 优化后校验通过 ✓")
                     else:
-                        print(f"[EXPLAIN] 已达最大重试次数 ({MAX_FIX_RETRIES})，输出最后结果")
-
-            if syntax_ok and check and check["plan"]:
-                print("[执行计划分析] 将 EXPLAIN 结果交给 LLM 分析...")
-                messages.append({"role": "user", "content":
-                    f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
-                    f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
-                    f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
-                    f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
-                })
-                try:
-                    review_result = llm_chat(llm, messages)
-                    if "LGTM" in review_result.upper():
-                        print("[执行计划分析] 无明显性能问题 ✓")
-                    else:
-                        print("[执行计划分析] 发现优化空间，校验优化后 SQL...")
-                        recheck = validator.validate(review_result)
-                        if recheck["valid"]:
-                            answer = review_result
-                            print("[执行计划分析] 优化后校验通过 ✓")
-                        else:
-                            print("[执行计划分析] 优化后语法异常，使用原始版本")
-                except Exception as e:
-                    print(f"执行计划分析失败: {e}")
+                        print("[执行计划分析] 优化后语法异常，使用原始版本")
+            except Exception as e:
+                print(f"执行计划分析失败: {e}")
 
         print(answer)
 
