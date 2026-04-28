@@ -1,0 +1,926 @@
+biz_line: banking
+enums:
+- table_name: pmt_account
+  field_name: account_status
+  field_label: account_status
+  values:
+  - code: '1'
+    label: ACTIVE
+    label_cn: 激活
+  - code: '2'
+    label: INACTIVE
+    label_cn: 未激活
+  - code: '-1'
+    label: CLOSED
+    label_cn: 已关闭
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+- table_name: pmt_account
+  field_name: legal_entity_type
+  field_label: legal_entity_type
+  values:
+  - code: '1000'
+    label: individual
+    label_cn: individual
+  - code: '2000'
+    label: company
+    label_cn: company
+- table_name: pmt_account
+  field_name: verification_status
+  field_label: customer_status
+  values:
+  - code: APPROVED
+    label: APPROVED
+    label_cn: 通过
+  - code: REJECTED
+    label: REJECTED
+    label_cn: 拒绝
+  - code: NOT_STARTED
+    label: NOT_STARTED
+    label_cn: 未开始
+  - code: EXPIRED
+    label: EXPIRED
+    label_cn: 已过期
+  - code: DRAFT_IN_PROGRESS
+    label: DRAFT_IN_PROGRESS
+    label_cn: 草稿进行中
+  - code: SUBMITTED_PENDING
+    label: SUBMITTED_PENDING
+    label_cn: 已提交
+  - code: ACTION_REQUIRED
+    label: ACTION_REQUIRED
+    label_cn: 待处理
+  - code: EXEMPTED
+    label: EXEMPTED
+    label_cn: 豁免
+  - code: PENDING_REVIEW
+    label: PENDING_REVIEW
+    label_cn: 已提交待审查
+  - code: UNDER_REVIEW
+    label: UNDER_REVIEW
+    label_cn: 审查中
+  - code: UPDATE_REQUIRED
+    label: UPDATE_REQUIRED
+    label_cn: 需要修改
+- table_name: pmt_account_balance
+  field_name: balance_name
+  field_label: balance_source
+  values:
+  - code: '1000'
+    label: AVAILABLE
+    label_cn: 可用余额
+  - code: '1001'
+    label: PENDING
+    label_cn: 待收余额
+  - code: '1002'
+    label: RESERVED
+    label_cn: 预留余额
+  - code: '1003'
+    label: MARGIN
+    label_cn: 保证金
+  - code: '4001'
+    label: PREPAID
+    label_cn: 预付余额
+  - code: '9000'
+    label: FROZEN
+    label_cn: 冻结余额
+- table_name: pmt_account_balance
+  field_name: balance_status
+  field_label: balance_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: 默认
+  - code: '1'
+    label: ACTIVE
+    label_cn: active
+  - code: '2'
+    label: CLOSED
+    label_cn: closed
+  - code: '3'
+    label: PROCESSING
+    label_cn: processing
+- table_name: pmt_account_balance
+  field_name: balance_type
+  field_label: balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: pmt_account_bank_details
+  field_name: status
+  field_label: bank_details_status
+  values:
+  - code: '1'
+    label: ACTIVE
+    label_cn: ACTIVE
+  - code: '0'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '-1'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: INACTIVE
+    label: INACTIVE
+    label_cn: INACTIVE
+- table_name: pmt_account_bank_details_log
+  field_name: rfi_status
+  field_label: rfi_status
+  values:
+  - code: '0'
+    label: NOT_REQUIRED
+    label_cn: NOT_REQUIRED
+  - code: '1'
+    label: REQUIRED
+    label_cn: REQUIRED
+- table_name: pmt_account_channel
+  field_name: rfi_status
+  field_label: rfi_status
+  values:
+  - code: '-2'
+    label: closed
+    label_cn: closed
+  - code: '-1'
+    label: reject
+    label_cn: reject
+  - code: '0'
+    label: pending
+    label_cn: pending
+  - code: '1'
+    label: completed
+    label_cn: completed
+  - code: '2'
+    label: processing
+    label_cn: processing
+  - code: '3'
+    label: return
+    label_cn: return
+  - code: '4'
+    label: Channel processing
+    label_cn: Channel processing
+- table_name: pmt_account_product
+  field_name: product_status
+  field_label: account_product_status
+  values:
+  - code: '0'
+    label: Closed
+    label_cn: Closed
+  - code: '1'
+    label: Open
+    label_cn: Open
+- table_name: pmt_conversion
+  field_name: conversion_flag
+  field_label: conversion_flag
+  values:
+  - code: '1000'
+    label: order hedging
+    label_cn: order hedging
+  - code: '2000'
+    label: channel conversion
+    label_cn: channel conversion
+  - code: '3000'
+    label: other
+    label_cn: other
+- table_name: pmt_conversion
+  field_name: conversion_status
+  field_label: conversion_status
+  values:
+  - code: '0'
+    label: AWAITING_FUNDS
+    label_cn: 等待资金到账
+  - code: '1'
+    label: TRADE_SETTLED
+    label_cn: 已结算
+  - code: '2'
+    label: FUNDS_ARRIVED
+    label_cn: 资金已到
+  - code: '3'
+    label: SENT_TO_CHANNEL
+    label_cn: 已发送渠道处理中
+  - code: '-1'
+    label: CLOSED
+    label_cn: 已关闭
+- table_name: pmt_conversion
+  field_name: conversion_way
+  field_label: conversion_way
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+  - code: '1'
+    label: API_CREATED
+    label_cn: API_CREATED
+  - code: '2'
+    label: AUTO_PAYOUT
+    label_cn: AUTO_PAYOUT
+- table_name: pmt_conversion
+  field_name: credit_status
+  field_label: credit_status
+  values:
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+- table_name: pmt_conversion
+  field_name: hedge_status
+  field_label: hedge_status
+  values:
+  - code: '0'
+    label: NOT_HEDGED
+    label_cn: NOT_HEDGED
+  - code: '1'
+    label: HEDGED
+    label_cn: HEDGED
+  - code: '2'
+    label: PARTIAL_HEDGED
+    label_cn: PARTIAL_HEDGED
+- table_name: pmt_conversion
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '0'
+    label: REVIEW_PENDING
+    label_cn: 审核中
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_conversion
+  field_name: settle_mode
+  field_label: settle_mode
+  values:
+  - code: '0'
+    label: MANUAL_REVIEW
+    label_cn: MANUAL_REVIEW
+  - code: '1'
+    label: AUTO_REVIEW
+    label_cn: AUTO_REVIEW
+- table_name: pmt_conversion
+  field_name: transfer_to_client_status
+  field_label: transfer_status_aux
+  values:
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+  - code: '2'
+    label: PROCESSING
+    label_cn: PROCESSING
+- table_name: pmt_developer_webhook
+  field_name: webhook_status
+  field_label: webhook_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+- table_name: pmt_dispute
+  field_name: dispute_status
+  field_label: dispute_status
+  values:
+  - code: '-1'
+    label: DISPUTE_REJECTED
+    label_cn: 拒绝
+  - code: '0'
+    label: DISPUTE_DEFAULT
+    label_cn: 默认(已创建)
+  - code: '1'
+    label: DISPUTE_APPROVED
+    label_cn: 批准
+- table_name: pmt_dispute
+  field_name: document_status
+  field_label: document_status
+  values:
+  - code: '0'
+    label: PENDING_UPLOAD
+    label_cn: 待上传
+  - code: '1'
+    label: UPLOADED
+    label_cn: 完成上传
+- table_name: pmt_finance_adjustment
+  field_name: adjustment_status
+  field_label: adjustment_status
+  values:
+  - code: '-1'
+    label: AdjustmentStatusFailed
+    label_cn: 失败
+  - code: '0'
+    label: AdjustmentStatusPending
+    label_cn: 待处理
+  - code: '1'
+    label: AdjustmentStatusSuccess
+    label_cn: 成功
+- table_name: pmt_finance_adjustment
+  field_name: adjustment_type
+  field_label: adjustment_type
+  values:
+  - code: '9001'
+    label: AMOUNT_ADDITION
+    label_cn: 差额加款
+  - code: '9002'
+    label: AMOUNT_DEDUCTION
+    label_cn: 差额扣款
+  - code: '9003'
+    label: REVERSAL_CREDIT
+    label_cn: 冲正加款
+  - code: '9004'
+    label: REVERSAL_DEBIT
+    label_cn: 冲正扣款
+  - code: '9005'
+    label: MARGIN_REDEEM
+    label_cn: 保证金赎回
+  - code: '9006'
+    label: MARGIN_PAYIN
+    label_cn: 保证金缴纳
+  - code: '9007'
+    label: AVAILABLE_UNFREEZE
+    label_cn: 可用余额解冻
+  - code: '9008'
+    label: AVAILABLE_FREEZE
+    label_cn: 可用余额冻结
+  - code: '9010'
+    label: RESERVED
+    label_cn: 保留(暂未启用)
+  - code: '9011'
+    label: RESERVED
+    label_cn: 保留(暂未启用)
+  - code: '9012'
+    label: RESERVED
+    label_cn: 保留(暂未启用)
+  - code: '9013'
+    label: RESERVED
+    label_cn: 保留(暂未启用)
+  - code: '9098'
+    label: FEE_RETURN
+    label_cn: 手续费退回
+  - code: '9099'
+    label: FEE_DEBIT
+    label_cn: 手续费扣除
+- table_name: pmt_finance_adjustment
+  field_name: balance_type
+  field_label: balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: pmt_finance_adjustment
+  field_name: reference_type
+  field_label: reference_type
+  values:
+  - code: '1000'
+    label: payin
+    label_cn: payin
+  - code: '1001'
+    label: deposit
+    label_cn: deposit
+  - code: '2000'
+    label: payout
+    label_cn: payout
+  - code: '2001'
+    label: transfer
+    label_cn: transfer
+  - code: '3000'
+    label: conversion
+    label_cn: conversion
+  - code: '4000'
+    label: card fee
+    label_cn: card fee
+  - code: '4001'
+    label: card charge
+    label_cn: card charge
+  - code: '8000'
+    label: fee
+    label_cn: fee
+  - code: '9000'
+    label: adjustment
+    label_cn: adjustment
+- table_name: pmt_finance_adjustment
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '0'
+    label: REVIEW_PENDING
+    label_cn: 审核中
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_finance_collection
+  field_name: collection_type
+  field_label: collection_type
+  values:
+  - code: '1000'
+    label: deposit
+    label_cn: deposit
+  - code: '2000'
+    label: payout
+    label_cn: payout
+  - code: '2001'
+    label: payout refund
+    label_cn: payout refund
+- table_name: pmt_finance_collection
+  field_name: inbound_type
+  field_label: inbound_type
+  values:
+  - code: '1000'
+    label: to house
+    label_cn: to house
+  - code: '2000'
+    label: to client
+    label_cn: to client
+- table_name: pmt_finance_collection
+  field_name: status
+  field_label: collection_status
+  values:
+  - code: '-1'
+    label: failed
+    label_cn: failed
+  - code: '1'
+    label: successful
+    label_cn: successful
+  - code: '2'
+    label: processing
+    label_cn: processing
+- table_name: pmt_finance_deposit
+  field_name: deposit_status
+  field_label: deposit_status
+  values:
+  - code: '-1'
+    label: DepositStatusFailed
+    label_cn: 失败
+  - code: '0'
+    label: DepositStatusPending
+    label_cn: 待处理
+  - code: '1'
+    label: DepositStatusCompleted
+    label_cn: 已完成
+  - code: '2'
+    label: DepositStatusWaitAuth
+    label_cn: 等待授权
+- table_name: pmt_finance_deposit
+  field_name: payment_method
+  field_label: payment_method
+  values:
+  - code: '1000'
+    label: LOCAL
+    label_cn: LOCAL
+  - code: '2000'
+    label: SWIFT
+    label_cn: SWIFT
+- table_name: pmt_finance_deposit
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '0'
+    label: REVIEW_PENDING
+    label_cn: 审核中
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_finance_invoice
+  field_name: invoice_status
+  field_label: invoice_status
+  values:
+  - code: '-1'
+    label: VOIDED
+    label_cn: VOIDED
+  - code: '0'
+    label: DRAFT
+    label_cn: DRAFT
+  - code: '1'
+    label: NORMAL
+    label_cn: NORMAL
+- table_name: pmt_finance_invoice
+  field_name: invoice_type
+  field_label: invoice_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: pmt_finance_invoice
+  field_name: invoice_way
+  field_label: invoice_way
+  values:
+  - code: '0'
+    label: BACKOFFICE
+    label_cn: BACKOFFICE
+  - code: '1'
+    label: SCHEDULED
+    label_cn: SCHEDULED
+- table_name: pmt_finance_payout
+  field_name: debit_status
+  field_label: debit_status
+  values:
+  - code: '-1'
+    label: DEBIT_EXCEPTION
+    label_cn: 扣款异常
+  - code: '0'
+    label: DEFAULT
+    label_cn: 默认
+  - code: '1'
+    label: DEBITED
+    label_cn: 已扣款
+- table_name: pmt_finance_payout
+  field_name: payout_status
+  field_label: payout_status
+  values:
+  - code: '0'
+    label: PAYOUT_PENDING
+    label_cn: 待处理
+  - code: '1'
+    label: PAYOUT_COMPLETED
+    label_cn: 已完成
+  - code: '2'
+    label: PAYOUT_SUBMITTED
+    label_cn: 已提交渠道
+  - code: '3'
+    label: PAYOUT_SUSPENDED
+    label_cn: 客户挂起(可取消)
+  - code: '9'
+    label: PAYOUT_SUBMIT_EXCEPTION
+    label_cn: 提交异常
+  - code: '-1'
+    label: PAYOUT_FAILED
+    label_cn: 失败
+  - code: '-2'
+    label: PAYOUT_CANCELLED
+    label_cn: 已取消
+- table_name: pmt_finance_payout
+  field_name: refund_status
+  field_label: refund_status
+  values:
+  - code: '-1'
+    label: REFUND_FAILURE
+    label_cn: 失败
+  - code: '0'
+    label: REFUND_DEFAULT
+    label_cn: 默认(未处理)
+  - code: '1'
+    label: REFUND_SUCCESS
+    label_cn: 成功
+  - code: '2'
+    label: REFUND_APPROVE
+    label_cn: 审核中
+  - code: '3'
+    label: REFUND_REFUSE
+    label_cn: 审核拒绝
+- table_name: pmt_finance_payout
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '0'
+    label: REVIEW_PENDING
+    label_cn: 审核中
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_finance_refund
+  field_name: refund_status
+  field_label: refund_status
+  values:
+  - code: '-1'
+    label: REFUND_FAILURE
+    label_cn: 失败
+  - code: '1'
+    label: REFUND_SUCCESS
+    label_cn: 成功
+- table_name: pmt_finance_refund
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_finance_reports
+  field_name: report_status
+  field_label: report_status
+  values:
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+  - code: '0'
+    label: PENDING
+    label_cn: PENDING(待生成)
+  - code: '1'
+    label: COMPLETED
+    label_cn: COMPLETED(已生成)
+- table_name: pmt_finance_transaction_timeline
+  field_name: channel_flag
+  field_label: channel_flag
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: pmt_finance_transaction_timeline
+  field_name: is_customer_visible
+  field_label: is_customer_visible
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: pmt_finance_transaction_timeline
+  field_name: timeline_type
+  field_label: timeline_type
+  values:
+  - code: '1000'
+    label: payin
+    label_cn: payin
+  - code: '1001'
+    label: deposit
+    label_cn: deposit
+  - code: '1002'
+    label: transfer_in
+    label_cn: transfer_in
+  - code: '2000'
+    label: payout
+    label_cn: payout
+  - code: '2001'
+    label: transfer_out
+    label_cn: transfer_out
+  - code: '3000'
+    label: conversion
+    label_cn: conversion
+  - code: '4000'
+    label: card_purchase
+    label_cn: card_purchase
+  - code: '4001'
+    label: card_recharge
+    label_cn: card_recharge
+  - code: '4002'
+    label: card_withdraw
+    label_cn: card_withdraw
+  - code: '8000'
+    label: fee
+    label_cn: fee
+  - code: '8001'
+    label: refund
+    label_cn: refund
+  - code: '9000'
+    label: adjustment
+    label_cn: adjustment
+- table_name: pmt_finance_transactions
+  field_name: pci_display
+  field_label: pci_display
+  values:
+  - code: '0'
+    label: HIDDEN
+    label_cn: HIDDEN
+  - code: '1'
+    label: DISPLAY
+    label_cn: DISPLAY
+- table_name: pmt_finance_transactions
+  field_name: transaction_status
+  field_label: transaction_status
+  values:
+  - code: '-2'
+    label: DELETED
+    label_cn: DELETED
+  - code: '-1'
+    label: TRANS_FAILED
+    label_cn: FAILED
+  - code: '0'
+    label: TRANS_PENDING
+    label_cn: PENDING
+  - code: '1'
+    label: TRANS_COMPLETED
+    label_cn: COMPLETED
+- table_name: pmt_finance_transactions
+  field_name: transaction_type
+  field_label: transaction_type
+  values:
+  - code: '1000'
+    label: PAYIN
+    label_cn: 资金流入
+  - code: '1001'
+    label: DEPOSIT
+    label_cn: 充值
+  - code: '1002'
+    label: TRANSFER_IN
+    label_cn: 转入
+  - code: '2000'
+    label: PAYOUT
+    label_cn: 出款
+  - code: '2001'
+    label: TRANSFER
+    label_cn: 转账(出)
+  - code: '3000'
+    label: CONVERSION
+    label_cn: 外汇兑换
+  - code: '4000'
+    label: CARD_FEE
+    label_cn: 卡费用
+  - code: '4001'
+    label: CARD_CHARGE
+    label_cn: 卡充值
+  - code: '4002'
+    label: CARD_WITHDRAW
+    label_cn: 卡提现
+  - code: '8000'
+    label: FEE
+    label_cn: 手续费
+  - code: '8001'
+    label: REFUND
+    label_cn: 退款
+  - code: '8002'
+    label: INVOICE
+    label_cn: 发票
+  - code: '9000'
+    label: ADJUSTMENT
+    label_cn: 调账
+- table_name: pmt_finance_transfer
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '-1'
+    label: REVIEW_REJECT
+    label_cn: 审核拒绝
+  - code: '0'
+    label: REVIEW_PENDING
+    label_cn: 审核中
+  - code: '1'
+    label: REVIEW_PASS
+    label_cn: 审核通过
+- table_name: pmt_finance_transfer
+  field_name: source_balance_type
+  field_label: source_balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: pmt_finance_transfer
+  field_name: target_balance_type
+  field_label: target_balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: pmt_finance_transfer
+  field_name: transfer_status
+  field_label: transfer_status
+  values:
+  - code: '0'
+    label: INIT
+    label_cn: 初始
+  - code: '1'
+    label: COMPLETED
+    label_cn: 已完成
+  - code: '-1'
+    label: FAILED
+    label_cn: 失败
+- table_name: pmt_global_account_invoice_task
+  field_name: payment_method
+  field_label: payment_method
+  values:
+  - code: '1000'
+    label: Local
+    label_cn: Local
+  - code: '2000'
+    label: SWIFT
+    label_cn: SWIFT
+- table_name: pmt_global_account_invoice_task
+  field_name: task_status
+  field_label: task_status
+  values:
+  - code: '0'
+    label: PENDING
+    label_cn: PENDING
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '2'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+- table_name: pmt_payment_beneficiary
+  field_name: entity_type
+  field_label: entity_type
+  values:
+  - code: '1000'
+    label: PERSONAL
+    label_cn: PERSONAL
+  - code: '2000'
+    label: COMPANY
+    label_cn: COMPANY
+- table_name: pmt_payment_beneficiary
+  field_name: id_type
+  field_label: id_type
+  values:
+  - code: '1000'
+    label: passport
+    label_cn: passport
+  - code: '1001'
+    label: Drivers License
+    label_cn: Drivers License
+  - code: '1002'
+    label: National ID
+    label_cn: National ID
+- table_name: pmt_payment_beneficiary
+  field_name: payment_method
+  field_label: payment_method
+  values:
+  - code: '1000'
+    label: LOCAL
+    label_cn: LOCAL
+  - code: '2000'
+    label: SWIFT
+    label_cn: SWIFT
+- table_name: pmt_service_product
+  field_name: product_status
+  field_label: account_product_status
+  values:
+  - code: '0'
+    label: Closed
+    label_cn: Closed
+  - code: '1'
+    label: Open
+    label_cn: Open
+- table_name: sys_conversion_management
+  field_name: status
+  field_label: conversion_management_status
+  values:
+  - code: '1'
+    label: Active
+    label_cn: Active
+  - code: '2'
+    label: Inactive
+    label_cn: Inactive
+- table_name: sys_exchange_rate
+  field_name: rate_status
+  field_label: rate_status
+  values:
+  - code: '1'
+    label: AVAILABLE
+    label_cn: 可用
+  - code: '-1'
+    label: UNAVAILABLE
+    label_cn: 不可用

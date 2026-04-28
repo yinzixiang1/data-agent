@@ -1,0 +1,2415 @@
+biz_line: acquiring
+enums:
+- table_name: sys_card_bin_history
+  field_name: product_type_id
+  field_label: product_type_id
+  values:
+  - code: '1'
+    label: Consumer
+    label_cn: Consumer
+  - code: '2'
+    label: Commercial
+    label_cn: Commercial
+  - code: '3'
+    label: All
+    label_cn: All
+  - code: '4'
+    label: Other
+    label_cn: Other
+- table_name: sys_card_bin_history
+  field_name: region
+  field_label: region
+  values:
+  - code: '1'
+    label: United States
+    label_cn: United States
+  - code: A
+    label: Canada
+    label_cn: Canada
+  - code: B
+    label: Latin America and the Caribbean
+    label_cn: Latin America and the Caribbean
+  - code: C
+    label: Asia/Pacific
+    label_cn: Asia/Pacific
+  - code: D
+    label: Europe
+    label_cn: Europe
+  - code: E
+    label: South Asia/Middle East/Africa
+    label_cn: South Asia/Middle East/Africa
+- table_name: sys_currency_code
+  field_name: currency_type
+  field_label: currency_type
+  values:
+  - code: '1000'
+    label: fiat
+    label_cn: fiat
+  - code: '2000'
+    label: crypto
+    label_cn: crypto
+- table_name: sys_currency_pair
+  field_name: currency_type
+  field_label: currency_type
+  values:
+  - code: '1000'
+    label: fiat
+    label_cn: fiat
+  - code: '2000'
+    label: crypto
+    label_cn: crypto
+  - code: '3000'
+    label: hybird
+    label_cn: hybird
+- table_name: sys_currency_pair
+  field_name: status
+  field_label: status
+  values:
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+  - code: '-1'
+    label: UNAVAILABLE
+    label_cn: UNAVAILABLE
+- table_name: sys_data_dictionary
+  field_name: status
+  field_label: status
+  values:
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+  - code: '-1'
+    label: DISABLED
+    label_cn: DISABLED
+- table_name: sys_exchange_rate
+  field_name: currency_type
+  field_label: currency_type
+  values:
+  - code: '1000'
+    label: fiat
+    label_cn: fiat
+  - code: '2000'
+    label: crypto
+    label_cn: crypto
+- table_name: sys_exchange_rate
+  field_name: rate_status
+  field_label: rate_status
+  values:
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+  - code: '-1'
+    label: UNAVAILABLE
+    label_cn: UNAVAILABLE
+- table_name: sys_exchange_rate_source
+  field_name: currency_type
+  field_label: currency_type
+  values:
+  - code: '1000'
+    label: fiat
+    label_cn: fiat
+  - code: '2000'
+    label: crypto
+    label_cn: crypto
+- table_name: sys_exchange_rate_source
+  field_name: rate_status
+  field_label: rate_status
+  values:
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+  - code: '-1'
+    label: UNAVAILABLE
+    label_cn: UNAVAILABLE
+- table_name: sys_industry_mcc
+  field_name: mcc_status
+  field_label: mcc_status
+  values:
+  - code: '-1'
+    label: DELETED
+    label_cn: DELETED
+  - code: '0'
+    label: DEFAULT_CLOSED
+    label_cn: DEFAULT_CLOSED
+  - code: '1'
+    label: NORMAL
+    label_cn: NORMAL
+- table_name: sys_mastercard_bin
+  field_name: product_type_id
+  field_label: product_type_id
+  values:
+  - code: '1'
+    label: Consumer
+    label_cn: Consumer
+  - code: '2'
+    label: Commercial
+    label_cn: Commercial
+  - code: '3'
+    label: All
+    label_cn: All
+  - code: '4'
+    label: Other
+    label_cn: Other
+- table_name: sys_mastercard_bin
+  field_name: region
+  field_label: region
+  values:
+  - code: '1'
+    label: United States
+    label_cn: United States
+  - code: A
+    label: Canada
+    label_cn: Canada
+  - code: B
+    label: Latin America and the Caribbean
+    label_cn: Latin America and the Caribbean
+  - code: C
+    label: Asia/Pacific
+    label_cn: Asia/Pacific
+  - code: D
+    label: Europe
+    label_cn: Europe
+  - code: E
+    label: South Asia/Middle East/Africa
+    label_cn: South Asia/Middle East/Africa
+- table_name: sys_mastercard_ird_data
+  field_name: issuer_region
+  field_label: issuer_region
+  values:
+  - code: '1'
+    label: United States
+    label_cn: United States
+  - code: A
+    label: Canada
+    label_cn: Canada
+  - code: B
+    label: Latin America and the Caribbean
+    label_cn: Latin America and the Caribbean
+  - code: C
+    label: Asia/Pacific
+    label_cn: Asia/Pacific
+  - code: D
+    label: Europe
+    label_cn: Europe
+  - code: E
+    label: South Asia/Middle East/Africa
+    label_cn: South Asia/Middle East/Africa
+- table_name: sys_notification_template
+  field_name: tpl_status
+  field_label: tpl_status
+  values:
+  - code: '-1'
+    label: DELETED
+    label_cn: DELETED
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: sys_notification_template
+  field_name: tpl_type
+  field_label: tpl_type
+  values:
+  - code: '1000'
+    label: EMAIL
+    label_cn: EMAIL
+  - code: '2000'
+    label: SMS
+    label_cn: SMS
+- table_name: sys_operate_log
+  field_name: reference_type
+  field_label: reference_type
+  values:
+  - code: '0'
+    label: NORMAL_LOG
+    label_cn: NORMAL_LOG
+  - code: '1000'
+    label: account
+    label_cn: account
+  - code: '1001'
+    label: kyc_kyb_review
+    label_cn: kyc_kyb_review
+  - code: '2000'
+    label: finance_review
+    label_cn: finance_review
+  - code: '9000'
+    label: config
+    label_cn: config
+- table_name: sys_permission
+  field_name: permission_type
+  field_label: permission_type
+  values:
+  - code: '1000'
+    label: admin
+    label_cn: admin
+  - code: '2000'
+    label: operate
+    label_cn: operate
+  - code: '3000'
+    label: develop
+    label_cn: develop
+- table_name: sys_review_config
+  field_name: flow_type
+  field_label: flow_type
+  values:
+  - code: '1000'
+    label: merchant_account
+    label_cn: merchant_account
+  - code: '1001'
+    label: customer
+    label_cn: customer
+  - code: '2000'
+    label: finance
+    label_cn: finance
+  - code: '3000'
+    label: order
+    label_cn: order
+  - code: '9000'
+    label: config
+    label_cn: config
+  - code: '9001'
+    label: batch_mail
+    label_cn: batch_mail
+- table_name: sys_review_config
+  field_name: status
+  field_label: status
+  values:
+  - code: '-1'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+- table_name: sys_schedule_job
+  field_name: job_flag
+  field_label: job_flag
+  values:
+  - code: '1'
+    label: RUNNING
+    label_cn: RUNNING
+- table_name: sys_schedule_job
+  field_name: job_reentrancy
+  field_label: job_reentrancy
+  values:
+  - code: '1'
+    label: REENTRANT
+    label_cn: REENTRANT
+  - code: '0'
+    label: NON_REENTRANT
+    label_cn: NON_REENTRANT
+- table_name: sys_schedule_job
+  field_name: job_type
+  field_label: job_type
+  values:
+  - code: '1'
+    label: PERMANENT
+    label_cn: PERMANENT
+  - code: '0'
+    label: TEMPORARY
+    label_cn: TEMPORARY
+- table_name: sys_schedule_job
+  field_name: status
+  field_label: status
+  values:
+  - code: '-1'
+    label: DELETED
+    label_cn: DELETED
+  - code: '0'
+    label: PAUSED
+    label_cn: PAUSED
+  - code: '1'
+    label: NORMAL
+    label_cn: NORMAL
+- table_name: sys_schedule_job_log
+  field_name: status
+  field_label: status
+  values:
+  - code: '0'
+    label: FAILED
+    label_cn: FAILED
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+- table_name: sys_service_product
+  field_name: product_type
+  field_label: product_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: sys_workflow
+  field_name: flow_type
+  field_label: flow_type
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '2000'
+    label: finance
+    label_cn: finance
+  - code: '9000'
+    label: config
+    label_cn: config
+  - code: '9001'
+    label: batch_mail
+    label_cn: batch_mail
+- table_name: sys_workflow
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: passed
+    label_cn: passed
+  - code: '0'
+    label: in_review
+    label_cn: in_review
+  - code: '-1'
+    label: rejected
+    label_cn: rejected
+- table_name: sys_workflow_approval
+  field_name: flow_type
+  field_label: flow_type
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '2000'
+    label: finance
+    label_cn: finance
+  - code: '9000'
+    label: config
+    label_cn: config
+- table_name: sys_workflow_approval
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: passed
+    label_cn: passed
+  - code: '0'
+    label: in_review
+    label_cn: in_review
+  - code: '-1'
+    label: rejected
+    label_cn: rejected
+- table_name: uqpay_account
+  field_name: account_status
+  field_label: account_status
+  values:
+  - code: '1000'
+    label: APPROVED
+    label_cn: 审核通过
+  - code: '1001'
+    label: NOT_STARTED
+    label_cn: 未开始
+  - code: '1002'
+    label: DRAFT_IN_PROGRESS
+    label_cn: 草稿编辑中
+  - code: '1003'
+    label: SUBMITTED_PENDING
+    label_cn: 已提交待处理
+  - code: '1004'
+    label: PENDING_REVIEW
+    label_cn: 待审核
+  - code: '1005'
+    label: UNDER_REVIEW
+    label_cn: 审核中
+  - code: '1006'
+    label: RETURNED
+    label_cn: 已退回
+  - code: '1007'
+    label: ATTENTION_REQUIRED
+    label_cn: 需要关注/补充处理
+  - code: '1008'
+    label: ON_HOLD
+    label_cn: 挂起
+  - code: '1009'
+    label: EXEMPTED
+    label_cn: 豁免
+  - code: '1010'
+    label: EXPIRED
+    label_cn: 已过期
+  - code: '1011'
+    label: SUSPEND
+    label_cn: 暂停
+  - code: '1012'
+    label: REJECTED
+    label_cn: 拒绝
+- table_name: uqpay_account
+  field_name: account_type
+  field_label: account_type
+  values:
+  - code: '1000'
+    label: NORMAL
+    label_cn: 普通账户
+  - code: '2000'
+    label: LPSP
+    label_cn: License Payment Service Provider
+  - code: '2001'
+    label: TPSP
+    label_cn: Technical Payment Service Provider
+  - code: '3000'
+    label: RPSP
+    label_cn: Referral Payment Service Provider
+- table_name: uqpay_account
+  field_name: api_trading_status
+  field_label: switch_status
+  values:
+  - code: '1'
+    label: ENABLED
+    label_cn: 启用
+  - code: '-1'
+    label: DISABLED
+    label_cn: 禁用
+- table_name: uqpay_account
+  field_name: legal_entity_type
+  field_label: legal_entity_type
+  values:
+  - code: '1000'
+    label: individual
+    label_cn: individual
+  - code: '2000'
+    label: company
+    label_cn: company
+- table_name: uqpay_account
+  field_name: mcc_configured
+  field_label: mcc_configured
+  values:
+  - code: '1'
+    label: CONFIGURED
+    label_cn: 收单MCC已配置
+  - code: '0'
+    label: NOT_CONFIGURED
+    label_cn: 收单MCC未配置
+- table_name: uqpay_account
+  field_name: on_behalf_of_status
+  field_label: switch_status
+  values:
+  - code: '1'
+    label: ENABLED
+    label_cn: 启用
+  - code: '-1'
+    label: DISABLED
+    label_cn: 禁用
+- table_name: uqpay_account
+  field_name: payout_schedule_enable
+  field_label: payout_schedule_enable
+  values:
+  - code: '0'
+    label: DISABLED
+    label_cn: DISABLED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_account
+  field_name: verification_status
+  field_label: account_kyc_status
+  values:
+  - code: '1000'
+    label: APPROVED
+    label_cn: 审核通过
+  - code: '1001'
+    label: NOT_STARTED
+    label_cn: 未开始
+  - code: '1002'
+    label: DRAFT_IN_PROGRESS
+    label_cn: 草稿编辑中
+  - code: '1003'
+    label: SUBMITTED_PENDING
+    label_cn: 已提交待处理
+  - code: '1004'
+    label: PENDING_REVIEW
+    label_cn: 待审核
+  - code: '1005'
+    label: UNDER_REVIEW
+    label_cn: 审核中
+  - code: '1006'
+    label: RETURNED
+    label_cn: 已退回
+  - code: '1007'
+    label: ATTENTION_REQUIRED
+    label_cn: 需要关注/补充处理
+  - code: '1008'
+    label: ON_HOLD
+    label_cn: 挂起
+  - code: '1009'
+    label: EXEMPTED
+    label_cn: 豁免
+  - code: '1010'
+    label: EXPIRED
+    label_cn: 已过期
+  - code: '1011'
+    label: SUSPEND
+    label_cn: 暂停
+  - code: '1012'
+    label: REJECTED
+    label_cn: 拒绝
+- table_name: uqpay_account
+  field_name: whitelabel_status
+  field_label: whitelabel_status
+  values:
+  - code: '0'
+    label: DISABLED
+    label_cn: 未开通白标
+  - code: '1'
+    label: ENABLED
+    label_cn: 已开通白标
+- table_name: uqpay_account_balance
+  field_name: balance_status
+  field_label: balance_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: 默认状态
+  - code: '1'
+    label: ACTIVE
+    label_cn: 激活
+  - code: '2'
+    label: CLOSED
+    label_cn: 关闭
+  - code: '3'
+    label: PROCESSING
+    label_cn: 处理中
+- table_name: uqpay_account_balance
+  field_name: balance_type
+  field_label: balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_account_balance_snapshot
+  field_name: balance_type
+  field_label: balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_account_channel
+  field_name: file_status
+  field_label: account_channel_file_status
+  values:
+  - code: '2'
+    label: PENDING
+    label_cn: PENDING
+  - code: '1'
+    label: COMPLETED
+    label_cn: COMPLETED
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_account_channel
+  field_name: onboard_type
+  field_label: account_channel_onboard_type
+  values:
+  - code: '0'
+    label: MANUAL
+    label_cn: MANUAL
+  - code: '1'
+    label: API
+    label_cn: API
+- table_name: uqpay_account_channel
+  field_name: open_status
+  field_label: account_channel_open_status
+  values:
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '2'
+    label: PENDING
+    label_cn: PENDING
+  - code: '-1'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '-10'
+    label: HIDDEN
+    label_cn: HIDDEN
+- table_name: uqpay_account_channel
+  field_name: review_status
+  field_label: account_channel_review_status
+  values:
+  - code: '1'
+    label: PASSED
+    label_cn: PASSED
+  - code: '2'
+    label: PENDING
+    label_cn: PENDING
+  - code: '3'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '-1'
+    label: REJECTED
+    label_cn: REJECTED
+- table_name: uqpay_account_channel
+  field_name: rfi_status
+  field_label: account_channel_rfi_status
+  values:
+  - code: '0'
+    label: NOT_REQUIRED
+    label_cn: NOT_REQUIRED
+  - code: '1'
+    label: REQUIRED
+    label_cn: REQUIRED
+- table_name: uqpay_account_product
+  field_name: product_status
+  field_label: product_status
+  values:
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_account_settlement
+  field_name: approval_status
+  field_label: approval_status
+  values:
+  - code: '1000'
+    label: COMPLETED
+    label_cn: COMPLETED
+  - code: '1001'
+    label: PENDING
+    label_cn: PENDING
+  - code: '1100'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_account_settlement
+  field_name: payment_method
+  field_label: payment_method_type
+  values:
+  - code: '1000'
+    label: LOCAL
+    label_cn: LOCAL
+  - code: '2000'
+    label: SWIFT
+    label_cn: SWIFT
+- table_name: uqpay_account_settlement
+  field_name: settlement_type
+  field_label: settlement_type
+  values:
+  - code: '1000'
+    label: FIAT
+    label_cn: FIAT
+  - code: '2000'
+    label: CRYPTO
+    label_cn: CRYPTO
+- table_name: uqpay_channel_report_files
+  field_name: parsing_status
+  field_label: channel_report_parsing_status
+  values:
+  - code: '0'
+    label: WAITING
+    label_cn: WAITING
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '2'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '3'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_channel_report_files
+  field_name: upload_method
+  field_label: channel_report_upload_method
+  values:
+  - code: '1'
+    label: SFTP
+    label_cn: SFTP
+  - code: '2'
+    label: MANUAL_UPLOAD
+    label_cn: MANUAL_UPLOAD
+- table_name: uqpay_channel_report_files
+  field_name: upload_status
+  field_label: channel_report_upload_status
+  values:
+  - code: '0'
+    label: UPLOADING
+    label_cn: UPLOADING
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '2'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_channel_settlement_exceptions
+  field_name: resolved_status
+  field_label: settlement_exception_resolved_status
+  values:
+  - code: '0'
+    label: SYSTEM_PROCESSING
+    label_cn: SYSTEM_PROCESSING
+  - code: '1'
+    label: MANUAL
+    label_cn: MANUAL
+  - code: '2'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '3'
+    label: COMPLETED
+    label_cn: COMPLETED
+- table_name: uqpay_developer_webhook_events
+  field_name: business_code
+  field_label: business_code
+  values:
+  - code: '1000'
+    label: Banking
+    label_cn: Banking
+  - code: '2000'
+    label: Foreign
+    label_cn: Foreign
+  - code: '3000'
+    label: Acquiring
+    label_cn: Acquiring
+  - code: '4000'
+    label: Issuing
+    label_cn: Issuing
+  - code: '5000'
+    label: Ramp
+    label_cn: Ramp
+- table_name: uqpay_finance_adjustment
+  field_name: adjustment_status
+  field_label: adjustment_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: 默认值
+  - code: '1'
+    label: SUCCEEDED
+    label_cn: 成功
+  - code: '-1'
+    label: FAILED
+    label_cn: 失败
+- table_name: uqpay_finance_adjustment
+  field_name: adjustment_type
+  field_label: adjustment_type
+  values:
+  - code: '9001'
+    label: AMOUNT_ADJUSTMENT_CREDIT
+    label_cn: 差额加款
+  - code: '9002'
+    label: AMOUNT_ADJUSTMENT_DEBIT
+    label_cn: 差额扣款
+  - code: '9003'
+    label: REVERSAL_CREDIT
+    label_cn: 冲正加款
+  - code: '9004'
+    label: REVERSAL_DEBIT
+    label_cn: 冲正扣款
+  - code: '9005'
+    label: MARGIN_REDEEM
+    label_cn: 保证金赎回
+  - code: '9006'
+    label: MARGIN_PAYIN
+    label_cn: 保证金缴纳
+  - code: '9098'
+    label: FEE_RETURN
+    label_cn: 手续费退回
+  - code: '9099'
+    label: FEE_DEBIT
+    label_cn: 手续费扣除
+- table_name: uqpay_finance_adjustment
+  field_name: balance_type
+  field_label: balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_finance_adjustment
+  field_name: reference_type
+  field_label: reference_type
+  values:
+  - code: '1000'
+    label: payin
+    label_cn: payin
+  - code: '1001'
+    label: deposit
+    label_cn: deposit
+  - code: '2000'
+    label: payout
+    label_cn: payout
+  - code: '2001'
+    label: transfer
+    label_cn: transfer
+  - code: '3000'
+    label: conversion
+    label_cn: conversion
+  - code: '4000'
+    label: card fee
+    label_cn: card fee
+  - code: '4001'
+    label: card charge
+    label_cn: card charge
+  - code: '8000'
+    label: fee
+    label_cn: fee
+  - code: '9000'
+    label: adjustment
+    label_cn: adjustment
+- table_name: uqpay_finance_adjustment
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: PASSED
+    label_cn: 审查通过
+  - code: '0'
+    label: IN_REVIEW
+    label_cn: 审查中
+  - code: '-1'
+    label: REJECTED
+    label_cn: 审查失败
+- table_name: uqpay_finance_payouts
+  field_name: debit_status
+  field_label: debit_status
+  values:
+  - code: '0'
+    label: NOT_DEBITED
+    label_cn: 未扣款
+  - code: '1'
+    label: FEE_DEBITED
+    label_cn: 手续费已扣
+  - code: '2'
+    label: AMOUNT_DEBITED
+    label_cn: 打款金额已扣
+  - code: '3'
+    label: FULLY_DEBITED
+    label_cn: 全部已扣
+- table_name: uqpay_finance_payouts
+  field_name: is_automatic
+  field_label: is_automatic
+  values:
+  - code: '0'
+    label: MANUAL
+    label_cn: MANUAL
+  - code: '1'
+    label: AUTOMATIC
+    label_cn: AUTOMATIC
+- table_name: uqpay_finance_payouts
+  field_name: payout_status
+  field_label: payment_payout_status_ods
+  values:
+  - code: '-1'
+    label: FAILED
+    label_cn: 失败
+  - code: '0'
+    label: PENDING
+    label_cn: 待处理
+  - code: '1'
+    label: SUCCEEDED
+    label_cn: 成功
+  - code: '2'
+    label: SUBMITTED_TO_CHANNEL
+    label_cn: 已提交渠道
+  - code: '3'
+    label: CUSTOMER_SUSPENDED
+    label_cn: 客户挂起
+  - code: '9'
+    label: CHANNEL_SUBMIT_FAILED
+    label_cn: 提交渠道失败
+- table_name: uqpay_finance_payouts
+  field_name: refund_status
+  field_label: refund_status_simple
+  values:
+  - code: '0'
+    label: NOT_REFUNDED
+    label_cn: 未退款
+  - code: '1'
+    label: PARTIAL_REFUNDED
+    label_cn: 部分退款
+  - code: '2'
+    label: FULL_REFUNDED
+    label_cn: 全额退款
+- table_name: uqpay_finance_payouts
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: APPROVED
+    label_cn: 审核通过
+  - code: '0'
+    label: IN_REVIEW
+    label_cn: 审核中
+  - code: '-1'
+    label: REJECTED
+    label_cn: 审核拒绝
+- table_name: uqpay_finance_refund
+  field_name: is_debit_credit
+  field_label: debit_credit_flag
+  values:
+  - code: '1'
+    label: DEBIT
+    label_cn: DEBIT
+  - code: '2'
+    label: CREDIT
+    label_cn: CREDIT
+- table_name: uqpay_finance_refund
+  field_name: is_need_clearing
+  field_label: need_clearing_flag
+  values:
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_finance_refund
+  field_name: refund_source
+  field_label: refund_source
+  values:
+  - code: '1000'
+    label: PAYMENT
+    label_cn: 交易支付退款
+  - code: '2000'
+    label: DEPOSIT
+    label_cn: 存款退款
+  - code: '3000'
+    label: PAYOUT
+    label_cn: 提现退款
+- table_name: uqpay_finance_refund
+  field_name: refund_status
+  field_label: payment_refund_status
+  values:
+  - code: '5001'
+    label: INITIATED
+    label_cn: 退款已发起
+  - code: '5002'
+    label: PROCESSING
+    label_cn: 退款处理中
+  - code: '5000'
+    label: SUCCEEDED
+    label_cn: 退款成功
+  - code: '5100'
+    label: FAILED
+    label_cn: 退款失败
+- table_name: uqpay_finance_refund
+  field_name: refund_type
+  field_label: refund_type
+  values:
+  - code: '1'
+    label: refund
+    label_cn: 标准退款
+  - code: '2'
+    label: reversal
+    label_cn: 退款撤销/冲正
+  - code: '3'
+    label: cancel
+    label_cn: 退款取消
+- table_name: uqpay_finance_refund
+  field_name: request_status
+  field_label: request_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: 默认值
+  - code: '1'
+    label: SUBMITTED
+    label_cn: 已提交
+  - code: '-1'
+    label: UPSTREAM_FAILED
+    label_cn: 已提交但上游处理失败
+- table_name: uqpay_finance_refund
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: APPROVED
+    label_cn: 审核通过
+  - code: '-1'
+    label: REJECTED
+    label_cn: 审核拒绝
+- table_name: uqpay_finance_reports
+  field_name: report_source
+  field_label: finance_report_source
+  values:
+  - code: '1'
+    label: merchant
+    label_cn: merchant
+  - code: '2'
+    label: api
+    label_cn: api
+  - code: '3'
+    label: admin
+    label_cn: admin
+- table_name: uqpay_finance_reports
+  field_name: report_status
+  field_label: finance_report_status
+  values:
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+  - code: '0'
+    label: PENDING
+    label_cn: PENDING
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+- table_name: uqpay_finance_transactions
+  field_name: destination_balance_type
+  field_label: balance_source
+  values:
+  - code: '0'
+    label: EXTERNAL
+    label_cn: 扩展/外部账户
+  - code: '1000'
+    label: AVAILABLE
+    label_cn: 当前可用余额，已完成清分和清算，可用于结算
+  - code: '2000'
+    label: PENDING
+    label_cn: 处理中余额，主要是AC待结算资金
+  - code: '3000'
+    label: PAYABLE
+    label_cn: 应付账户余额，主要用于payout
+  - code: '4000'
+    label: RESERVED
+    label_cn: 储备余额，主要用于退款、拒付和运营费用
+  - code: '5000'
+    label: MARGIN
+    label_cn: 保证金余额
+  - code: '6000'
+    label: FROZEN
+    label_cn: 冻结资金
+- table_name: uqpay_finance_transactions
+  field_name: is_credit
+  field_label: credit_flag
+  values:
+  - code: '1'
+    label: CREDIT
+    label_cn: CREDIT
+  - code: '0'
+    label: DEBIT
+    label_cn: DEBIT
+- table_name: uqpay_finance_transactions
+  field_name: source_balance_type
+  field_label: balance_source
+  values:
+  - code: '0'
+    label: EXTERNAL
+    label_cn: 扩展/外部账户
+  - code: '1000'
+    label: AVAILABLE
+    label_cn: 当前可用余额，已完成清分和清算，可用于结算
+  - code: '2000'
+    label: PENDING
+    label_cn: 处理中余额，主要是AC待结算资金
+  - code: '3000'
+    label: PAYABLE
+    label_cn: 应付账户余额，主要用于payout
+  - code: '4000'
+    label: RESERVED
+    label_cn: 储备余额，主要用于退款、拒付和运营费用
+  - code: '5000'
+    label: MARGIN
+    label_cn: 保证金余额
+  - code: '6000'
+    label: FROZEN
+    label_cn: 冻结资金
+- table_name: uqpay_finance_transactions
+  field_name: source_type
+  field_label: source_type
+  values:
+  - code: '1000'
+    label: PAYMENT
+    label_cn: 交易支付
+  - code: '2000'
+    label: DEPOSIT
+    label_cn: 存款充值，例如保证金缴纳
+  - code: '3000'
+    label: PAYOUT
+    label_cn: 提现
+  - code: '4000'
+    label: TRANSFER
+    label_cn: 内部账户间转账
+  - code: '5000'
+    label: REFUND
+    label_cn: 退款操作
+  - code: '6000'
+    label: SETTLEMENT
+    label_cn: 结算操作
+  - code: '7000'
+    label: DISPUTE
+    label_cn: 交易争议
+  - code: '8000'
+    label: FEE
+    label_cn: 服务费用
+  - code: '9000'
+    label: ADJUSTMENT
+    label_cn: 资金调账
+- table_name: uqpay_finance_transactions
+  field_name: transaction_status
+  field_label: transaction_status
+  values:
+  - code: '1'
+    label: completed
+    label_cn: 成功
+  - code: '0'
+    label: pending
+    label_cn: 处理中
+  - code: '-1'
+    label: failed
+    label_cn: 失败
+- table_name: uqpay_finance_transactions
+  field_name: transaction_type
+  field_label: transaction_type
+  values:
+  - code: '1000'
+    label: PAYMENT
+    label_cn: 支付交易
+  - code: '1001'
+    label: PAYMENT_REVERSAL
+    label_cn: 支付撤销
+  - code: '1010'
+    label: PRE_AUTH_PAYMENT
+    label_cn: 预授权交易
+  - code: '1011'
+    label: PRE_AUTHPAYMENT_RELEASE
+    label_cn: 预授权交易释放
+  - code: '1050'
+    label: PAYMENT_RESERVE_HOLD
+    label_cn: 支付保证金冻结
+  - code: '1051'
+    label: PAYMENT_RESERVE_RELEASE
+    label_cn: 支付保证金释放
+  - code: '1060'
+    label: PAYMENT_MARGIN_HOLD
+    label_cn: 支付循环保证金冻结
+  - code: '1061'
+    label: PAYMENT_MARGIN_RELEASE
+    label_cn: 支付循环保证金释放
+  - code: '2000'
+    label: DEPOSIT
+    label_cn: 存款
+  - code: '2001'
+    label: DEPOSIT_FAILURE
+    label_cn: 存款失败
+  - code: '2002'
+    label: DEPOSIT_REVERSAL
+    label_cn: 存款撤销
+  - code: '3000'
+    label: PAYOUT
+    label_cn: 提现
+  - code: '3001'
+    label: PAYOUT_FAILURE
+    label_cn: 提现失败
+  - code: '3002'
+    label: PAYOUT_REVERSAL
+    label_cn: 提现撤销
+  - code: '4000'
+    label: TRANSFER
+    label_cn: 账户间转账
+  - code: '4001'
+    label: TRANSFER_FAILURE
+    label_cn: 转账失败
+  - code: '4002'
+    label: TRANSFER_REVERSAL
+    label_cn: 转账撤销
+  - code: '4100'
+    label: TRANSFER_INBOUND
+    label_cn: 资金转入当前余额账户
+  - code: '4101'
+    label: TRANSFER_OUTBOUND
+    label_cn: 资金从当前余额账户转出
+  - code: '4200'
+    label: SWEEP_MASTER_TO_SUB
+    label_cn: 资金分发，主账户到子账户
+  - code: '4201'
+    label: SWEEP_SUB_TO_MASTER
+    label_cn: 资金归集，子账户到主账户
+  - code: '5000'
+    label: REFUND
+    label_cn: 退款
+  - code: '5001'
+    label: REFUND_FAILURE
+    label_cn: 退款失败
+  - code: '5002'
+    label: REFUND_REVERSAL
+    label_cn: 退款撤销
+  - code: '6000'
+    label: SETTLEMENT_DEBIT
+    label_cn: 结算扣款
+  - code: '6001'
+    label: SETTLEMENT_CREDIT
+    label_cn: 结算加款
+  - code: '6010'
+    label: SETTLEMENT_REVERSAL
+    label_cn: 结算撤回
+  - code: '6011'
+    label: SETTLEMENT_DIRECT_DEBIT
+    label_cn: 结算撤回后再次扣回
+  - code: '7000'
+    label: DISPUTE
+    label_cn: 争议成功
+  - code: '7001'
+    label: DISPUTE_LOST
+    label_cn: 争议败诉
+  - code: '7002'
+    label: DISPUTE_REVERSAL
+    label_cn: 争议撤销
+  - code: '8000'
+    label: FEE
+    label_cn: 支付服务费
+  - code: '8001'
+    label: REFUND_FEE
+    label_cn: 退款费
+  - code: '8002'
+    label: RETURN_FEE
+    label_cn: 退回费
+  - code: '8100'
+    label: APPLICATION_FEE
+    label_cn: 关联账户的平台应用费
+- table_name: uqpay_finance_transfer
+  field_name: debit_status
+  field_label: transfer_debit_status
+  values:
+  - code: '-1'
+    label: ABNORMAL
+    label_cn: ABNORMAL
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+  - code: '1'
+    label: DEBITED
+    label_cn: DEBITED
+- table_name: uqpay_finance_transfer
+  field_name: review_status
+  field_label: transfer_review_status
+  values:
+  - code: '1'
+    label: PASSED
+    label_cn: PASSED
+  - code: '0'
+    label: IN_REVIEW
+    label_cn: IN_REVIEW
+  - code: '-1'
+    label: REJECTED
+    label_cn: REJECTED
+- table_name: uqpay_finance_transfer
+  field_name: source_balance_type
+  field_label: transfer_balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_finance_transfer
+  field_name: target_balance_type
+  field_label: transfer_balance_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_finance_transfer
+  field_name: transfer_status
+  field_label: transfer_status
+  values:
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+  - code: '1'
+    label: SUCCEEDED
+    label_cn: SUCCEEDED
+- table_name: uqpay_message_notification
+  field_name: notification_status
+  field_label: notification_status
+  values:
+  - code: '0'
+    label: PENDING
+    label_cn: PENDING
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_message_notification
+  field_name: type
+  field_label: notification_type
+  values:
+  - code: '1000'
+    label: EMAIL
+    label_cn: EMAIL
+  - code: '2000'
+    label: SMS
+    label_cn: SMS
+  - code: '3000'
+    label: Lark
+    label_cn: Lark
+- table_name: uqpay_message_queue
+  field_name: msg_status
+  field_label: message_queue_status
+  values:
+  - code: '2'
+    label: FAILED
+    label_cn: FAILED
+  - code: '1'
+    label: SUCCESS
+    label_cn: SUCCESS
+- table_name: uqpay_payment_attempts
+  field_name: attempt_status
+  field_label: payment_attempt_status
+  values:
+  - code: INITIATED
+    label: INITIATED
+    label_cn: PaymentAttempt已根据请求创建
+  - code: AUTHENTICATION_REDIRECTED
+    label: AUTHENTICATION_REDIRECTED
+    label_cn: 等待客户完成身份验证，例如3DS验证或二维码支付
+  - code: PENDING_AUTHORIZATION
+    label: PENDING_AUTHORIZATION
+    label_cn: 授权请求已被接受，正在等待支付服务商最终结果
+  - code: AUTHORIZED
+    label: AUTHORIZED
+    label_cn: 授权成功，将自动捕获或等待手动捕获
+  - code: CAPTURE_REQUESTED
+    label: CAPTURE_REQUESTED
+    label_cn: 捕获请求成功，支付已完成
+  - code: SETTLED
+    label: SETTLED
+    label_cn: UQPAY已收到支付服务商的结算
+  - code: SUCCEEDED
+    label: SUCCEEDED
+    label_cn: UQPAY已将资金结算到钱包
+  - code: CANCELLED
+    label: CANCELLED
+    label_cn: 支付尝试已被取消，如有已授权金额将返还
+  - code: EXPIRED
+    label: EXPIRED
+    label_cn: 支付尝试在允许时间内未完成，已过期
+  - code: FAILED
+    label: FAILED
+    label_cn: 支付尝试失败，请创建新的PaymentAttempt
+- table_name: uqpay_payment_attempts
+  field_name: duplicate_status
+  field_label: duplicate_status
+  values:
+  - code: '0'
+    label: NOT_DUPLICATE
+    label_cn: 不重复
+  - code: '1'
+    label: DUPLICATE
+    label_cn: 重复请求
+- table_name: uqpay_payment_attempts
+  field_name: is_clearing
+  field_label: clearing_flag
+  values:
+  - code: '0'
+    label: NOT_CLEARED
+    label_cn: 未清分
+  - code: '1'
+    label: CLEARED
+    label_cn: 已清分
+- table_name: uqpay_payment_customers
+  field_name: customer_status
+  field_label: customer_status
+  values:
+  - code: '1'
+    label: VALID
+    label_cn: VALID
+  - code: '0'
+    label: INVALID
+    label_cn: INVALID
+- table_name: uqpay_payment_disputes
+  field_name: dispute_status
+  field_label: payment_dispute_status_ods
+  values:
+  - code: '-1'
+    label: REJECTED
+    label_cn: 拒绝
+  - code: '0'
+    label: HIDDEN_FROM_CUSTOMER
+    label_cn: 客户不可见
+  - code: '1'
+    label: APPROVED
+    label_cn: 批准
+  - code: '2'
+    label: CREATED_AND_SENT
+    label_cn: 创建并发送客户
+- table_name: uqpay_payment_disputes
+  field_name: dispute_type
+  field_label: dispute_type
+  values:
+  - code: '1000'
+    label: payin
+    label_cn: payin
+  - code: '1001'
+    label: deposit
+    label_cn: deposit
+  - code: '2000'
+    label: payout
+    label_cn: payout
+  - code: '2001'
+    label: transfer
+    label_cn: transfer
+  - code: '3000'
+    label: conversion
+    label_cn: conversion
+  - code: '4000'
+    label: card fee
+    label_cn: card fee
+  - code: '4001'
+    label: card charge
+    label_cn: card charge
+  - code: '8000'
+    label: fee
+    label_cn: fee
+  - code: '9000'
+    label: adjustment
+    label_cn: adjustment
+- table_name: uqpay_payment_disputes
+  field_name: document_status
+  field_label: document_status
+  values:
+  - code: '0'
+    label: WAITING_UPLOAD
+    label_cn: 等待上传
+  - code: '1'
+    label: UPLOADED
+    label_cn: 完成上传
+- table_name: uqpay_payment_disputes
+  field_name: rfi_status
+  field_label: rfi_status
+  values:
+  - code: '-1'
+    label: CLOSED
+    label_cn: 关闭
+  - code: '0'
+    label: NONE
+    label_cn: 默认无
+  - code: '1'
+    label: IN_PROGRESS
+    label_cn: 进行中
+  - code: '2'
+    label: SUBMITTED
+    label_cn: 提交渠道
+  - code: '3'
+    label: COMPLETED
+    label_cn: 完成
+- table_name: uqpay_payment_embracy_record
+  field_name: alert_type
+  field_label: alert_type
+  values:
+  - code: '1'
+    label: customer dispute
+    label_cn: customer dispute
+  - code: '2'
+    label: confirmed fraud
+    label_cn: confirmed fraud
+- table_name: uqpay_payment_embracy_record
+  field_name: appeal_status
+  field_label: appeal_status
+  values:
+  - code: '1'
+    label: Succeed
+    label_cn: Succeed
+  - code: '2'
+    label: Appealed
+    label_cn: Appealed
+  - code: '3'
+    label: Failed
+    label_cn: Failed
+  - code: '4'
+    label: Rejected
+    label_cn: Rejected
+- table_name: uqpay_payment_embracy_record
+  field_name: appeal_type
+  field_label: appeal_type
+  values:
+  - code: '1'
+    label: normal
+    label_cn: normal
+  - code: '2'
+    label: special
+    label_cn: special
+- table_name: uqpay_payment_embracy_record
+  field_name: matched_status
+  field_label: matched_status
+  values:
+  - code: '2'
+    label: unmatched
+    label_cn: unmatched
+  - code: '1'
+    label: matched
+    label_cn: matched
+- table_name: uqpay_payment_embracy_record
+  field_name: order_status
+  field_label: order_status
+  values:
+  - code: '1100'
+    label: failed
+    label_cn: failed
+  - code: '1000'
+    label: success
+    label_cn: success
+  - code: '5000'
+    label: refunded
+    label_cn: refunded
+  - code: '1101'
+    label: cancelled
+    label_cn: cancelled
+  - code: '7003'
+    label: refused
+    label_cn: refused
+- table_name: uqpay_payment_intents
+  field_name: cancel_status
+  field_label: cancel_status
+  values:
+  - code: '0'
+    label: NOT_CANCELLED
+    label_cn: 未取消
+  - code: '1'
+    label: CANCELLED
+    label_cn: 已取消
+  - code: '2'
+    label: CANCELLING
+    label_cn: 取消中
+  - code: '-1'
+    label: CANCEL_FAILED
+    label_cn: 取消失败
+- table_name: uqpay_payment_intents
+  field_name: intent_status
+  field_label: payment_intent_status
+  values:
+  - code: '0'
+    label: CREATED
+    label_cn: 等待确认请求，创建PaymentIntent后的初始状态，或前一次尝试失败/过期后的状态
+  - code: '3'
+    label: requires customer action
+    label_cn: 等待客户进一步操作进行身份验证，例如3DS验证或扫码支付
+  - code: '4'
+    label: requires capture
+    label_cn: 已授权但尚未结算，等待商户捕获
+  - code: '2'
+    label: PROCESSING
+    label_cn: 等待支付服务商的最终结果，无需进一步操作
+  - code: '1'
+    label: SUCCEEDED
+    label_cn: 支付已成功，交易已完成
+  - code: '-2'
+    label: CANCELLED
+    label_cn: 已根据请求取消PaymentIntent，支付已关闭
+  - code: '-1'
+    label: FAILED
+    label_cn: 支付失败
+- table_name: uqpay_payment_link
+  field_name: active_status
+  field_label: payment_link_active_status
+  values:
+  - code: '0'
+    label: PENDING_ACTIVE
+    label_cn: PENDING_ACTIVE
+  - code: '1'
+    label: ACTIVE
+    label_cn: ACTIVE
+- table_name: uqpay_payment_link
+  field_name: link_type
+  field_label: payment_link_type
+  values:
+  - code: '1'
+    label: FIXED_AMOUNT
+    label_cn: FIXED_AMOUNT
+  - code: '2'
+    label: INPUT_AMOUNT
+    label_cn: INPUT_AMOUNT
+- table_name: uqpay_payment_link
+  field_name: num_limit
+  field_label: payment_link_num_limit
+  values:
+  - code: '0'
+    label: DISABLED
+    label_cn: DISABLED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_payment_method_applications
+  field_name: status
+  field_label: payment_method_apply_status
+  values:
+  - code: '0'
+    label: NOT_APPLIED
+    label_cn: NOT_APPLIED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+  - code: '2'
+    label: SUBMITTED
+    label_cn: SUBMITTED
+  - code: '3'
+    label: UNDER_REVIEW
+    label_cn: UNDER_REVIEW
+  - code: '4'
+    label: PENDING_MATERIAL
+    label_cn: PENDING_MATERIAL
+  - code: '5'
+    label: RESUBMITTED
+    label_cn: RESUBMITTED
+  - code: '6'
+    label: REJECTED
+    label_cn: REJECTED
+  - code: '7'
+    label: TERMINATED
+    label_cn: TERMINATED
+- table_name: uqpay_payment_methods
+  field_name: status
+  field_label: payment_method_status
+  values:
+  - code: '0'
+    label: NOT_APPLIED
+    label_cn: NOT_APPLIED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+  - code: '2'
+    label: SUBMITTED
+    label_cn: SUBMITTED
+  - code: '3'
+    label: UNDER_REVIEW
+    label_cn: UNDER_REVIEW
+  - code: '4'
+    label: PENDING_MATERIAL
+    label_cn: PENDING_MATERIAL
+  - code: '5'
+    label: RESUBMITTED
+    label_cn: RESUBMITTED
+  - code: '6'
+    label: REJECTED
+    label_cn: REJECTED
+  - code: '7'
+    label: TERMINATED
+    label_cn: TERMINATED
+- table_name: uqpay_payment_threeds
+  field_name: threeds_flow
+  field_label: threeds_flow
+  values:
+  - code: '1'
+    label: DFP
+    label_cn: DFP
+  - code: '2'
+    label: Challenge
+    label_cn: Challenge
+  - code: '3'
+    label: DFP+Challenge
+    label_cn: DFP+Challenge
+- table_name: uqpay_product_template
+  field_name: status
+  field_label: template_status
+  values:
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_product_template
+  field_name: template_type
+  field_label: template_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_product_template_code
+  field_name: status
+  field_label: template_code_status
+  values:
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_reconciliation_exceptions
+  field_name: exception_type
+  field_label: recon_exception_type
+  values:
+  - code: '0'
+    label: Unknown
+    label_cn: Unknown
+  - code: '1'
+    label: MismatchAmount
+    label_cn: MismatchAmount
+  - code: '2'
+    label: MismatchCurrency
+    label_cn: MismatchCurrency
+  - code: '3'
+    label: MismatchStatus
+    label_cn: MismatchStatus
+  - code: '4'
+    label: MissingUQ
+    label_cn: MissingUQ
+  - code: '5'
+    label: MissingChannel
+    label_cn: MissingChannel
+- table_name: uqpay_reconciliation_exceptions
+  field_name: resolved_status
+  field_label: recon_exception_resolved_status
+  values:
+  - code: '0'
+    label: Unresolved
+    label_cn: Unresolved
+  - code: '1'
+    label: Processing
+    label_cn: Processing
+  - code: '2'
+    label: Completed
+    label_cn: Completed
+- table_name: uqpay_reconciliation_records
+  field_name: reconciliation_status
+  field_label: reconciliation_status
+  values:
+  - code: '0'
+    label: Unreconciled
+    label_cn: Unreconciled
+  - code: '1'
+    label: Completed
+    label_cn: Completed
+  - code: '2'
+    label: Failed
+    label_cn: Failed
+- table_name: uqpay_service_channel
+  field_name: channel_status
+  field_label: channel_status
+  values:
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_service_channel
+  field_name: channel_type
+  field_label: channel_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_service_holidays
+  field_name: holiday_type
+  field_label: holiday_type
+  values:
+  - code: '1'
+    label: LEGAL_HOLIDAY
+    label_cn: LEGAL_HOLIDAY
+  - code: '2'
+    label: BANK_HOLIDAY
+    label_cn: BANK_HOLIDAY
+  - code: '3'
+    label: SPECIAL_BUSINESS_DAY
+    label_cn: SPECIAL_BUSINESS_DAY
+- table_name: uqpay_service_holidays
+  field_name: is_banking_day
+  field_label: boolean_flag
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_service_holidays
+  field_name: is_recurring
+  field_label: boolean_flag
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_service_holidays
+  field_name: is_settlement_day
+  field_label: boolean_flag
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_service_product
+  field_name: product_status
+  field_label: service_product_status
+  values:
+  - code: '0'
+    label: CLOSED
+    label_cn: CLOSED
+  - code: '1'
+    label: ENABLED
+    label_cn: ENABLED
+- table_name: uqpay_service_product
+  field_name: review_status
+  field_label: service_product_review_status
+  values:
+  - code: '1'
+    label: PASSED
+    label_cn: PASSED
+  - code: '0'
+    label: IN_REVIEW
+    label_cn: IN_REVIEW
+  - code: '-1'
+    label: REJECTED
+    label_cn: REJECTED
+- table_name: uqpay_service_rate_scheme
+  field_name: allow_reverse_status
+  field_label: allow_reverse_status
+  values:
+  - code: '0'
+    label: NORMAL
+    label_cn: NORMAL
+  - code: '1'
+    label: ALLOW_REVERSE
+    label_cn: ALLOW_REVERSE
+- table_name: uqpay_service_rate_scheme
+  field_name: entity_type
+  field_label: entity_type
+  values:
+  - code: '1000'
+    label: NORMAL
+    label_cn: NORMAL
+  - code: '2000'
+    label: LPSP
+    label_cn: LPSP
+  - code: '2001'
+    label: TPSP
+    label_cn: TPSP
+  - code: '3000'
+    label: RPSP
+    label_cn: RPSP
+- table_name: uqpay_service_rate_scheme
+  field_name: product_type
+  field_label: product_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_service_rate_scheme
+  field_name: rate_status
+  field_label: rate_status
+  values:
+  - code: '-1'
+    label: DELETED
+    label_cn: DELETED
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+- table_name: uqpay_service_rate_scheme
+  field_name: rate_target
+  field_label: rate_target
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '3000'
+    label: product
+    label_cn: product
+  - code: '4000'
+    label: channel
+    label_cn: channel
+- table_name: uqpay_service_rate_scheme
+  field_name: review_status
+  field_label: review_status
+  values:
+  - code: '1'
+    label: PASSED
+    label_cn: PASSED
+  - code: '0'
+    label: IN_REVIEW
+    label_cn: IN_REVIEW
+  - code: '-1'
+    label: REJECTED
+    label_cn: REJECTED
+- table_name: uqpay_service_rate_scheme_log
+  field_name: allow_reverse_status
+  field_label: allow_reverse_status
+  values:
+  - code: '0'
+    label: NORMAL
+    label_cn: NORMAL
+  - code: '1'
+    label: ALLOW_REVERSE
+    label_cn: ALLOW_REVERSE
+- table_name: uqpay_service_rate_scheme_log
+  field_name: defer_state
+  field_label: defer_state
+  values:
+  - code: '0'
+    label: 'NO'
+    label_cn: 'NO'
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+  - code: '2'
+    label: EXECUTED
+    label_cn: EXECUTED
+- table_name: uqpay_service_rate_scheme_log
+  field_name: entity_type
+  field_label: entity_type
+  values:
+  - code: '1000'
+    label: NORMAL
+    label_cn: NORMAL
+  - code: '2000'
+    label: LPSP
+    label_cn: LPSP
+  - code: '2001'
+    label: TPSP
+    label_cn: TPSP
+  - code: '3000'
+    label: RPSP
+    label_cn: RPSP
+- table_name: uqpay_service_rate_scheme_log
+  field_name: product_type
+  field_label: product_type
+  values:
+  - code: '1000'
+    label: VA
+    label_cn: VA
+  - code: '2000'
+    label: FX
+    label_cn: FX
+  - code: '3000'
+    label: AC
+    label_cn: AC
+  - code: '4000'
+    label: IC
+    label_cn: IC
+- table_name: uqpay_service_rate_scheme_log
+  field_name: rate_status
+  field_label: rate_status
+  values:
+  - code: '-1'
+    label: DELETED
+    label_cn: DELETED
+  - code: '1'
+    label: AVAILABLE
+    label_cn: AVAILABLE
+- table_name: uqpay_service_rate_scheme_log
+  field_name: rate_target
+  field_label: rate_target
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '3000'
+    label: product
+    label_cn: product
+  - code: '4000'
+    label: channel
+    label_cn: channel
+- table_name: uqpay_service_restrict
+  field_name: restrict_status
+  field_label: restrict_status
+  values:
+  - code: '0'
+    label: INVALID
+    label_cn: INVALID
+  - code: '1'
+    label: VALID
+    label_cn: VALID
+- table_name: uqpay_service_restrict
+  field_name: restrict_type
+  field_label: restrict_type
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '1001'
+    label: account
+    label_cn: account
+  - code: '3000'
+    label: product
+    label_cn: product
+  - code: '4000'
+    label: channel
+    label_cn: channel
+- table_name: uqpay_service_route
+  field_name: route_status
+  field_label: route_status
+  values:
+  - code: '0'
+    label: INVALID
+    label_cn: INVALID
+  - code: '1'
+    label: VALID
+    label_cn: VALID
+- table_name: uqpay_service_route_bind
+  field_name: target_type
+  field_label: target_type
+  values:
+  - code: '1000'
+    label: merchant
+    label_cn: merchant
+  - code: '3000'
+    label: product
+    label_cn: product
+  - code: '4000'
+    label: channel
+    label_cn: channel
+- table_name: uqpay_settlement_batches
+  field_name: batch_status
+  field_label: batch_status
+  values:
+  - code: '0'
+    label: CREATED
+    label_cn: CREATED
+  - code: '1'
+    label: PROCESSING
+    label_cn: PROCESSING
+  - code: '2'
+    label: COMPLETED
+    label_cn: COMPLETED
+  - code: '-1'
+    label: FAILED
+    label_cn: FAILED
+- table_name: uqpay_settlement_batches
+  field_name: is_credit
+  field_label: credit_flag
+  values:
+  - code: '1'
+    label: CREDIT
+    label_cn: CREDIT
+  - code: '0'
+    label: DEBIT
+    label_cn: DEBIT
+- table_name: uqpay_settlements
+  field_name: channel_capture_status
+  field_label: channel_capture_status
+  values:
+  - code: '0'
+    label: UNRECONCILED
+    label_cn: 未对齐/默认
+  - code: '1'
+    label: PROCESSING
+    label_cn: 处理中
+  - code: '2'
+    label: SUCCEEDED
+    label_cn: 成功
+  - code: '3'
+    label: FAILED
+    label_cn: 失败
+- table_name: uqpay_settlements
+  field_name: clearing_status
+  field_label: clearing_status
+  values:
+  - code: '0'
+    label: DEFAULT
+    label_cn: DEFAULT
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_settlements
+  field_name: fee_status
+  field_label: fee_status
+  values:
+  - code: '0'
+    label: ESTIMATED
+    label_cn: 预估费用
+  - code: '1'
+    label: CONFIRMED
+    label_cn: 确认费用
+  - code: '2'
+    label: ADJUSTED
+    label_cn: 调整费用
+- table_name: uqpay_settlements
+  field_name: is_need_clearing
+  field_label: need_clearing_flag
+  values:
+  - code: '1'
+    label: 'YES'
+    label_cn: 'YES'
+- table_name: uqpay_settlements
+  field_name: reconciliation_status
+  field_label: reconciliation_status
+  values:
+  - code: '0'
+    label: UNRECONCILED
+    label_cn: 未对账
+  - code: '1'
+    label: COMPLETED
+    label_cn: 已完成对账
+  - code: '2'
+    label: FAILED
+    label_cn: 对账失败
+- table_name: uqpay_settlements
+  field_name: settlement_status
+  field_label: settlement_status
+  values:
+  - code: '0'
+    label: PENDING
+    label_cn: 等待处理
+  - code: '2'
+    label: SETTLING
+    label_cn: 结算中
+  - code: '1'
+    label: SETTLED
+    label_cn: 结算完成
+  - code: '-1'
+    label: FAILED
+    label_cn: 失败
+- table_name: uqpay_settlements
+  field_name: source_type
+  field_label: source_type
+  values:
+  - code: '1000'
+    label: PAYMENT
+    label_cn: 交易支付
+  - code: '2000'
+    label: DEPOSIT
+    label_cn: 存款充值，例如保证金缴纳
+  - code: '3000'
+    label: PAYOUT
+    label_cn: 提现
+  - code: '4000'
+    label: TRANSFER
+    label_cn: 内部账户间转账
+  - code: '5000'
+    label: REFUND
+    label_cn: 退款操作
+  - code: '6000'
+    label: SETTLEMENT
+    label_cn: 结算操作
+  - code: '7000'
+    label: DISPUTE
+    label_cn: 交易争议
+  - code: '8000'
+    label: FEE
+    label_cn: 服务费用
+  - code: '9000'
+    label: ADJUSTMENT
+    label_cn: 资金调账
+- table_name: uqpay_settlements
+  field_name: transaction_type
+  field_label: transaction_type
+  values:
+  - code: '1000'
+    label: PAYMENT
+    label_cn: 支付交易
+  - code: '1001'
+    label: PAYMENT_REVERSAL
+    label_cn: 支付撤销
+  - code: '1010'
+    label: PRE_AUTH_PAYMENT
+    label_cn: 预授权交易
+  - code: '1011'
+    label: PRE_AUTHPAYMENT_RELEASE
+    label_cn: 预授权交易释放
+  - code: '1050'
+    label: PAYMENT_RESERVE_HOLD
+    label_cn: 支付保证金冻结
+  - code: '1051'
+    label: PAYMENT_RESERVE_RELEASE
+    label_cn: 支付保证金释放
+  - code: '1060'
+    label: PAYMENT_MARGIN_HOLD
+    label_cn: 支付循环保证金冻结
+  - code: '1061'
+    label: PAYMENT_MARGIN_RELEASE
+    label_cn: 支付循环保证金释放
+  - code: '2000'
+    label: DEPOSIT
+    label_cn: 存款
+  - code: '2001'
+    label: DEPOSIT_FAILURE
+    label_cn: 存款失败
+  - code: '2002'
+    label: DEPOSIT_REVERSAL
+    label_cn: 存款撤销
+  - code: '3000'
+    label: PAYOUT
+    label_cn: 提现
+  - code: '3001'
+    label: PAYOUT_FAILURE
+    label_cn: 提现失败
+  - code: '3002'
+    label: PAYOUT_REVERSAL
+    label_cn: 提现撤销
+  - code: '4000'
+    label: TRANSFER
+    label_cn: 账户间转账
+  - code: '4001'
+    label: TRANSFER_FAILURE
+    label_cn: 转账失败
+  - code: '4002'
+    label: TRANSFER_REVERSAL
+    label_cn: 转账撤销
+  - code: '4100'
+    label: TRANSFER_INBOUND
+    label_cn: 资金转入当前余额账户
+  - code: '4101'
+    label: TRANSFER_OUTBOUND
+    label_cn: 资金从当前余额账户转出
+  - code: '4200'
+    label: SWEEP_MASTER_TO_SUB
+    label_cn: 资金分发，主账户到子账户
+  - code: '4201'
+    label: SWEEP_SUB_TO_MASTER
+    label_cn: 资金归集，子账户到主账户
+  - code: '5000'
+    label: REFUND
+    label_cn: 退款
+  - code: '5001'
+    label: REFUND_FAILURE
+    label_cn: 退款失败
+  - code: '5002'
+    label: REFUND_REVERSAL
+    label_cn: 退款撤销
+  - code: '6000'
+    label: SETTLEMENT_DEBIT
+    label_cn: 结算扣款
+  - code: '6001'
+    label: SETTLEMENT_CREDIT
+    label_cn: 结算加款
+  - code: '6010'
+    label: SETTLEMENT_REVERSAL
+    label_cn: 结算撤回
+  - code: '6011'
+    label: SETTLEMENT_DIRECT_DEBIT
+    label_cn: 结算撤回后再次扣回
+  - code: '7000'
+    label: DISPUTE
+    label_cn: 争议成功
+  - code: '7001'
+    label: DISPUTE_LOST
+    label_cn: 争议败诉
+  - code: '7002'
+    label: DISPUTE_REVERSAL
+    label_cn: 争议撤销
+  - code: '8000'
+    label: FEE
+    label_cn: 支付服务费
+  - code: '8001'
+    label: REFUND_FEE
+    label_cn: 退款费
+  - code: '8002'
+    label: RETURN_FEE
+    label_cn: 退回费
+  - code: '8100'
+    label: APPLICATION_FEE
+    label_cn: 关联账户的平台应用费
+- table_name: uqpay_terminal_info
+  field_name: status
+  field_label: terminal_status
+  values:
+  - code: '2'
+    label: BOUND
+    label_cn: BOUND
+  - code: '1'
+    label: UNBOUND
+    label_cn: UNBOUND
+  - code: '0'
+    label: UNALLOCATED
+    label_cn: UNALLOCATED
+- table_name: uqpay_terminal_key
+  field_name: status
+  field_label: terminal_key_status
+  values:
+  - code: '1'
+    label: VALID
+    label_cn: VALID
+  - code: '0'
+    label: INVALID
+    label_cn: INVALID
+- table_name: uqpay_terminal_operator_record
+  field_name: operator_type
+  field_label: terminal_operator_type
+  values:
+  - code: '0'
+    label: BIND
+    label_cn: BIND
+  - code: '1'
+    label: UNBIND
+    label_cn: UNBIND
+  - code: '2'
+    label: REPLACE
+    label_cn: REPLACE
+- table_name: uqpay_terminal_operator_record
+  field_name: status
+  field_label: terminal_status
+  values:
+  - code: '2'
+    label: BOUND
+    label_cn: BOUND
+  - code: '1'
+    label: UNBOUND
+    label_cn: UNBOUND
+  - code: '0'
+    label: UNALLOCATED
+    label_cn: UNALLOCATED

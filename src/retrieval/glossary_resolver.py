@@ -42,8 +42,9 @@ class GlossaryResolver:
         context_parts = []
         extra_keywords = []
 
+        query_lower = query.lower()
         for term, info in self.glossary.items():
-            if term in query:
+            if term.lower() in query_lower:
                 matched_terms.append(term)
 
                 # 构建 context

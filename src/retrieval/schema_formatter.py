@@ -9,12 +9,7 @@ class SchemaFormatter:
     """
 
     def format_tables(self, tables: list[dict]) -> str:
-        """
-        将检索命中的表格式化为 DDL 文本。
-
-        Args:
-            tables: hybrid_searcher 返回的表列表，每个需有 "schema" 字段
-        """
+        """将检索命中的表格式化为 DDL 文本"""
         parts = ["## 可用数据表\n"]
 
         for t in tables:
@@ -44,11 +39,25 @@ class SchemaFormatter:
             return ""
         return f"## 业务上下文\n{business_context}\n"
 
+    def format_enums(self, enum_hits: list[dict]) -> str:
+        """格式化枚举值映射"""
+        if not enum_hits:
+            return ""
+
+        parts = ["## 枚举值映射\n以下是用户语义对应的实际字段取值：\n"]
+        for e in enum_hits:
+            parts.append(
+                f"- \"{e['enum_label_cn']}\" → {e['table_name']}.{e['column_name']} = {e['sql_value']}"
+            )
+
+        return "\n".join(parts) + "\n"
+
     def format_all(
         self,
         tables: list[dict],
         examples: list[dict],
         business_context: str,
+        enum_hits: list[dict] | None = None,
     ) -> str:
         """组装完整的 Prompt 文本"""
         sections = []
@@ -56,6 +65,10 @@ class SchemaFormatter:
         schema_text = self.format_tables(tables)
         if schema_text:
             sections.append(schema_text)
+
+        enum_text = self.format_enums(enum_hits or [])
+        if enum_text:
+            sections.append(enum_text)
 
         context_text = self.format_context(business_context)
         if context_text:
@@ -78,17 +91,18 @@ class SchemaFormatter:
 
         col_lines = []
         for col in schema.get("columns", []):
-            # 跳过敏感字段
             if col.get("sensitive"):
                 continue
 
-            line = f"  `{col['name']}` {col['type']}"
+            line = f"  `{col['name']}` {col.get('type', '')}"
 
-            # 注释
             comment_parts = []
             display = col.get("display_name") or col.get("comment", "")
             if display:
                 comment_parts.append(display)
+            desc = col.get("description", "")
+            if desc and desc != display:
+                comment_parts.append(desc)
             if col.get("enum_values"):
                 enum_str = self._format_enum_inline(col["enum_values"])
                 comment_parts.append(f"[{enum_str}]")
@@ -105,7 +119,6 @@ class SchemaFormatter:
         ddl += ",\n".join(col_lines)
         ddl += "\n);\n"
 
-        # 关联关系提示
         for rel in schema.get("relations", []):
             target = rel.get("target_table", "")
             col = rel.get("column", "")
@@ -114,7 +127,6 @@ class SchemaFormatter:
             if target:
                 ddl += f"-- JOIN 提示: {table_name}.{col} = {target}.{target_col} ({join_type})\n"
 
-        # 查询注意事项
         if schema.get("query_tips"):
             ddl += f"-- 注意: {schema['query_tips']}\n"
 

@@ -1,9 +1,10 @@
-"""Few-shot 示例检索 — Milvus Dense 检索 + 表重叠度加权 + MMR 多样性选择"""
+"""Few-shot 示例检索 — Dense 检索 + 表重叠度加权 + MMR 多样性选择"""
 
 import json
 import logging
 
 import numpy as np
+from pymilvus import DataType
 
 from src.retrieval.config import FEWSHOT_TOP_K, MMR_LAMBDA
 from src.retrieval.milvus_store import MilvusIndex
@@ -11,13 +12,17 @@ from src.retrieval.embedding import BGEEmbedding
 
 logger = logging.getLogger(__name__)
 
+# Few-shot Collection Schema
+FEWSHOT_FIELDS = [
+    {"name": "question", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "sql", "dtype": DataType.VARCHAR, "max_length": 8192},
+    {"name": "involved_tables", "dtype": DataType.VARCHAR, "max_length": 512},
+    {"name": "difficulty", "dtype": DataType.VARCHAR, "max_length": 32},
+]
+
 
 class FewShotSelector:
-    """
-    动态 Few-shot 示例选择器。
-
-    示例来源：语义层 YAML 中的 common_queries。
-    """
+    """动态 Few-shot 示例选择器。"""
 
     def __init__(self, embedding: BGEEmbedding, milvus_index: MilvusIndex | None = None):
         self.embedding = embedding
@@ -28,7 +33,7 @@ class FewShotSelector:
 
     def build_index(self, examples: list[dict]):
         """
-        构建 Few-shot 示例索引（写入 Milvus）。
+        构建 Few-shot 示例索引。
 
         Args:
             examples: [{"question", "sql", "tables": [], "difficulty"}, ...]
@@ -40,19 +45,23 @@ class FewShotSelector:
         self.examples = examples
         texts = [ex["question"] for ex in examples]
 
-        # Dense 编码
+        # Dense + Sparse 编码
         output = self.embedding.encode(texts, return_dense=True, return_sparse=True)
         self.embeddings = output["dense_vecs"]
 
         # 写入 Milvus
         if self.milvus_index:
-            self.milvus_index.create()
-            doc_jsons = [json.dumps(ex, ensure_ascii=False) for ex in examples]
-            self.milvus_index.insert(
-                output["dense_vecs"].copy(),
-                output["lexical_weights"],
-                doc_jsons,
-            )
+            self.milvus_index.create(FEWSHOT_FIELDS)
+            rows = [
+                {
+                    "question": ex["question"],
+                    "sql": ex["sql"],
+                    "involved_tables": ",".join(ex.get("tables", [])),
+                    "difficulty": ex.get("difficulty", ""),
+                }
+                for ex in examples
+            ]
+            self.milvus_index.insert(output["dense_vecs"], output["lexical_weights"], rows)
 
         self.example_table_sets = [set(ex.get("tables", [])) for ex in examples]
         logger.info(f"Few-shot 索引构建完成: {len(examples)} 条示例")
@@ -67,14 +76,14 @@ class FewShotSelector:
         选择最相关的 Few-shot 示例。
 
         排序策略：
-        1. Milvus Dense 语义检索召回候选
+        1. Dense 语义检索召回候选
         2. 表重叠度加权
         3. MMR 多样性选择
         """
         if not self.examples:
             return []
 
-        # Milvus Dense 检索候选池
+        # Dense 检索候选池
         q_output = self.embedding.encode([query], return_dense=True, return_sparse=False)
         q_dense = q_output["dense_vecs"]
 

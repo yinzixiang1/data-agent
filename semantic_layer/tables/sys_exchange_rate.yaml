@@ -1,0 +1,107 @@
+table:
+  name: sys_exchange_rate
+  database: warehouse_sys
+  display_name: 汇率表
+  description: |
+    记录各汇率源的实时/历史汇率数据，包含买入价(bid)、卖出价(ask)和中间价(mid)。
+    每行代表某汇率源在某一时刻某一货币对的汇率快照。
+    当用户需要"以美元展示"、"折合美元"、"转成USD"、"统一币种"等跨币种汇总时，
+    必须关联此表进行换汇计算：金额 * mid。
+  tags: [汇率, 外汇, 币种, 换算, FX, 跨境, 折合美元, 统一币种]
+  query_tips: |
+    查最新汇率时用 sync_time 降序取第一条；
+    mid 为中间价，bid 为买入价，ask 为卖出价；
+    汇率含义：1 单位 source_currency = mid 单位 target_currency；
+    折合美元场景：JOIN 条件为 source_currency = 原表币种字段 AND target_currency = 'USD'，
+    取最新汇率用子查询 WHERE sync_time = (SELECT MAX(sync_time) FROM warehouse_sys.sys_exchange_rate)，
+    换算公式：原金额 * mid。
+
+columns:
+  - name: fx_source
+    display_name: 汇率源
+    description: 汇率数据来源标识，如 ECB、Bloomberg 等
+  - name: source_currency
+    display_name: 源币种
+    description: 3位ISO-4217币种代码，如USD、SGD、EUR
+  - name: target_currency
+    display_name: 目标币种
+    description: 3位ISO-4217币种代码，如USD、SGD、EUR
+  - name: sync_time
+    display_name: 同步时间
+    description: 汇率快照的同步时间
+  - name: mid
+    display_name: 中间价
+    description: 买入价与卖出价的中间值，通常用于金额换算
+  - name: bid
+    display_name: 买入价
+    description: 银行买入源币种的价格
+  - name: ask
+    display_name: 卖出价
+    description: 银行卖出源币种的价格
+
+relations: []
+
+common_queries:
+  - question: 各币种代付金额折合美元汇总
+    sql: |
+      SELECT
+        p.source_currency AS "币种",
+        COUNT(*) AS "笔数",
+        SUM(p.source_amount) AS "原币总额",
+        SUM(p.source_amount * r.mid) AS "折合美元"
+      FROM dwd_banking.pmt_finance_payout p
+      LEFT JOIN warehouse_sys.sys_exchange_rate r
+        ON r.source_currency = p.source_currency
+        AND r.target_currency = 'USD'
+        AND r.sync_time = (SELECT MAX(sync_time) FROM warehouse_sys.sys_exchange_rate)
+      WHERE p.payout_status = 1
+      GROUP BY p.source_currency
+      ORDER BY SUM(p.source_amount * r.mid) DESC
+    tables: [pmt_finance_payout, sys_exchange_rate]
+    difficulty: medium
+
+  - question: 以美元展示各渠道资金余额
+    sql: |
+      SELECT
+        f.channel_code AS "渠道",
+        f.balance_currency AS "原始币种",
+        f.available_balance AS "原币余额",
+        ROUND(f.available_balance * r.mid, 2) AS "折合美元"
+      FROM dwd_banking.pmt_service_channel_funds f
+      LEFT JOIN warehouse_sys.sys_exchange_rate r
+        ON r.source_currency = f.balance_currency
+        AND r.target_currency = 'USD'
+        AND r.sync_time = (SELECT MAX(sync_time) FROM warehouse_sys.sys_exchange_rate)
+      ORDER BY f.available_balance * r.mid DESC
+    tables: [pmt_service_channel_funds, sys_exchange_rate]
+    difficulty: medium
+
+  - question: USD兑各币种的最新汇率
+    sql: |
+      SELECT
+        source_currency AS "源币种",
+        target_currency AS "目标币种",
+        mid AS "中间价",
+        sync_time AS "更新时间"
+      FROM warehouse_sys.sys_exchange_rate
+      WHERE source_currency = 'USD'
+        AND sync_time = (SELECT MAX(sync_time) FROM warehouse_sys.sys_exchange_rate)
+      ORDER BY target_currency
+    tables: [sys_exchange_rate]
+    difficulty: easy
+
+  - question: 某币种对的历史汇率走势
+    sql: |
+      SELECT
+        DATE(sync_time) AS "日期",
+        AVG(mid) AS "平均中间价",
+        MIN(mid) AS "最低",
+        MAX(mid) AS "最高"
+      FROM warehouse_sys.sys_exchange_rate
+      WHERE source_currency = 'USD'
+        AND target_currency = 'SGD'
+        AND sync_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(sync_time)
+      ORDER BY DATE(sync_time)
+    tables: [sys_exchange_rate]
+    difficulty: medium

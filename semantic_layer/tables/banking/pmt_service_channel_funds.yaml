@@ -1,0 +1,94 @@
+table:
+  name: pmt_service_channel_funds
+  database: dwd_banking
+  display_name: 渠道资金表
+  description: |
+    各渠道在不同币种下的资金余额(可用/处理中/储备)，含预警配置。
+    每行代表一个 (channel_code, balance_currency) 余额。
+  tags: [渠道余额, channel funds, 预警, 资金监控]
+
+columns:
+  - name: scid
+    display_name: 主键ID
+    skip_index: true
+
+  - name: funds_id
+    display_name: 资金ID
+
+  - name: channel_code
+    display_name: 渠道编码
+    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
+
+  - name: channel_name
+    display_name: 渠道名称
+
+  - name: balance_currency
+    display_name: 账户币种
+
+  - name: available_balance
+    display_name: 可用余额
+
+  - name: pending_balance
+    display_name: 处理中金额
+
+  - name: reserved_balance
+    display_name: 储备余额
+
+  - name: warning_status
+    display_name: 预警开关
+    enum_values:
+      - {value: 0, label: "关"}
+      - {value: 1, label: "开"}
+
+  - name: warning_info
+    display_name: 预警配置信息
+    skip_index: true
+
+  - name: sync_time
+    display_name: 同步时间
+
+  - name: create_time
+    display_name: 添加时间
+
+  - name: update_time
+    display_name: 更新时间
+
+relations:
+  - column: channel_code
+    target_table: pmt_service_channel
+    target_column: channel_code
+    join_type: LEFT JOIN
+
+common_queries:
+  - question: 各渠道币种余额
+    sql: |
+      SELECT channel_code AS "渠道",
+             balance_currency AS "币种",
+             available_balance AS "可用余额",
+             pending_balance AS "处理中",
+             reserved_balance AS "储备"
+      FROM dwd_banking.pmt_service_channel_funds
+      ORDER BY channel_code, balance_currency;
+    tables: [pmt_service_channel_funds]
+    difficulty: easy
+
+  - question: 已开预警的渠道
+    sql: |
+      SELECT channel_code AS "渠道",
+             balance_currency AS "币种",
+             available_balance AS "可用余额"
+      FROM dwd_banking.pmt_service_channel_funds
+      WHERE warning_status = 1;
+    tables: [pmt_service_channel_funds]
+    difficulty: easy
+
+  - question: 余额低于10000的渠道(可能需补充)
+    sql: |
+      SELECT channel_code AS "渠道",
+             balance_currency AS "币种",
+             available_balance AS "可用余额"
+      FROM dwd_banking.pmt_service_channel_funds
+      WHERE available_balance < 10000
+      ORDER BY available_balance;
+    tables: [pmt_service_channel_funds]
+    difficulty: easy

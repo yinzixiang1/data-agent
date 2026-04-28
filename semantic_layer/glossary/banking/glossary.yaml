@@ -1,0 +1,210 @@
+glossary:
+  - term: VA账户
+    definition: 虚拟账户（Virtual Account），balance_type=1000 或 account_bank_type=1000
+    sql_hint: "balance_type = 1000"
+    related_tables: [pmt_account_balance, pmt_account_bank_details]
+    related_columns: [pmt_account_balance.balance_type, pmt_account_bank_details.account_bank_type]
+
+  - term: AC账户
+    definition: 收单账户（Acquiring），balance_type=3000
+    sql_hint: "balance_type = 3000"
+    related_tables: [pmt_account_balance]
+    related_columns: [pmt_account_balance.balance_type]
+
+  - term: IC账户
+    definition: 发卡账户（Issuing Card），balance_type=4000
+    sql_hint: "balance_type = 4000"
+    related_tables: [pmt_account_balance]
+    related_columns: [pmt_account_balance.balance_type]
+
+  - term: FX账户
+    definition: 外汇账户（Foreign Exchange），balance_type=2000（预留）
+    sql_hint: "balance_type = 2000"
+    related_tables: [pmt_account_balance]
+    related_columns: [pmt_account_balance.balance_type]
+
+  - term: KYC认证
+    definition: Know Your Customer，个人身份认证
+    sql_hint: "verification_status = 1"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.verification_status]
+
+  - term: KYB认证
+    definition: Know Your Business，企业资质认证
+    sql_hint: "legal_entity_type = 2000 AND verification_status = 1"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.verification_status, pmt_account.legal_entity_type]
+
+  - term: 活跃商户
+    definition: 账户状态为激活（account_status=1）的商户
+    sql_hint: "account_status = 1 AND is_delete = 0"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_status, pmt_account.is_delete]
+
+  - term: LPSP
+    definition: License Payment Service Provider，持牌支付服务商，account_type=2000
+    sql_hint: "account_type = 2000"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: TPSP
+    definition: Technical Payment Service Provider，技术支付服务商，account_type=2001
+    sql_hint: "account_type = 2001"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: RPSP
+    definition: Referral Payment Service Provider，引荐支付服务商，account_type=3000
+    sql_hint: "account_type = 3000"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.account_type]
+
+  - term: 白标
+    definition: 商户使用自有品牌的支付门户，white_label_status=1 表示已开通
+    sql_hint: "white_label_status = 1"
+    related_tables: [pmt_account, pmt_account_label]
+    related_columns: [pmt_account.white_label_status]
+
+  - term: 受益人
+    definition: 收款方信息（beneficiary），用于payout
+    sql_hint: "beneficiary_status = 1"
+    related_tables: [pmt_payment_beneficiary]
+    related_columns: [pmt_payment_beneficiary.beneficiary_status]
+
+  - term: payin
+    definition: 入金交易，transaction_type=1000
+    sql_hint: "transaction_type = 1000"
+    related_tables: [pmt_finance_transactions]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: deposit
+    definition: 存款（入款），transaction_type=1001
+    sql_hint: "transaction_type = 1001"
+    related_tables: [pmt_finance_transactions, pmt_finance_deposit]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: payout
+    definition: 代付（出款），transaction_type=2000
+    sql_hint: "transaction_type = 2000"
+    related_tables: [pmt_finance_transactions, pmt_finance_payout]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: transfer
+    definition: 内部转账，transaction_type=1002（in）/2001（out）
+    sql_hint: "transaction_type IN (1002, 2001)"
+    related_tables: [pmt_finance_transactions, pmt_finance_transfer]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: conversion
+    definition: 汇兑/换汇，transaction_type=3000
+    sql_hint: "transaction_type = 3000"
+    related_tables: [pmt_finance_transactions, pmt_conversion]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: refund
+    definition: 退款，transaction_type=8001
+    sql_hint: "transaction_type = 8001"
+    related_tables: [pmt_finance_transactions, pmt_finance_refund]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: adjustment
+    definition: 调账，transaction_type=9000；类型有差额加扣款和冲正加扣款
+    sql_hint: "transaction_type = 9000"
+    related_tables: [pmt_finance_transactions, pmt_finance_adjustment]
+    related_columns: [pmt_finance_transactions.transaction_type]
+
+  - term: SWIFT
+    definition: 国际跨境支付方式，payment_method=2000
+    sql_hint: "payment_method = 2000"
+    related_tables: [pmt_account_bank_details, pmt_finance_deposit, pmt_finance_payout, pmt_payment_beneficiary]
+    related_columns: [pmt_account_bank_details.payment_method]
+
+  - term: LOCAL
+    definition: 本地支付方式，payment_method=1000
+    sql_hint: "payment_method = 1000"
+    related_tables: [pmt_account_bank_details, pmt_finance_deposit]
+    related_columns: [pmt_account_bank_details.payment_method]
+
+  - term: RFI
+    definition: Request For Information，要求补充信息
+    sql_hint: "rfi_status IN ('ACTION_REQUIRED', 'SUBMITTED_PENDING')"
+    related_tables: [uqpay_rfi, pmt_channel_order_rfi]
+    related_columns: [uqpay_rfi.rfi_status]
+
+  - term: AML
+    definition: Anti-Money Laundering，反洗钱筛查
+    sql_hint: "overall_status != 'CLEAN'"
+    related_tables: [sys_check_aml]
+    related_columns: [sys_check_aml.overall_status]
+
+  - term: 锁汇
+    definition: 客户锁定汇率（lock fx），rate_guaranteed_value > 0
+    sql_hint: "rate_guaranteed_value > 0"
+    related_tables: [sys_currency_pair, pmt_conversion_quotes]
+    related_columns: [sys_currency_pair.rate_guaranteed_value]
+
+  - term: house模式
+    definition: 平台先垫资再向商户结算（payment_mode='house'）
+    sql_hint: "payment_mode = 'house'"
+    related_tables: [pmt_finance_payout]
+    related_columns: [pmt_finance_payout.payment_mode]
+
+  - term: client模式
+    definition: 商户先充值后扣款（payment_mode='client'）
+    sql_hint: "payment_mode = 'client'"
+    related_tables: [pmt_finance_payout]
+    related_columns: [pmt_finance_payout.payment_mode]
+
+  - term: 风险等级
+    definition: 商户风险评级，LOW/MEDIUM/HIGH/VERY_HIGH/MANUAL_REVIEW/NONE/NORMAL
+    sql_hint: "risk_rating_level IN ('HIGH', 'VERY_HIGH')"
+    related_tables: [pmt_account, sys_industry_mcc]
+    related_columns: [pmt_account.risk_rating_level]
+
+  - term: 工作流
+    definition: 多级审批流程，flow_type 区分商户类/财务类/配置类等
+    sql_hint: "review_status = 0"
+    related_tables: [sys_workflow, sys_workflow_approval]
+    related_columns: [sys_workflow.review_status]
+
+  - term: 审核通过
+    definition: review_status=1
+    sql_hint: "review_status = 1"
+    related_tables: [pmt_account, pmt_finance_payout, pmt_conversion, sys_workflow]
+    related_columns: [review_status]
+
+  - term: 制裁国
+    definition: 受国际制裁的国家/地区，is_sanction=1
+    sql_hint: "is_sanction = 1"
+    related_tables: [sys_country_code]
+    related_columns: [sys_country_code.is_sanction]
+
+  - term: MCC
+    definition: Merchant Category Code，商户行业代码
+    sql_hint: "industry_mcc_code = ?"
+    related_tables: [sys_industry_mcc, pmt_account]
+    related_columns: [pmt_account.industry_mcc_code]
+
+  - term: 商户短号
+    definition: 用户友好的商户标识，short_account_id（20位以内）
+    sql_hint: "short_account_id = ?"
+    related_tables: [pmt_account]
+    related_columns: [pmt_account.short_account_id]
+
+  - term: 调拨
+    definition: 渠道间或账户间的资金归集，pmt_channel_collection / pmt_finance_collection
+    sql_hint: "collection_type IN (1000, 2000)"
+    related_tables: [pmt_channel_collection, pmt_finance_collection]
+    related_columns: [collection_type]
+
+  - term: 对冲
+    definition: FX订单的对冲操作，hedge_status 反映完成情况
+    sql_hint: "hedge_status = 1"
+    related_tables: [pmt_conversion]
+    related_columns: [pmt_conversion.hedge_status]
+
+  - term: idempotency_key
+    definition: 客户端幂等键，防止重复提交
+    sql_hint: "client_idempotency_key IS NOT NULL"
+    related_tables: [pmt_finance_payout, pmt_conversion, pmt_finance_transfer]
+    related_columns: [client_idempotency_key]

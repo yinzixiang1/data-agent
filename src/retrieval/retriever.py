@@ -26,6 +26,7 @@ class RetrievalResult:
     """检索结果"""
     relevant_tables: list[dict] = field(default_factory=list)
     relevant_examples: list[dict] = field(default_factory=list)
+    enum_hits: list[dict] = field(default_factory=list)
     business_context: str = ""
     prompt_text: str = ""
     matched_terms: list[str] = field(default_factory=list)
@@ -63,28 +64,23 @@ class SchemaRetriever:
         self._initialized = False
 
     def initialize(self, force_rebuild: bool = False):
-        """
-        启动初始化：加载 Schema → 判断是否需要重建索引 → 构建/加载索引。
-
-        Args:
-            force_rebuild: 是否强制重建（忽略 hash 对比）
-        """
+        """启动初始化：加载 Schema → 判断是否需要重建索引 → 构建/加载索引。"""
         logger.info("=" * 60)
         logger.info("RAG 检索体系初始化开始")
         logger.info("=" * 60)
 
         embedding = get_embedding()
 
-        # 1. 加载 Schema + 语义层
-        schemas, glossary = self.schema_loader.load_all()
+        # 1. 加载 Schema + 语义层 + 枚举
+        schemas, glossary, enums = self.schema_loader.load_all()
 
         # 2. 加载业务术语
         self.glossary_resolver.load(glossary)
 
         # 3. 判断是否需要重建索引
-        if force_rebuild or self.index_manager.need_rebuild(schemas):
+        if force_rebuild or self.index_manager.need_rebuild(schemas, enums):
             logger.info("开始全量构建索引...")
-            indices = self.index_manager.build_and_save(schemas, embedding)
+            indices = self.index_manager.build_and_save(schemas, embedding, enums)
         else:
             logger.info("索引未变更，加载已有索引...")
             indices = self.index_manager.load_all(embedding)
@@ -94,6 +90,7 @@ class SchemaRetriever:
             embedding=embedding,
             table_index=indices["table_index"],
             column_index=indices["column_index"],
+            enum_index=indices["enum_index"],
             table_schemas=indices["table_schemas"],
         )
 
@@ -121,16 +118,9 @@ class SchemaRetriever:
         2. Schema 混合检索（Dense + Sparse + RRF）
         3. 表级 + 列级合并
         4. Reranker 精排
-        5. Few-shot 示例检索（语义相似 + 表重叠 + MMR）
-        6. Prompt 组装（DDL 格式）
-
-        Args:
-            user_query: 用户原始提问
-            top_k: 返回的表数量
-            fewshot_k: 返回的 Few-shot 示例数量
-
-        Returns:
-            RetrievalResult
+        5. 枚举值检索
+        6. Few-shot 示例检索（语义相似 + 表重叠 + MMR）
+        7. Prompt 组装（DDL + 枚举映射 + 业务上下文 + Few-shot）
         """
         if not self._initialized:
             raise RuntimeError("SchemaRetriever 未初始化，请先调用 initialize()")
@@ -148,12 +138,27 @@ class SchemaRetriever:
 
         # ❸ Reranker 精排
         reranker = get_reranker()
+        all_search_candidates = {c["table_name"]: c for c in candidates}
         if reranker and len(candidates) > top_k:
             candidates = reranker.rerank(user_query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
 
-        # ❹ Few-shot 示例检索
+        # ❸.5 Reranker 后关联表补回：被 Reranker 淘汰但与 top 表有关联的表补回
+        hit_names = {c["table_name"] for c in candidates}
+        for c in list(candidates):
+            schema = c.get("schema", {})
+            for rel in schema.get("relations", []):
+                related = rel.get("target_table", "")
+                if related in all_search_candidates and related not in hit_names:
+                    candidates.append(all_search_candidates[related])
+                    hit_names.add(related)
+                    logger.info(f"Reranker 后补回关联表: {related}")
+
+        # ❹ 枚举值检索
+        enum_hits = self.searcher.search_enums(user_query)
+
+        # ❺ Few-shot 示例检索
         hit_tables = [c["table_name"] for c in candidates]
         examples = self.fewshot.select(
             query=user_query,
@@ -161,16 +166,18 @@ class SchemaRetriever:
             top_k=fewshot_k,
         )
 
-        # ❺ Prompt 组装
+        # ❻ Prompt 组装
         prompt_text = self.formatter.format_all(
             tables=candidates,
             examples=examples,
             business_context=business_context,
+            enum_hits=enum_hits,
         )
 
         result = RetrievalResult(
             relevant_tables=candidates,
             relevant_examples=examples,
+            enum_hits=enum_hits,
             business_context=business_context,
             prompt_text=prompt_text,
             matched_terms=glossary_result["matched_terms"],
@@ -178,6 +185,6 @@ class SchemaRetriever:
 
         logger.info(
             f"检索完成: tables={hit_tables}, "
-            f"examples={len(examples)}, terms={result.matched_terms}"
+            f"enums={len(enum_hits)}, examples={len(examples)}, terms={result.matched_terms}"
         )
         return result

@@ -1,0 +1,223 @@
+table:
+  name: pmt_channel_conversion
+  database: dwd_banking
+  display_name: 渠道汇兑表
+  description: |
+    平台对接上游渠道的汇兑记录，与pmt_conversion(对客)对应。
+    每行代表一笔平台到渠道的真实汇兑流水，含客户汇率和平台核心汇率。
+  tags: [渠道汇兑, FX, 平台对冲, 上游汇兑, channel conversion]
+
+columns:
+  - name: ccid
+    display_name: 主键ID
+    skip_index: true
+
+  - name: direct_id
+    display_name: 机构ID
+
+  - name: account_id
+    display_name: 商户账户ID
+
+  - name: short_account_id
+    display_name: 短号
+
+  - name: account_name
+    display_name: 商户名
+
+  - name: conversion_id
+    display_name: 长汇兑ID
+
+  - name: short_reference_id
+    display_name: 短汇兑ID
+
+  - name: core_rate
+    display_name: 平台核心汇率
+
+  - name: client_rate
+    display_name: 客户汇率
+
+  - name: fixed_side
+    display_name: 固定边
+    description: 哪一边币种是固定的(buy/sell)
+
+  - name: buy_amount
+    display_name: 买入金额
+
+  - name: buy_currency
+    display_name: 买入币种
+
+  - name: currency_pair
+    display_name: 币种对
+
+  - name: sell_amount
+    display_name: 卖出金额
+
+  - name: sell_currency
+    display_name: 卖出币种
+
+  - name: mid_market_rate
+    display_name: 中间价
+
+  - name: conversion_date
+    display_name: 汇兑日期
+
+  - name: conversion_reason
+    display_name: 汇兑原因
+
+  - name: unique_request_id
+    display_name: 客户端幂等键
+
+  - name: quote_id
+    display_name: 报价ID
+
+  - name: lockfx_quote_id
+    display_name: LockFX报价ID
+
+  - name: remark
+    display_name: 备注
+
+  - name: creator_id
+    display_name: 创建人ID
+
+  - name: creator_name
+    display_name: 创建人名
+
+  - name: channel_resp_id
+    display_name: 渠道响应ID
+
+  - name: channel_resp_status
+    display_name: 渠道响应状态
+
+  - name: channel_resp_body
+    display_name: 渠道响应Body
+    skip_index: true
+
+  - name: execute_reason
+    display_name: 失败原因
+
+  - name: transaction_id
+    display_name: 交易流水ID
+
+  - name: create_type
+    display_name: 创建类型
+    enum_values:
+      - {value: 0, label: "默认等级"}
+      - {value: 1, label: "API提交"}
+
+  - name: review_status
+    display_name: 审查状态
+    enum_values:
+      - {value: 1, label: "通过"}
+      - {value: 0, label: "审核中"}
+      - {value: -1, label: "拒绝"}
+
+  - name: conversion_status
+    display_name: 汇兑状态
+    enum_values:
+      - {value: 0, label: "PENDING"}
+      - {value: 2, label: "SENT_TO_CHANNEL"}
+      - {value: 1, label: "TRADE_SETTLED"}
+      - {value: -1, label: "CLOSED"}
+
+  - name: channel_code
+    display_name: 渠道编码
+    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
+
+  - name: ref_reference_id
+    display_name: 关联payout_id
+
+  - name: ref_short_reference_id
+    display_name: 关联短ID
+
+  - name: settlement_time
+    display_name: 结算截止时间
+
+  - name: complete_time
+    display_name: 完成时间
+
+  - name: create_time
+    display_name: 创建时间
+
+  - name: update_time
+    display_name: 更新时间
+
+relations:
+  - column: conversion_id
+    target_table: pmt_conversion
+    target_column: conversion_id
+    join_type: LEFT JOIN
+
+  - column: channel_code
+    target_table: pmt_service_channel
+    target_column: channel_code
+    join_type: LEFT JOIN
+
+  - column: ref_reference_id
+    target_table: pmt_finance_payout
+    target_column: payout_id
+    join_type: LEFT JOIN
+
+common_queries:
+  - question: 各渠道的汇兑成交量
+    sql: |
+      SELECT channel_code AS "渠道",
+             COUNT(*) AS "汇兑笔数",
+             SUM(buy_amount) AS "买入总额"
+      FROM dwd_banking.pmt_channel_conversion
+      WHERE conversion_status = 1
+      GROUP BY channel_code
+      ORDER BY "汇兑笔数" DESC;
+    tables: [pmt_channel_conversion]
+    difficulty: easy
+
+  - question: 汇率加点收益(client_rate - core_rate)
+    sql: |
+      SELECT channel_code AS "渠道",
+             currency_pair AS "币种对",
+             COUNT(*) AS "笔数",
+             AVG(client_rate - core_rate) AS "平均加点"
+      FROM dwd_banking.pmt_channel_conversion
+      WHERE conversion_status = 1
+      GROUP BY channel_code, currency_pair
+      ORDER BY "笔数" DESC
+      LIMIT 20;
+    tables: [pmt_channel_conversion]
+    difficulty: medium
+
+  - question: 各币种对的汇兑量
+    sql: |
+      SELECT currency_pair AS "币种对",
+             COUNT(*) AS "笔数",
+             SUM(buy_amount) AS "买入总量"
+      FROM dwd_banking.pmt_channel_conversion
+      WHERE conversion_status = 1
+      GROUP BY currency_pair
+      ORDER BY "笔数" DESC;
+    tables: [pmt_channel_conversion]
+    difficulty: easy
+
+  - question: 失败的渠道汇兑及原因
+    sql: |
+      SELECT short_reference_id AS "短号",
+             channel_code AS "渠道",
+             currency_pair AS "币种对",
+             execute_reason AS "失败原因",
+             create_time AS "时间"
+      FROM dwd_banking.pmt_channel_conversion
+      WHERE conversion_status = -1
+      ORDER BY create_time DESC
+      LIMIT 50;
+    tables: [pmt_channel_conversion]
+    difficulty: easy
+
+  - question: pending状态的渠道汇兑超过24h
+    sql: |
+      SELECT short_reference_id AS "短号",
+             channel_code AS "渠道",
+             create_time AS "创建时间",
+             TIMESTAMPDIFF(HOUR, create_time, NOW()) AS "已等待小时"
+      FROM dwd_banking.pmt_channel_conversion
+      WHERE conversion_status IN (0, 2)
+        AND create_time < DATE_SUB(NOW(), INTERVAL 24 HOUR);
+    tables: [pmt_channel_conversion]
+    difficulty: medium

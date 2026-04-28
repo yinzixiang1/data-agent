@@ -1,0 +1,198 @@
+table:
+  name: pmt_finance_transactions
+  database: dwd_banking
+  display_name: 法币账户流水表
+  description: |
+    商户法币账户的明细流水(借贷)，是账户的"账本"。
+    每行代表一笔影响余额的资金变动，关联具体业务单据(payout/deposit/conversion等)。
+  tags: [账户流水, transactions, 借贷, 账本, ledger, 资金流水]
+  query_tips: 已完成流水用 transaction_status=1；按借贷方向用 credit_debit_type
+
+columns:
+  - name: ptid
+    display_name: 主键ID
+    skip_index: true
+
+  - name: direct_id
+    display_name: 机构ID
+
+  - name: account_id
+    display_name: 账户ID
+
+  - name: account_name
+    display_name: 商户名
+
+  - name: transaction_id
+    display_name: 交易号
+
+  - name: transaction_type
+    display_name: 交易类型
+    enum_values:
+      - {value: 1000, label: "payin"}
+      - {value: 1001, label: "deposit"}
+      - {value: 1002, label: "transfer in"}
+      - {value: 2000, label: "payout"}
+      - {value: 2001, label: "transfer out"}
+      - {value: 3000, label: "conversion"}
+      - {value: 4000, label: "card fee"}
+      - {value: 4001, label: "card charge"}
+      - {value: 4002, label: "card withdraw"}
+      - {value: 8000, label: "fee"}
+      - {value: 8001, label: "refund"}
+      - {value: 9000, label: "adjustment"}
+
+  - name: balance_id
+    display_name: 余额ID
+
+  - name: balance_amount
+    display_name: 当前账户余额
+
+  - name: currency
+    display_name: 币种
+
+  - name: amount
+    display_name: 交易金额
+
+  - name: credit_debit_type
+    display_name: 借贷方向
+    enum_values:
+      - {value: C, label: "贷-credit"}
+      - {value: D, label: "借-debit"}
+
+  - name: reference_id
+    display_name: 关联原始订单ID
+
+  - name: short_reference_id
+    display_name: 关联原始订单短号
+
+  - name: short_account_id
+    display_name: 商户短号
+
+  - name: transaction_remark
+    display_name: 流水备注
+
+  - name: transaction_status
+    display_name: 流水状态
+    enum_values:
+      - {value: -2, label: "deleted"}
+      - {value: -1, label: "failed"}
+      - {value: 0, label: "pending"}
+      - {value: 1, label: "completed"}
+
+  - name: transaction_source
+    display_name: 流水来源
+
+  - name: account_channel_id
+    display_name: 用户渠道ID
+
+  - name: pci_display
+    display_name: 是否显示
+    enum_values:
+      - {value: 0, label: "隐藏"}
+      - {value: 1, label: "显示"}
+
+  - name: settle_time
+    display_name: 结算时间
+
+  - name: complete_time
+    display_name: 完成时间
+
+  - name: create_time
+    display_name: 创建时间
+
+  - name: update_time
+    display_name: 更新时间
+
+relations:
+  - column: account_id
+    target_table: pmt_account
+    target_column: account_id
+    join_type: LEFT JOIN
+
+  - column: balance_id
+    target_table: pmt_account_balance
+    target_column: balance_id
+    join_type: LEFT JOIN
+
+  - column: reference_id
+    target_table: pmt_finance_payout
+    target_column: payout_id
+    join_type: LEFT JOIN
+    description: 当 transaction_type=2000 时
+
+common_queries:
+  - question: 某商户日流水笔数和金额
+    sql: |
+      SELECT DATE(create_time) AS "日期",
+             credit_debit_type AS "方向",
+             COUNT(*) AS "笔数",
+             SUM(amount) AS "总金额"
+      FROM dwd_banking.pmt_finance_transactions
+      WHERE short_account_id = ?
+        AND transaction_status = 1
+        AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time), credit_debit_type
+      ORDER BY "日期" DESC;
+    tables: [pmt_finance_transactions]
+    difficulty: medium
+
+  - question: 借贷方向资金量
+    sql: |
+      SELECT
+        CASE credit_debit_type WHEN 'C' THEN '贷' WHEN 'D' THEN '借' END AS "方向",
+        currency AS "币种",
+        SUM(amount) AS "总金额",
+        COUNT(*) AS "笔数"
+      FROM dwd_banking.pmt_finance_transactions
+      WHERE transaction_status = 1
+        AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY credit_debit_type, currency
+      ORDER BY currency, "方向";
+    tables: [pmt_finance_transactions]
+    difficulty: medium
+
+  - question: 各类型流水占比
+    sql: |
+      SELECT
+        CASE transaction_type
+          WHEN 1001 THEN 'deposit'
+          WHEN 2000 THEN 'payout'
+          WHEN 3000 THEN 'conversion'
+          WHEN 8000 THEN 'fee'
+          WHEN 8001 THEN 'refund'
+          WHEN 9000 THEN 'adjustment'
+          ELSE '其他' END AS "类型",
+        COUNT(*) AS "笔数",
+        ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM dwd_banking.pmt_finance_transactions WHERE transaction_status = 1), 2) AS "占比%"
+      FROM dwd_banking.pmt_finance_transactions
+      WHERE transaction_status = 1
+      GROUP BY transaction_type
+      ORDER BY "笔数" DESC;
+    tables: [pmt_finance_transactions]
+    difficulty: medium
+
+  - question: 待结算流水
+    sql: |
+      SELECT account_name AS "商户",
+             currency AS "币种",
+             COUNT(*) AS "笔数",
+             SUM(amount) AS "总额"
+      FROM dwd_banking.pmt_finance_transactions
+      WHERE transaction_status = 0
+      GROUP BY account_name, currency
+      ORDER BY "总额" DESC;
+    tables: [pmt_finance_transactions]
+    difficulty: easy
+
+  - question: 月度fee流水
+    sql: |
+      SELECT DATE_FORMAT(create_time, '%Y-%m') AS "月份",
+             currency AS "币种",
+             SUM(amount) AS "fee总额"
+      FROM dwd_banking.pmt_finance_transactions
+      WHERE transaction_type = 8000
+        AND transaction_status = 1
+      GROUP BY DATE_FORMAT(create_time, '%Y-%m'), currency
+      ORDER BY "月份" DESC;
+    tables: [pmt_finance_transactions]
+    difficulty: medium

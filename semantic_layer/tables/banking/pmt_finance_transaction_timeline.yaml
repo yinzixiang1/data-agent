@@ -1,0 +1,175 @@
+table:
+  name: pmt_finance_transaction_timeline
+  database: dwd_banking
+  display_name: 资金交易时间线表
+  description: |
+    各类交易在生命周期中的步骤事件流(创建订单/扣款/对接渠道/响应等)。
+    每行代表一次事件步骤，是订单审计追溯的关键表，区分对内/对客可见。
+  tags: [时间线, timeline, 审计, 事件流, 订单生命周期]
+
+columns:
+  - name: txid
+    display_name: 主键ID
+    skip_index: true
+
+  - name: direct_id
+    display_name: 机构ID
+
+  - name: account_id
+    display_name: 账户ID
+
+  - name: account_name
+    display_name: 商户名
+
+  - name: timeline_type
+    display_name: 时间线类型
+    enum_values:
+      - {value: 1000, label: "payin"}
+      - {value: 1001, label: "deposit"}
+      - {value: 1002, label: "transfer in"}
+      - {value: 2000, label: "payout"}
+      - {value: 2001, label: "transfer out"}
+      - {value: 3000, label: "conversion"}
+      - {value: 4000, label: "card purchase"}
+      - {value: 4001, label: "card recharge"}
+      - {value: 4002, label: "card withdraw"}
+      - {value: 8000, label: "fee"}
+      - {value: 8001, label: "refund"}
+      - {value: 9000, label: "adjustment"}
+
+  - name: timeline_id
+    display_name: 时间线ID
+
+  - name: timeline_code
+    display_name: 流程步骤编码
+
+  - name: timeline_name
+    display_name: 流程步骤名称
+
+  - name: channel_code
+    display_name: 渠道编码
+    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
+
+  - name: channel_flag
+    display_name: 是否渠道记录
+    enum_values:
+      - {value: 0, label: "否"}
+      - {value: 1, label: "是"}
+
+  - name: req_id
+    display_name: 请求ID
+
+  - name: req_body
+    display_name: 请求Body
+    skip_index: true
+
+  - name: req_amount
+    display_name: 请求交易金额
+
+  - name: resp_id
+    display_name: 渠道响应ID
+
+  - name: resp_body
+    display_name: 渠道响应Body
+    skip_index: true
+
+  - name: resp_status
+    display_name: 渠道响应状态
+
+  - name: execute_reason
+    display_name: 失败原因
+
+  - name: ref_reference_id
+    display_name: 关联订单长号
+
+  - name: ref_short_reference_id
+    display_name: 关联订单短号
+
+  - name: is_customer_visible
+    display_name: 对客户可见
+    enum_values:
+      - {value: 0, label: "否"}
+      - {value: 1, label: "是"}
+
+  - name: creator_id
+    display_name: 创建人ID
+
+  - name: creator_name
+    display_name: 创建人名
+
+  - name: creator_ip
+    display_name: 创建IP
+    sensitive: true
+
+  - name: create_time
+    display_name: 创建时间
+
+relations:
+  - column: account_id
+    target_table: pmt_account
+    target_column: account_id
+    join_type: LEFT JOIN
+
+  - column: ref_reference_id
+    target_table: pmt_finance_payout
+    target_column: payout_id
+    join_type: LEFT JOIN
+
+common_queries:
+  - question: 某订单的全流程事件
+    sql: |
+      SELECT timeline_code AS "步骤编码",
+             timeline_name AS "步骤名称",
+             channel_code AS "渠道",
+             resp_status AS "响应状态",
+             execute_reason AS "失败原因",
+             create_time AS "时间"
+      FROM dwd_banking.pmt_finance_transaction_timeline
+      WHERE ref_reference_id = ?
+      ORDER BY create_time;
+    tables: [pmt_finance_transaction_timeline]
+    difficulty: easy
+
+  - question: 各步骤平均耗时
+    sql: |
+      SELECT timeline_code AS "步骤",
+             timeline_name AS "步骤名",
+             COUNT(*) AS "次数"
+      FROM dwd_banking.pmt_finance_transaction_timeline
+      WHERE create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY timeline_code, timeline_name
+      ORDER BY "次数" DESC
+      LIMIT 30;
+    tables: [pmt_finance_transaction_timeline]
+    difficulty: medium
+
+  - question: 失败步骤分布
+    sql: |
+      SELECT timeline_code AS "步骤",
+             timeline_name AS "步骤名",
+             COUNT(*) AS "失败次数"
+      FROM dwd_banking.pmt_finance_transaction_timeline
+      WHERE execute_reason IS NOT NULL
+        AND execute_reason != ''
+        AND create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY timeline_code, timeline_name
+      ORDER BY "失败次数" DESC
+      LIMIT 20;
+    tables: [pmt_finance_transaction_timeline]
+    difficulty: medium
+
+  - question: 客户可见的事件统计
+    sql: |
+      SELECT
+        CASE timeline_type
+          WHEN 2000 THEN 'payout'
+          WHEN 1001 THEN 'deposit'
+          WHEN 3000 THEN 'conversion'
+          ELSE '其他' END AS "业务类型",
+        COUNT(*) AS "可见事件数"
+      FROM dwd_banking.pmt_finance_transaction_timeline
+      WHERE is_customer_visible = 1
+      GROUP BY timeline_type
+      ORDER BY "可见事件数" DESC;
+    tables: [pmt_finance_transaction_timeline]
+    difficulty: medium

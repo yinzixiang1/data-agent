@@ -1,4 +1,4 @@
-"""Milvus 向量存储 — 替换 FAISS DenseIndex + 自建 SparseIndex"""
+"""Milvus 向量存储"""
 
 import logging
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
@@ -17,11 +17,10 @@ def get_milvus_client() -> MilvusClient:
     global _client
     if _client is None:
         _client = MilvusClient(uri=MILVUS_URI, db_name="default")
-        # 确保数据库存在
         dbs = _client.list_databases()
         if MILVUS_DB not in dbs:
             _client.create_database(MILVUS_DB)
-            logger.info(f"创建 Milvus 数据库: {MILVUS_DB}")
+            logger.info(f"创建数据库: {MILVUS_DB}")
         _client.using_database(MILVUS_DB)
         logger.info(f"Milvus 连接成功: {MILVUS_URI}, db={MILVUS_DB}")
     return _client
@@ -47,8 +46,8 @@ def _to_sparse_vectors(lexical_weights_list: list[dict]) -> list:
 
 class MilvusIndex:
     """
-    Milvus 混合索引：Dense + Sparse 存储在同一个 Collection 中。
-    支持 hybrid search (Dense + Sparse → RRF 融合)。
+    Milvus Collection 封装。
+    支持自定义标量字段 + Dense/Sparse 混合检索。
     """
 
     def __init__(self, collection_name: str, dim: int = 1024):
@@ -64,8 +63,14 @@ class MilvusIndex:
             self.client.drop_collection(self.collection_name)
             logger.info(f"已删除 Collection: {self.collection_name}")
 
-    def create(self):
-        """创建 Collection: id + dense_vec + sparse_vec + doc_json"""
+    def create(self, scalar_fields: list[dict] | None = None):
+        """
+        创建 Collection。
+
+        基础字段自动包含: id(INT64 PK), dense_vec(FLOAT_VECTOR), sparse_vec(SPARSE_FLOAT_VECTOR)
+        scalar_fields 示例:
+            [{"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True}, ...]
+        """
         if self.exists():
             self.drop()
 
@@ -73,11 +78,21 @@ class MilvusIndex:
         schema.add_field("id", DataType.INT64, is_primary=True)
         schema.add_field("dense_vec", DataType.FLOAT_VECTOR, dim=self.dim)
         schema.add_field("sparse_vec", DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_field("doc_json", DataType.VARCHAR, max_length=65535)
+
+        if scalar_fields:
+            for f in scalar_fields:
+                kwargs = {k: v for k, v in f.items() if k not in ("name", "dtype", "inverted")}
+                schema.add_field(f["name"], f["dtype"], **kwargs)
 
         index_params = self.client.prepare_index_params()
-        index_params.add_index(field_name="dense_vec", index_type="FLAT", metric_type="IP")
+        index_params.add_index(field_name="dense_vec", index_type="FLAT", metric_type="COSINE")
         index_params.add_index(field_name="sparse_vec", index_type="SPARSE_INVERTED_INDEX", metric_type="IP")
+
+        # 标量倒排索引
+        if scalar_fields:
+            for f in scalar_fields:
+                if f.get("inverted"):
+                    index_params.add_index(field_name=f["name"], index_type="INVERTED")
 
         self.client.create_collection(
             collection_name=self.collection_name,
@@ -86,25 +101,27 @@ class MilvusIndex:
         )
         logger.info(f"创建 Collection: {self.collection_name}")
 
-    def insert(
-        self,
-        dense_vecs: np.ndarray,
-        lexical_weights_list: list[dict],
-        doc_jsons: list[str],
-    ):
-        """批量插入 Dense + Sparse 向量"""
-        n = len(doc_jsons)
-        # 归一化 dense
-        norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
-        dense_normed = (dense_vecs / norms).astype(np.float32)
+    def insert(self, dense_vecs: np.ndarray, lexical_weights_list: list[dict], rows: list[dict]):
+        """
+        批量插入。
 
+        dense_vecs: (n, dim) numpy array
+        lexical_weights_list: BGE-M3 稀疏权重
+        rows: 标量字段数据 [{"table_name": "xxx", ...}, ...]
+        """
+        n = len(rows)
         sparse_vecs = _to_sparse_vectors(lexical_weights_list)
 
-        data = [
-            {"id": i, "dense_vec": dense_normed[i].tolist(), "sparse_vec": sparse_vecs[i], "doc_json": doc_jsons[i]}
-            for i in range(n)
-        ]
+        data = []
+        for i in range(n):
+            row = {
+                "id": i,
+                "dense_vec": dense_vecs[i].astype(np.float32).tolist(),
+                "sparse_vec": sparse_vecs[i],
+            }
+            row.update(rows[i])
+            data.append(row)
+
         self.client.insert(self.collection_name, data)
         logger.info(f"插入 {n} 条到 {self.collection_name}")
 
@@ -114,34 +131,30 @@ class MilvusIndex:
         query_sparse_weights: dict,
         top_k: int = 20,
         recall_k: int = 20,
-    ) -> list[tuple[int, float, str]]:
+        output_fields: list[str] | None = None,
+        filter_expr: str | None = None,
+    ) -> list[tuple[int, float, dict]]:
         """
         混合检索: Dense + Sparse → RRF 融合。
 
-        Returns:
-            [(doc_id, score, doc_json), ...]
+        Returns: [(doc_id, score, entity_dict), ...]
         """
-        # 归一化 query dense
         q = query_dense.astype(np.float32).reshape(1, -1)
-        norm = np.linalg.norm(q)
-        if norm > 0:
-            q = q / norm
-
-        # 构建 sparse query
         q_sparse = _to_sparse_vectors([query_sparse_weights])
 
-        # 两路 ANN 请求
         dense_req = AnnSearchRequest(
             data=q.tolist(),
             anns_field="dense_vec",
-            param={"metric_type": "IP"},
+            param={"metric_type": "COSINE"},
             limit=recall_k,
+            expr=filter_expr,
         )
         sparse_req = AnnSearchRequest(
             data=q_sparse,
             anns_field="sparse_vec",
             param={"metric_type": "IP"},
             limit=recall_k,
+            expr=filter_expr,
         )
 
         results = self.client.hybrid_search(
@@ -149,55 +162,41 @@ class MilvusIndex:
             reqs=[dense_req, sparse_req],
             ranker=RRFRanker(k=RRF_K),
             limit=top_k,
-            output_fields=["doc_json"],
+            output_fields=output_fields or ["*"],
         )
 
-        output = []
-        for hit in results[0]:
-            output.append((
-                hit["id"],
-                hit["distance"],
-                hit["entity"]["doc_json"],
-            ))
-        return output
+        return [(hit["id"], hit["distance"], hit["entity"]) for hit in results[0]]
 
     def dense_search(
         self,
         query_dense: np.ndarray,
         top_k: int = 20,
-    ) -> list[tuple[int, float, str]]:
-        """纯 Dense 检索（用于 Few-shot 选择）"""
+        output_fields: list[str] | None = None,
+        filter_expr: str | None = None,
+    ) -> list[tuple[int, float, dict]]:
+        """纯 Dense 检索"""
         q = query_dense.astype(np.float32).reshape(1, -1)
-        norm = np.linalg.norm(q)
-        if norm > 0:
-            q = q / norm
 
         results = self.client.search(
             collection_name=self.collection_name,
             data=q.tolist(),
             anns_field="dense_vec",
             limit=top_k,
-            output_fields=["doc_json"],
-            search_params={"metric_type": "IP"},
+            output_fields=output_fields or ["*"],
+            search_params={"metric_type": "COSINE"},
+            filter=filter_expr,
         )
 
-        output = []
-        for hit in results[0]:
-            output.append((
-                hit["id"],
-                hit["distance"],
-                hit["entity"]["doc_json"],
-            ))
-        return output
+        return [(hit["id"], hit["distance"], hit["entity"]) for hit in results[0]]
 
-    def query_all(self) -> list[dict]:
-        """查询所有文档（按 id 排序），返回 [{"id": int, "doc_json": str}, ...]"""
+    def query_all(self, output_fields: list[str] | None = None) -> list[dict]:
+        """查询所有文档（按 id 排序）"""
         if not self.exists():
             return []
         results = self.client.query(
             collection_name=self.collection_name,
             filter="id >= 0",
-            output_fields=["doc_json"],
+            output_fields=output_fields or ["*"],
             limit=10000,
         )
         results.sort(key=lambda x: x["id"])
@@ -212,7 +211,7 @@ class MilvusIndex:
 
 
 class MilvusMetaStore:
-    """Milvus 元数据存储 — 用于存储 schema_hash 等非向量键值数据"""
+    """元数据存储 — 用于存储 schema_hash 等键值数据"""
 
     COLLECTION = "nl2sql_metadata"
 

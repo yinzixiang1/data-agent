@@ -1,0 +1,246 @@
+table:
+  name: pmt_finance_deposit
+  database: dwd_banking
+  display_name: 存款记录表
+  description: |
+    商户的入金/存款记录。
+    每行代表一笔商户入金，覆盖LOCAL/SWIFT支付方式，含渠道关联、sender验证、风险等级、汇率等。
+  tags: [存款, deposit, 入金, payin, 入款, 渠道入款]
+  query_tips: 已完成入金用 deposit_status=1；按sender验证用 channel_related_status=1
+
+columns:
+  - name: fdid
+    display_name: 主键ID
+    skip_index: true
+
+  - name: direct_id
+    display_name: 机构ID
+
+  - name: account_id
+    display_name: 账户ID
+
+  - name: account_name
+    display_name: 商户名
+
+  - name: deposit_id
+    display_name: 存款ID
+
+  - name: deposit_currency
+    display_name: 币种
+
+  - name: payment_method
+    display_name: 支付方式
+    enum_values:
+      - {value: 1000, label: "LOCAL"}
+      - {value: 2000, label: "SWIFT"}
+
+  - name: deposit_amount
+    display_name: 存款金额
+
+  - name: deposit_fee
+    display_name: 存款手续费
+
+  - name: exec_fee_snapshot
+    display_name: 执行费率快照
+    skip_index: true
+
+  - name: deposit_reason
+    display_name: 存款原因
+
+  - name: deposit_reference
+    display_name: 存款引用
+
+  - name: channel_code
+    display_name: 渠道编码
+    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
+
+  - name: channel_resp_id
+    display_name: 渠道响应唯一ID
+
+  - name: channel_related_id
+    display_name: 关联CC的related_entity_id
+
+  - name: channel_related_info
+    display_name: 关联渠道信息(主要存sender)
+    skip_index: true
+
+  - name: channel_related_status
+    display_name: sender验证状态
+    enum_values:
+      - {value: -1, label: "验证失败"}
+      - {value: 0, label: "待验证"}
+      - {value: 1, label: "验证成功"}
+
+  - name: channel_resp_status
+    display_name: 上游返回状态
+
+  - name: channel_resp_body
+    display_name: 上游返回报文
+    skip_index: true
+
+  - name: execute_reason
+    display_name: 失败原因
+
+  - name: short_reference_id
+    display_name: 短号
+
+  - name: short_account_id
+    display_name: 商户短号
+
+  - name: deposit_remark
+    display_name: 备注
+
+  - name: creator_id
+    display_name: 创建人ID
+
+  - name: creator_name
+    display_name: 创建人名
+
+  - name: transaction_id
+    display_name: 交易流水ID
+
+  - name: review_status
+    display_name: 审查状态
+    enum_values:
+      - {value: 1, label: "通过"}
+      - {value: 0, label: "审核中"}
+      - {value: -1, label: "拒绝"}
+
+  - name: deposit_status
+    display_name: 存款状态
+    enum_values:
+      - {value: 0, label: "pending"}
+      - {value: 1, label: "completed"}
+      - {value: -1, label: "failed"}
+
+  - name: payment_scope
+    display_name: 支付范围
+    enum_values: [internal, domestic, cross-border]
+
+  - name: account_channel_id
+    display_name: 用户渠道ID
+
+  - name: deposit_way
+    display_name: 创建方式
+    enum_values:
+      - {value: 0, label: "商户端"}
+      - {value: 1, label: "接口"}
+
+  - name: risk_remark
+    display_name: 风险备注
+
+  - name: risk_level
+    display_name: 风险等级
+
+  - name: ext_applicant_id
+    display_name: 外部申请人ID
+
+  - name: exchange_rate
+    display_name: USD汇率
+
+  - name: complete_time
+    display_name: 完成时间
+
+  - name: create_time
+    display_name: 创建时间
+
+  - name: update_time
+    display_name: 更新时间
+
+relations:
+  - column: account_id
+    target_table: pmt_account
+    target_column: account_id
+    join_type: LEFT JOIN
+
+  - column: channel_code
+    target_table: pmt_service_channel
+    target_column: channel_code
+    join_type: LEFT JOIN
+
+  - column: account_channel_id
+    target_table: pmt_account_channel
+    target_column: account_channel_id
+    join_type: LEFT JOIN
+
+  - column: transaction_id
+    target_table: pmt_finance_transactions
+    target_column: transaction_id
+    join_type: LEFT JOIN
+
+common_queries:
+  - question: 月度入金总额(按币种)
+    sql: |
+      SELECT DATE_FORMAT(create_time, '%Y-%m') AS "月份",
+             deposit_currency AS "币种",
+             COUNT(*) AS "笔数",
+             SUM(deposit_amount) AS "总金额"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE deposit_status = 1
+      GROUP BY DATE_FORMAT(create_time, '%Y-%m'), deposit_currency
+      ORDER BY "月份" DESC, "总金额" DESC;
+    tables: [pmt_finance_deposit]
+    difficulty: medium
+
+  - question: 各币种入金分布
+    sql: |
+      SELECT deposit_currency AS "币种",
+             SUM(deposit_amount) AS "总金额",
+             SUM(deposit_amount * exchange_rate) AS "USD等值",
+             COUNT(*) AS "笔数"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE deposit_status = 1
+      GROUP BY deposit_currency
+      ORDER BY "USD等值" DESC;
+    tables: [pmt_finance_deposit]
+    difficulty: medium
+
+  - question: 入金失败原因TOP20
+    sql: |
+      SELECT execute_reason AS "失败原因",
+             COUNT(*) AS "次数"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE deposit_status = -1
+      GROUP BY execute_reason
+      ORDER BY "次数" DESC
+      LIMIT 20;
+    tables: [pmt_finance_deposit]
+    difficulty: easy
+
+  - question: sender验证失败率
+    sql: |
+      SELECT channel_code AS "渠道",
+             ROUND(SUM(CASE WHEN channel_related_status = -1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "验证失败率%"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE channel_related_status IN (-1, 1)
+      GROUP BY channel_code;
+    tables: [pmt_finance_deposit]
+    difficulty: medium
+
+  - question: 各渠道入金占比
+    sql: |
+      SELECT channel_code AS "渠道",
+             SUM(deposit_amount * exchange_rate) AS "USD等值入金",
+             COUNT(*) AS "笔数"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE deposit_status = 1
+        AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY channel_code
+      ORDER BY "USD等值入金" DESC;
+    tables: [pmt_finance_deposit]
+    difficulty: medium
+
+  - question: 高风险入金订单
+    sql: |
+      SELECT short_reference_id AS "短号",
+             account_name AS "商户",
+             deposit_currency AS "币种",
+             deposit_amount AS "金额",
+             risk_level AS "风险等级",
+             risk_remark AS "风险备注"
+      FROM dwd_banking.pmt_finance_deposit
+      WHERE risk_level > 0
+      ORDER BY risk_level DESC, create_time DESC
+      LIMIT 50;
+    tables: [pmt_finance_deposit]
+    difficulty: easy

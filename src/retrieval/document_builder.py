@@ -1,4 +1,4 @@
-"""文档构建 — Schema dict → 表级/列级检索文档"""
+"""文档构建 — Schema dict → 表级/列级/枚举级检索文档"""
 
 import logging
 
@@ -11,8 +11,6 @@ class DocumentBuilder:
     def build_table_document(self, schema: dict) -> dict:
         """
         构建表级检索文档。
-
-        文档内容直接决定"什么样的用户提问能匹配到这张表"。
 
         Returns:
             {
@@ -78,9 +76,6 @@ class DocumentBuilder:
         构建列级检索文档。
 
         只对有业务含义的列建索引，跳过技术字段、敏感字段、JSON 配置字段。
-
-        Returns:
-            [{"table_name", "column_name", "doc_type": "column", "text"}, ...]
         """
         table_name = schema["table_name"]
         display_name = schema.get("display_name", "")
@@ -96,7 +91,7 @@ class DocumentBuilder:
             if not col.get("comment") and not col.get("display_name") and not col.get("description"):
                 continue
             # JSON/STRING 无注释的跳过
-            if col["type"].upper() == "STRING" and not col.get("comment") and not col.get("display_name"):
+            if col.get("type", "").upper() == "STRING" and not col.get("comment") and not col.get("display_name"):
                 continue
 
             parts = [
@@ -107,7 +102,8 @@ class DocumentBuilder:
             if col.get("display_name"):
                 parts.append(f"中文名: {col['display_name']}")
 
-            parts.append(f"类型: {col['type']}")
+            if col.get("type"):
+                parts.append(f"类型: {col['type']}")
 
             desc = col.get("description") or col.get("comment", "")
             if desc:
@@ -126,18 +122,75 @@ class DocumentBuilder:
             docs.append({
                 "table_name": table_name,
                 "column_name": col["name"],
+                "column_cn_name": col.get("display_name") or col.get("comment", ""),
+                "column_type": col.get("type", ""),
+                "column_comment": desc,
+                "is_enum": bool(col.get("enum_values")),
+                "enum_values_summary": self._format_enum_values(col["enum_values"]) if col.get("enum_values") else "",
                 "doc_type": "column",
                 "text": "\n".join(parts),
             })
 
         return docs
 
-    def build_all(self, schemas: list[dict]) -> tuple[list[dict], list[dict]]:
+    def build_enum_documents(self, enums: list[dict]) -> list[dict]:
+        """
+        从独立枚举层构建枚举值检索文档。
+
+        每个枚举值独立成一条文档，用于将"持牌商户"映射到 account_type=2000。
+
+        Args:
+            enums: 枚举条目列表，每条包含 table_name, field_name, field_label,
+                   values: [{code, label, label_cn}, ...]
+        """
+        docs = []
+
+        for entry in enums:
+            table_name = entry["table_name"]
+            col_name = entry["field_name"]
+            col_cn = entry.get("field_label", "")
+
+            for v in entry.get("values", []):
+                code = str(v.get("code", ""))
+                label = v.get("label", "")
+                label_cn = v.get("label_cn", "")
+
+                # 向量化文本：中文标签优先，无则用英文
+                display_label = label_cn if label_cn and label_cn != label else label
+                parts = [f"枚举值: {display_label}"]
+                col_display = f"{table_name}.{col_name}" + (f"({col_cn})" if col_cn else "")
+                parts.append(f"对应字段: {col_display}")
+                parts.append(f"实际取值: {code}")
+                if label and label != display_label:
+                    parts.append(f"英文标签: {label}")
+
+                docs.append({
+                    "table_name": table_name,
+                    "column_name": col_name,
+                    "enum_code": code,
+                    "enum_label_cn": label_cn or label,
+                    "description": "",
+                    "synonyms": "",
+                    "sql_value": code,
+                    "text": "\n".join(parts),
+                })
+
+        return docs
+
+    def build_all(
+        self,
+        schemas: list[dict],
+        enums: list[dict] | None = None,
+    ) -> tuple[list[dict], list[dict], list[dict]]:
         """
         批量构建所有表的文档。
 
+        Args:
+            schemas: 表 Schema 列表
+            enums: 独立枚举条目列表（来自 enums/*.yaml）
+
         Returns:
-            (table_docs, column_docs)
+            (table_docs, column_docs, enum_docs)
         """
         table_docs = []
         column_docs = []
@@ -146,8 +199,13 @@ class DocumentBuilder:
             table_docs.append(self.build_table_document(schema))
             column_docs.extend(self.build_column_documents(schema))
 
-        logger.info(f"文档构建完成: {len(table_docs)} 个表级文档, {len(column_docs)} 个列级文档")
-        return table_docs, column_docs
+        enum_docs = self.build_enum_documents(enums or [])
+
+        logger.info(
+            f"文档构建完成: {len(table_docs)} 个表级, "
+            f"{len(column_docs)} 个列级, {len(enum_docs)} 个枚举值"
+        )
+        return table_docs, column_docs, enum_docs
 
     def _format_enum_values(self, enum_values) -> str:
         """格式化枚举值"""

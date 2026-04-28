@@ -108,7 +108,7 @@ class SchemaLoader:
         # 加载表语义
         tables_dir = self.semantic_layer_dir / "tables"
         if tables_dir.exists():
-            for f in tables_dir.glob("*.yaml"):
+            for f in tables_dir.glob("**/*.yaml"):
                 try:
                     data = yaml.safe_load(f.read_text(encoding="utf-8"))
                     if data and "table" in data:
@@ -120,7 +120,7 @@ class SchemaLoader:
         # 加载业务术语
         glossary_dir = self.semantic_layer_dir / "glossary"
         if glossary_dir.exists():
-            for f in glossary_dir.glob("*.yaml"):
+            for f in glossary_dir.glob("**/*.yaml"):
                 try:
                     data = yaml.safe_load(f.read_text(encoding="utf-8"))
                     if data and "glossary" in data:
@@ -131,6 +131,72 @@ class SchemaLoader:
 
         logger.info(f"语义层加载完成: {len(table_semantics)} 张表, {len(glossary)} 条术语")
         return table_semantics, glossary
+
+    def load_enums(self) -> list[dict]:
+        """
+        加载枚举字典。在线模式查 Doris warehouse_sys.sys_dim_enum_dict，
+        离线模式读本地 semantic_layer/enums/*.yaml。
+
+        Returns:
+            扁平化的枚举条目列表，每条:
+            {table_name, field_name, field_label, values: [{code, label, label_cn}, ...]}
+        """
+        if not self.offline and self.engine:
+            try:
+                enums = self._load_enums_from_doris()
+                logger.info(f"枚举层从 Doris 加载完成: {len(enums)} 个字段组")
+                return enums
+            except Exception as e:
+                logger.warning(f"从 Doris 加载枚举失败，回退到本地 YAML: {e}")
+
+        enums = self._load_enums_from_yaml()
+        logger.info(f"枚举层从本地 YAML 加载完成: {len(enums)} 个字段组")
+        return enums
+
+    def _load_enums_from_doris(self) -> list[dict]:
+        """从 Doris warehouse_sys.sys_dim_enum_dict 查询枚举字典"""
+        sql = text("""
+            SELECT src_table_name, src_field_name, field_label,
+                   src_field_value, src_value_label, status_desc
+            FROM warehouse_sys.sys_dim_enum_dict
+            ORDER BY src_table_name, src_field_name, sort_order
+        """)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql).fetchall()
+
+        # 按 (table_name, field_name) 分组
+        from collections import OrderedDict
+        groups: dict[tuple, dict] = OrderedDict()
+        for row in rows:
+            key = (row[0], row[1])  # (src_table_name, src_field_name)
+            if key not in groups:
+                groups[key] = {
+                    "table_name": row[0],
+                    "field_name": row[1],
+                    "field_label": row[2] or row[1],
+                    "values": [],
+                }
+            groups[key]["values"].append({
+                "code": str(row[3]),
+                "label": row[4] or "",
+                "label_cn": row[5] or "",
+            })
+
+        return list(groups.values())
+
+    def _load_enums_from_yaml(self) -> list[dict]:
+        """从本地 semantic_layer/enums/*.yaml 加载枚举"""
+        enums = []
+        enums_dir = self.semantic_layer_dir / "enums"
+        if enums_dir.exists():
+            for f in enums_dir.glob("*.yaml"):
+                try:
+                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
+                    if data and "enums" in data:
+                        enums.extend(data["enums"])
+                except Exception as e:
+                    logger.warning(f"加载枚举文件 {f} 失败: {e}")
+        return enums
 
     # ── 合并 ──
 
@@ -207,17 +273,19 @@ class SchemaLoader:
             "common_queries": semantic.get("common_queries", []),
         }
 
-    def load_all(self) -> tuple[list[dict], dict]:
+    def load_all(self) -> tuple[list[dict], dict, list[dict]]:
         """
         加载并合并所有 Schema。
 
         Returns:
-            (schemas, glossary)
+            (schemas, glossary, enums)
             - schemas: 完整 Schema dict 列表
             - glossary: 业务术语表
+            - enums: 独立枚举条目列表
         """
         # 语义层
         table_semantics, glossary = self.load_semantic_layer()
+        enums = self.load_enums()
 
         if self.offline:
             # 离线模式：仅从语义层 YAML 构建
@@ -226,7 +294,7 @@ class SchemaLoader:
                 schema = self._build_schema_from_yaml(semantic)
                 schemas.append(schema)
             logger.info(f"离线模式: 从语义层加载 {len(schemas)} 张表")
-            return schemas, glossary
+            return schemas, glossary, enums
 
         # 在线模式：Doris DDL + 语义层合并
         table_names = self.get_all_tables()
@@ -240,4 +308,4 @@ class SchemaLoader:
             schemas.append(merged)
 
         logger.info(f"Schema 合并完成: {len(schemas)} 张表, 其中 {len(table_semantics)} 张有语义层补充")
-        return schemas, glossary
+        return schemas, glossary, enums
