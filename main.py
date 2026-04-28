@@ -1,9 +1,20 @@
 """
-NL2SQL RAG 检索系统 — 交互式入口
+NL2SQL RAG 检索系统 — 交互式入口。
 
-运行: python main.py
-      python main.py --offline       # 强制离线模式（仅用语义层 YAML）
-      python main.py --rebuild       # 强制重建索引
+启动后进入 REPL 交互循环: 输入自然语言问题 → RAG 检索 → LLM 生成 SQL → EXPLAIN 校验。
+
+运行方式::
+
+    python main.py                  # 自动检测 Doris 连接
+    python main.py --offline        # 强制离线模式（仅用语义层 YAML，跳过 EXPLAIN）
+    python main.py --rebuild        # 强制重建 Milvus 索引
+    python main.py --debug          # 开启 DEBUG 日志
+
+交互命令::
+
+    /quit    — 退出
+    /debug   — 切换调试模式（显示/隐藏详细日志）
+    /prompt  — 切换 Prompt 显示（显示/隐藏发给 LLM 的完整 Prompt）
 """
 
 import sys
@@ -38,7 +49,12 @@ MAX_FIX_RETRIES = 5
 
 
 def check_doris_connection() -> bool:
-    """检测 Doris 是否可连接"""
+    """
+    检测 Doris 是否可连接（3 秒超时）。
+
+    Returns:
+        bool: True 表示连接成功
+    """
     try:
         from sqlalchemy import create_engine, text
         url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
@@ -52,14 +68,26 @@ def check_doris_connection() -> bool:
 
 
 def create_doris_engine():
-    """创建 Doris 连接引擎"""
+    """
+    创建 Doris SQLAlchemy 连接引擎（连接池大小 2，回收周期 1 小时）。
+
+    Returns:
+        sqlalchemy.Engine: 可用于执行 SQL 的引擎实例
+    """
     from sqlalchemy import create_engine
     url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
 
 def init_llm() -> OpenAI:
-    """初始化 DeepSeek LLM"""
+    """
+    初始化 DeepSeek LLM 客户端。
+
+    从环境变量读取 DEEPSEEK_API_KEY 和 DEEPSEEK_BASE_URL。
+
+    Returns:
+        OpenAI: 兼容 OpenAI 协议的客户端实例
+    """
     from src.retrieval.config import os
     return OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -68,7 +96,17 @@ def init_llm() -> OpenAI:
 
 
 def llm_chat(llm: OpenAI, messages: list[dict]) -> str:
-    """调用 LLM 并将响应追加到 messages"""
+    """
+    调用 LLM 生成回复，并将 assistant 回复追加到 messages（维持多轮上下文）。
+
+    Args:
+        llm: OpenAI 兼容客户端实例
+        messages: 对话历史列表，格式为 [{"role": "system"|"user"|"assistant", "content": str}, ...]
+            调用后会在末尾追加 {"role": "assistant", "content": response}
+
+    Returns:
+        str: LLM 生成的回复文本
+    """
     resp = llm.chat.completions.create(
         model="deepseek-chat", temperature=0, messages=messages,
     )
@@ -78,6 +116,12 @@ def llm_chat(llm: OpenAI, messages: list[dict]) -> str:
 
 
 def main():
+    """
+    主函数 — 初始化系统并进入交互式 REPL 循环。
+
+    流程: 检测 Doris → 初始化 RAG → 初始化 LLM → 交互循环
+        (每轮: 用户输入 → RAG 检索 → LLM 生成 SQL → EXPLAIN 校验 → 执行计划分析)
+    """
     force_offline = "--offline" in sys.argv
     force_rebuild = "--rebuild" in sys.argv
     debug_mode = "--debug" in sys.argv

@@ -1,4 +1,25 @@
-"""索引生命周期管理"""
+"""
+索引生命周期管理 — 构建、加载、变更检测。
+
+负责将 Schema 文档编码为向量并写入 Milvus Collection，
+通过 schema_hash 判断是否需要重建，避免重复构建。
+
+使用示例::
+
+    from src.retrieval.index_manager import IndexManager
+    from src.retrieval.embedding import get_embedding
+
+    mgr = IndexManager()
+    embedding = get_embedding()
+
+    # 判断是否需要重建
+    if mgr.need_rebuild(schemas, enums):
+        indices = mgr.build_and_save(schemas, embedding, enums)
+    else:
+        indices = mgr.load_all(embedding)
+
+    # indices 包含: table_index, column_index, enum_index, fewshot_selector, table_schemas
+"""
 
 import json
 import hashlib
@@ -60,7 +81,17 @@ FEWSHOT_FIELDS = [
 
 
 class IndexManager:
-    """索引生命周期管理"""
+    """
+    索引生命周期管理器。
+
+    职责:
+        1. 通过 schema_hash 检测 Schema 是否变更（need_rebuild）
+        2. 全量构建索引: 文档构建 → 向量编码 → 写入 Milvus（build_and_save）
+        3. 加载已有索引和元数据（load_all）
+
+    Attributes:
+        meta_store: MilvusMetaStore 实例，用于存取 schema_hash
+    """
 
     def __init__(self):
         self.meta_store = MilvusMetaStore()
@@ -68,7 +99,18 @@ class IndexManager:
     def compute_schema_hash(
         self, schemas: list[dict], enums: list[dict] | None = None,
     ) -> str:
-        """计算 Schema + 枚举 内容 hash"""
+        """
+        计算 Schema + 枚举的内容 SHA256 哈希值。
+
+        用于判断 Schema 是否有变更，避免不必要的重建。
+
+        Args:
+            schemas: 表 Schema 列表
+            enums: 枚举条目列表，为 None 时不纳入哈希计算
+
+        Returns:
+            str: SHA256 十六进制字符串
+        """
         hashable = []
         for s in schemas:
             hashable.append({
@@ -92,7 +134,21 @@ class IndexManager:
     def need_rebuild(
         self, schemas: list[dict], enums: list[dict] | None = None,
     ) -> bool:
-        """检查是否需要重建索引"""
+        """
+        检查是否需要重建索引。
+
+        判断逻辑:
+            1. 无已存储的 schema_hash → 需要构建（首次运行）
+            2. hash 不一致 → Schema 有变更，需要重建
+            3. 关键 Collection 不存在 → 需要重建
+
+        Args:
+            schemas: 当前的表 Schema 列表
+            enums: 当前的枚举条目列表
+
+        Returns:
+            bool: True 表示需要重建索引
+        """
         current_hash = self.compute_schema_hash(schemas, enums)
 
         stored_hash = self.meta_store.get("schema_hash")
@@ -120,16 +176,26 @@ class IndexManager:
         enums: list[dict] | None = None,
     ) -> dict:
         """
-        全量构建索引: 编码文档 → 写入向量存储。
+        全量构建索引: 构建文档 → BGE-M3 编码 → 写入 Milvus → 保存 schema_hash。
+
+        构建的 Collection:
+            1. nl2sql_table — 表级索引（每张表一条）
+            2. nl2sql_column — 列级索引（每个有效列一条）
+            3. nl2sql_enum — 枚举值索引（每个枚举值一条）
+            4. nl2sql_fewshot — Few-shot 示例索引（来自 common_queries）
+
+        Args:
+            schemas: 表 Schema 列表（SchemaLoader.load_all() 返回）
+            embedding: BGEEmbedding 实例，用于向量编码
+            enums: 枚举条目列表，为 None 时跳过枚举索引
 
         Returns:
-            {
-                "table_index": MilvusIndex,
-                "column_index": MilvusIndex,
-                "enum_index": MilvusIndex,
-                "fewshot_selector": FewShotSelector,
-                "table_schemas": dict,
-            }
+            dict，包含:
+                - "table_index" (MilvusIndex): 表级索引
+                - "column_index" (MilvusIndex): 列级索引
+                - "enum_index" (MilvusIndex): 枚举值索引
+                - "fewshot_selector" (FewShotSelector): Few-shot 选择器（已加载数据）
+                - "table_schemas" (dict): {table_name: schema_dict} 映射
         """
         builder = DocumentBuilder()
 
@@ -233,7 +299,18 @@ class IndexManager:
         }
 
     def load_all(self, embedding: BGEEmbedding) -> dict:
-        """加载已有索引和元数据"""
+        """
+        加载已有的 Milvus 索引和元数据（无需重建时调用）。
+
+        从 Milvus 读取 table_schemas（通过 schema_json 字段反序列化）和
+        fewshot 示例，重建内存中的 FewShotSelector。
+
+        Args:
+            embedding: BGEEmbedding 实例，用于重建 fewshot 的 Dense 向量
+
+        Returns:
+            dict: 与 build_and_save() 返回格式一致
+        """
         logger.info("加载索引和元数据")
 
         table_index = MilvusIndex(TABLE_COLLECTION)

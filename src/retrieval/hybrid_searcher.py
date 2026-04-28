@@ -1,4 +1,25 @@
-"""混合检索 — Dense + Sparse hybrid search，表级 + 列级 + 枚举联合"""
+"""
+混合检索 — Dense + Sparse hybrid search，表级 + 列级 + 枚举联合。
+
+检索流程:
+    1. 表级混合检索（Dense + Sparse → RRF）
+    2. 列级混合检索 → 命中的列反推其所属表，给表加分
+    3. 枚举值检索 → 命中的枚举反哺其关联表分数
+    4. 关联表补全 → top 表的 relations 中的关联表获得 bonus 分
+
+使用示例::
+
+    searcher = HybridSearcher(embedding, table_index, column_index, enum_index, table_schemas)
+
+    # 表级检索
+    results = searcher.search("活跃商户数量", top_k=5)
+    # results: [{"table_name": "pmt_account", "score": 0.85, "schema": {...}}, ...]
+
+    # 枚举值检索
+    enums = searcher.search_enums("持牌商户")
+    # enums: [{"table_name": "pmt_account", "column_name": "account_type",
+    #          "enum_label_cn": "LPSP", "sql_value": "2000", "score": 0.9}, ...]
+"""
 
 import logging
 
@@ -11,9 +32,14 @@ logger = logging.getLogger(__name__)
 
 class HybridSearcher:
     """
-    混合检索器：
-    1. 表级 + 列级 hybrid search → RRF 融合
-    2. 枚举值检索 → 将业务术语映射到 SQL 条件
+    混合检索器：表级 + 列级 + 枚举联合检索，多信号融合排序。
+
+    Attributes:
+        embedding: BGEEmbedding 实例
+        table_index: 表级 MilvusIndex
+        column_index: 列级 MilvusIndex
+        enum_index: 枚举值 MilvusIndex
+        table_schemas: {table_name: schema_dict} 映射
     """
 
     def __init__(
@@ -24,6 +50,14 @@ class HybridSearcher:
         enum_index: MilvusIndex,
         table_schemas: dict,
     ):
+        """
+        Args:
+            embedding: BGEEmbedding 实例，用于编码查询
+            table_index: 表级 Collection 的 MilvusIndex
+            column_index: 列级 Collection 的 MilvusIndex
+            enum_index: 枚举值 Collection 的 MilvusIndex
+            table_schemas: {table_name: schema_dict} 映射，用于读取关联表信息
+        """
         self.embedding = embedding
         self.table_index = table_index
         self.column_index = column_index
@@ -32,10 +66,26 @@ class HybridSearcher:
 
     def search(self, query: str, top_k: int = 5, recall_k: int = RECALL_TOP_K) -> list[dict]:
         """
-        表级 + 列级混合检索。
+        表级 + 列级混合检索，融合枚举反哺和关联表补全。
+
+        评分规则:
+            - 表级检索: RRF 基础分
+            - 列级命中: +0.01（列所属的表）
+            - 枚举反哺: +0.02（枚举值关联的表）
+            - 关联补全: +parent_score × 0.1（top 表的关联表）
+
+        Args:
+            query: 用户查询（可能已经过术语增强），如 "活跃商户 account_status is_delete"
+            top_k: 最终返回的表数量
+            recall_k: Dense/Sparse 各自的召回数量
 
         Returns:
-            [{"table_name", "score", "source", "hit_by_column", "schema"}, ...]
+            list[dict]: 按 score 降序排列，每个元素包含:
+                - "table_name" (str): 表名
+                - "score" (float): 综合得分
+                - "source" (str): 固定为 "hybrid"
+                - "hit_by_column" (bool): 是否被列级检索命中
+                - "schema" (dict): 完整表 Schema
         """
         q_output = self.embedding.encode_query(query)
         q_dense = q_output["dense_vecs"]
@@ -128,8 +178,20 @@ class HybridSearcher:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
 
+        用途: 当用户说 "持牌商户" 时，检索到 account_type=2000，
+        注入 Prompt 帮助 LLM 生成正确的 WHERE 条件。
+
+        Args:
+            query: 用户原始查询
+            top_k: 返回的最大枚举命中数
+
         Returns:
-            [{"table_name", "column_name", "enum_label_cn", "sql_value", "score"}, ...]
+            list[dict]: 每条包含:
+                - "table_name" (str): 关联表名
+                - "column_name" (str): 字段名
+                - "enum_label_cn" (str): 枚举中文标签
+                - "sql_value" (str): SQL 中使用的实际值
+                - "score" (float): 检索相关度分数
         """
         if self.enum_index.count == 0:
             return []

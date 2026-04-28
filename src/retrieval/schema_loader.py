@@ -1,4 +1,17 @@
-"""数据源加载 — 从 Doris DDL + 语义层 YAML 合并出完整 Schema"""
+"""
+数据源加载 — 从 Doris DDL + 语义层 YAML 合并出完整 Schema。
+
+在线模式: 连接 Doris 读取 DDL，再用语义层 YAML 补充业务信息（display_name, description 等）。
+离线模式: 仅从语义层 YAML 构建 Schema（不依赖 Doris）。
+
+使用示例::
+
+    loader = SchemaLoader(offline=True)  # 离线模式
+    schemas, glossary, enums = loader.load_all()
+    # schemas: [{"table_name": "pmt_account", "columns": [...], ...}, ...]
+    # glossary: {"活跃商户": {"definition": ..., "sql_hint": ...}, ...}
+    # enums: [{"table_name": "pmt_account", "field_name": "account_type", "values": [...]}, ...]
+"""
 
 import logging
 from pathlib import Path
@@ -15,7 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 class SchemaLoader:
-    """加载 Doris Schema + 语义层 YAML，合并为完整 Schema dict 列表"""
+    """
+    加载 Doris Schema + 语义层 YAML，合并为完整 Schema dict 列表。
+
+    Attributes:
+        offline: 是否为离线模式（不连接 Doris）
+        engine: SQLAlchemy Engine 实例（离线模式为 None）
+        semantic_layer_dir: 语义层 YAML 根目录路径
+    """
 
     def __init__(
         self,
@@ -23,6 +43,14 @@ class SchemaLoader:
         semantic_layer_dir: str | Path | None = None,
         offline: bool = False,
     ):
+        """
+        Args:
+            connection_string: SQLAlchemy 连接字符串，如
+                "mysql+pymysql://root:@localhost:9030/dwd_banking?charset=utf8mb4"
+                为 None 时自动从 config 中的 DORIS_* 参数拼接
+            semantic_layer_dir: 语义层 YAML 根目录，默认使用 config.SEMANTIC_LAYER_DIR
+            offline: 是否启用离线模式。True 时不创建数据库连接，仅从 YAML 读取
+        """
         self.offline = offline
         self.engine = None
         if not offline:
@@ -37,13 +65,30 @@ class SchemaLoader:
     # ── Doris 元数据加载 ──
 
     def get_all_tables(self) -> list[str]:
-        """获取数据库所有表名"""
+        """
+        获取 Doris 数据库中所有表名（执行 SHOW TABLES）。
+
+        Returns:
+            表名字符串列表，如 ["pmt_account", "pmt_transaction", ...]
+        """
         with self.engine.connect() as conn:
             rows = conn.execute(text("SHOW TABLES")).fetchall()
             return [row[0] for row in rows]
 
     def get_table_schema(self, table_name: str) -> dict:
-        """获取单张表的完整 Schema"""
+        """
+        通过 DESCRIBE + SHOW CREATE TABLE 获取单张表的完整 Schema。
+
+        Args:
+            table_name: 表名，如 "pmt_account"
+
+        Returns:
+            dict，包含:
+                - "database": 数据库名
+                - "table_name": 表名
+                - "table_comment": 表注释（从 DDL 中提取）
+                - "columns": list[dict]，每列包含 name, type, nullable, key, default, comment
+        """
         with self.engine.connect() as conn:
             # 列信息
             col_rows = conn.execute(text(f"DESCRIBE `{table_name}`")).fetchall()
@@ -82,7 +127,16 @@ class SchemaLoader:
             }
 
     def get_sample_rows(self, table_name: str, limit: int = 3) -> list[list]:
-        """获取样例数据"""
+        """
+        获取表的样例数据行（SELECT * LIMIT）。
+
+        Args:
+            table_name: 表名
+            limit: 返回的最大行数，默认 3
+
+        Returns:
+            list[list]: 每行为一个列值列表，失败时返回空列表
+        """
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text(f"SELECT * FROM `{table_name}` LIMIT {limit}")).fetchall()
@@ -95,12 +149,18 @@ class SchemaLoader:
 
     def load_semantic_layer(self) -> tuple[dict[str, dict], dict]:
         """
-        加载语义层 YAML 文件。
+        加载语义层 YAML 文件（表语义 + 业务术语）。
+
+        扫描路径:
+            - 表语义: semantic_layer/tables/**/*.yaml
+            - 业务术语: semantic_layer/glossary/**/*.yaml
 
         Returns:
-            (table_semantics, glossary)
-            - table_semantics: {table_name: {display_name, description, tags, columns, relations, common_queries}}
-            - glossary: {term: {definition, sql_hint, related_tables, related_columns}}
+            tuple: (table_semantics, glossary)
+                - table_semantics (dict): {table_name: yaml_data}，yaml_data 包含
+                    table, columns, relations, common_queries 等顶层键
+                - glossary (dict): {term: info}，info 包含
+                    definition, sql_hint, related_tables, related_columns
         """
         table_semantics = {}
         glossary = {}
@@ -134,12 +194,21 @@ class SchemaLoader:
 
     def load_enums(self) -> list[dict]:
         """
-        加载枚举字典。在线模式查 Doris warehouse_sys.sys_dim_enum_dict，
-        离线模式读本地 semantic_layer/enums/*.yaml。
+        加载枚举字典。优先从 Doris 在线查询，失败时回退到本地 YAML。
+
+        数据来源:
+            - 在线模式: Doris warehouse_sys.sys_dim_enum_dict 表
+            - 离线模式: semantic_layer/enums/*.yaml 文件
 
         Returns:
-            扁平化的枚举条目列表，每条:
-            {table_name, field_name, field_label, values: [{code, label, label_cn}, ...]}
+            list[dict]: 扁平化的枚举条目列表，每条包含:
+                - "table_name" (str): 关联表名，如 "pmt_account"
+                - "field_name" (str): 字段名，如 "account_type"
+                - "field_label" (str): 字段中文名，如 "账户类型"
+                - "values" (list[dict]): 枚举值列表，每个:
+                    - "code" (str): 实际存储值，如 "1000"
+                    - "label" (str): 英文标签
+                    - "label_cn" (str): 中文标签，如 "普通账户"
         """
         if not self.offline and self.engine:
             try:
@@ -201,7 +270,19 @@ class SchemaLoader:
     # ── 合并 ──
 
     def merge_schema(self, doris_schema: dict, semantic: dict | None) -> dict:
-        """将 Doris DDL Schema 和语义层 YAML 合并"""
+        """
+        将 Doris DDL Schema 和语义层 YAML 合并，YAML 信息优先覆盖 DDL。
+
+        Args:
+            doris_schema: get_table_schema() 返回的 Doris 原始 Schema
+            semantic: 语义层 YAML 解析结果（包含 table, columns, relations 等），
+                为 None 时直接返回 doris_schema
+
+        Returns:
+            dict: 合并后的 Schema，新增 display_name, description, tags,
+                query_tips, relations, common_queries 等字段；
+                列级信息中 YAML 的 display_name, description, enum_values 等覆盖 DDL
+        """
         if semantic is None:
             return doris_schema
 
@@ -246,7 +327,15 @@ class SchemaLoader:
     # ── 统一入口 ──
 
     def _build_schema_from_yaml(self, semantic: dict) -> dict:
-        """仅从语义层 YAML 构建 Schema（离线模式，不连 Doris）"""
+        """
+        仅从语义层 YAML 构建 Schema（离线模式使用，不依赖 Doris）。
+
+        Args:
+            semantic: 单张表的语义层 YAML 解析结果，需包含 "table" 和 "columns" 键
+
+        Returns:
+            dict: 与 merge_schema 输出格式一致的 Schema dict
+        """
         table_info = semantic.get("table", {})
         columns = []
         for col in semantic.get("columns", []):

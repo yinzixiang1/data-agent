@@ -1,4 +1,28 @@
-"""Milvus 向量存储"""
+"""
+Milvus 向量存储 — Collection 管理、混合检索、元数据存储。
+
+封装了 MilvusClient，提供 Dense + Sparse 混合检索（RRF 融合）和标量过滤能力。
+
+使用示例::
+
+    from src.retrieval.milvus_store import MilvusIndex, MilvusMetaStore
+
+    # 创建表级 Collection 并插入数据
+    idx = MilvusIndex("nl2sql_table", dim=1024)
+    idx.create(scalar_fields=[
+        {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    ])
+    idx.insert(dense_vecs, lexical_weights, [{"table_name": "pmt_account"}])
+
+    # 混合检索
+    hits = idx.hybrid_search(q_dense, q_sparse, top_k=5)
+    # hits: [(doc_id, score, {"table_name": "pmt_account", ...}), ...]
+
+    # 元数据存储
+    meta = MilvusMetaStore()
+    meta.set("schema_hash", "abc123")
+    print(meta.get("schema_hash"))  # "abc123"
+"""
 
 import logging
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
@@ -13,7 +37,14 @@ _client: MilvusClient | None = None
 
 
 def get_milvus_client() -> MilvusClient:
-    """获取 Milvus 客户端单例"""
+    """
+    获取 Milvus 客户端单例（懒加载）。
+
+    首次调用时连接 Milvus 服务，若目标数据库不存在则自动创建。
+
+    Returns:
+        MilvusClient 实例，已切换到 config.MILVUS_DB 数据库
+    """
     global _client
     if _client is None:
         _client = MilvusClient(uri=MILVUS_URI, db_name="default")
@@ -27,7 +58,16 @@ def get_milvus_client() -> MilvusClient:
 
 
 def _to_sparse_vectors(lexical_weights_list: list[dict]) -> list:
-    """将 BGE-M3 lexical_weights 转为 Milvus sparse vector (csr_array)"""
+    """
+    将 BGE-M3 的 lexical_weights 转为 Milvus 所需的 csr_array 稀疏向量。
+
+    Args:
+        lexical_weights_list: BGE-M3 encode 返回的稀疏权重列表，
+            每个元素为 {token_id(int): weight(float)} 字典
+
+    Returns:
+        list[csr_array]: 与输入等长的稀疏向量列表，每个为 shape (1, max_idx) 的 csr_array
+    """
     sparse_vecs = []
     for weights in lexical_weights_list:
         if not weights:
@@ -46,30 +86,53 @@ def _to_sparse_vectors(lexical_weights_list: list[dict]) -> list:
 
 class MilvusIndex:
     """
-    Milvus Collection 封装。
-    支持自定义标量字段 + Dense/Sparse 混合检索。
+    Milvus Collection 封装，支持自定义标量字段 + Dense/Sparse 混合检索。
+
+    每个 Collection 自动包含三个基础字段:
+        - id (INT64): 主键
+        - dense_vec (FLOAT_VECTOR): 密集向量，用于语义检索
+        - sparse_vec (SPARSE_FLOAT_VECTOR): 稀疏向量，用于关键词检索
+
+    Attributes:
+        collection_name: Milvus Collection 名称
+        dim: Dense 向量维度（默认 1024，对应 BGE-M3）
+        client: MilvusClient 实例
     """
 
     def __init__(self, collection_name: str, dim: int = 1024):
+        """
+        Args:
+            collection_name: Collection 名称，如 "nl2sql_table"
+            dim: Dense 向量维度，BGE-M3 为 1024
+        """
         self.collection_name = collection_name
         self.dim = dim
         self.client = get_milvus_client()
 
     def exists(self) -> bool:
+        """检查 Collection 是否存在。"""
         return self.client.has_collection(self.collection_name)
 
     def drop(self):
+        """删除 Collection（如果存在）。"""
         if self.exists():
             self.client.drop_collection(self.collection_name)
             logger.info(f"已删除 Collection: {self.collection_name}")
 
     def create(self, scalar_fields: list[dict] | None = None):
         """
-        创建 Collection。
+        创建 Collection（如果已存在则先删除再重建）。
 
-        基础字段自动包含: id(INT64 PK), dense_vec(FLOAT_VECTOR), sparse_vec(SPARSE_FLOAT_VECTOR)
-        scalar_fields 示例:
-            [{"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True}, ...]
+        基础字段(id, dense_vec, sparse_vec)自动创建，只需传入额外的标量字段。
+
+        Args:
+            scalar_fields: 自定义标量字段列表，每个字段为 dict，支持的键:
+                - "name" (str): 字段名，如 "table_name"
+                - "dtype" (DataType): 数据类型，如 DataType.VARCHAR
+                - "max_length" (int): VARCHAR 最大长度
+                - "inverted" (bool): 是否创建倒排索引（加速标量过滤）
+                示例: [{"name": "table_name", "dtype": DataType.VARCHAR,
+                         "max_length": 128, "inverted": True}]
         """
         if self.exists():
             self.drop()
@@ -103,11 +166,15 @@ class MilvusIndex:
 
     def insert(self, dense_vecs: np.ndarray, lexical_weights_list: list[dict], rows: list[dict]):
         """
-        批量插入。
+        批量插入文档到 Collection。
 
-        dense_vecs: (n, dim) numpy array
-        lexical_weights_list: BGE-M3 稀疏权重
-        rows: 标量字段数据 [{"table_name": "xxx", ...}, ...]
+        Args:
+            dense_vecs: Dense 向量矩阵，shape (n, dim)，float32 numpy array
+            lexical_weights_list: BGE-M3 稀疏权重列表，长度 n，
+                每个元素为 {token_id: weight} 字典
+            rows: 标量字段数据列表，长度 n，每个元素为 dict，
+                键对应 create() 时定义的 scalar_fields，如:
+                [{"table_name": "pmt_account", "table_cn_name": "商户账户表"}, ...]
         """
         n = len(rows)
         sparse_vecs = _to_sparse_vectors(lexical_weights_list)
@@ -135,9 +202,21 @@ class MilvusIndex:
         filter_expr: str | None = None,
     ) -> list[tuple[int, float, dict]]:
         """
-        混合检索: Dense + Sparse → RRF 融合。
+        混合检索: Dense(COSINE) + Sparse(IP) → RRF 融合排序。
 
-        Returns: [(doc_id, score, entity_dict), ...]
+        Args:
+            query_dense: 查询的 Dense 向量，shape (1, dim) 或 (dim,)
+            query_sparse_weights: 查询的 Sparse 权重，{token_id: weight} 字典
+            top_k: 最终返回的文档数量
+            recall_k: Dense/Sparse 各自召回的候选数量（融合前的池子大小）
+            output_fields: 需要返回的标量字段名列表，None 表示返回所有字段
+            filter_expr: Milvus 标量过滤表达式，如 'table_name == "pmt_account"'
+
+        Returns:
+            list[tuple]: [(doc_id, rrf_score, entity_dict), ...]
+                - doc_id: 文档 ID (int)
+                - rrf_score: RRF 融合后的分数 (float)
+                - entity_dict: 标量字段数据 (dict)
         """
         q = query_dense.astype(np.float32).reshape(1, -1)
         q_sparse = _to_sparse_vectors([query_sparse_weights])
@@ -174,7 +253,18 @@ class MilvusIndex:
         output_fields: list[str] | None = None,
         filter_expr: str | None = None,
     ) -> list[tuple[int, float, dict]]:
-        """纯 Dense 检索"""
+        """
+        纯 Dense 向量检索（COSINE 相似度）。
+
+        Args:
+            query_dense: 查询向量，shape (1, dim) 或 (dim,)
+            top_k: 返回数量
+            output_fields: 需要返回的标量字段名列表，None 表示返回所有
+            filter_expr: 标量过滤表达式
+
+        Returns:
+            list[tuple]: [(doc_id, cosine_score, entity_dict), ...]
+        """
         q = query_dense.astype(np.float32).reshape(1, -1)
 
         results = self.client.search(
@@ -190,7 +280,15 @@ class MilvusIndex:
         return [(hit["id"], hit["distance"], hit["entity"]) for hit in results[0]]
 
     def query_all(self, output_fields: list[str] | None = None) -> list[dict]:
-        """查询所有文档（按 id 排序）"""
+        """
+        查询 Collection 中所有文档（按 id 升序排列）。
+
+        Args:
+            output_fields: 需要返回的字段名列表，None 表示返回所有标量字段
+
+        Returns:
+            list[dict]: 按 id 升序排列的文档列表，最多 10000 条
+        """
         if not self.exists():
             return []
         results = self.client.query(
@@ -204,6 +302,7 @@ class MilvusIndex:
 
     @property
     def count(self) -> int:
+        """Collection 中的文档总数，不存在时返回 0。"""
         if not self.exists():
             return 0
         stats = self.client.get_collection_stats(self.collection_name)
@@ -211,7 +310,15 @@ class MilvusIndex:
 
 
 class MilvusMetaStore:
-    """元数据存储 — 用于存储 schema_hash 等键值数据"""
+    """
+    元数据键值存储 — 基于 Milvus Collection 实现，用于持久化 schema_hash 等配置。
+
+    由于 Milvus 要求至少一个向量字段，内部使用 _dummy_vec 占位。
+
+    Attributes:
+        COLLECTION: 元数据 Collection 名称，固定为 "nl2sql_metadata"
+        client: MilvusClient 实例
+    """
 
     COLLECTION = "nl2sql_metadata"
 
@@ -219,6 +326,7 @@ class MilvusMetaStore:
         self.client = get_milvus_client()
 
     def _ensure_collection(self):
+        """确保元数据 Collection 存在，不存在则创建。"""
         if not self.client.has_collection(self.COLLECTION):
             schema = self.client.create_schema(auto_id=False)
             schema.add_field("key", DataType.VARCHAR, is_primary=True, max_length=256)
@@ -237,12 +345,26 @@ class MilvusMetaStore:
             logger.info(f"创建元数据 Collection: {self.COLLECTION}")
 
     def set(self, key: str, value: str):
-        """设置元数据（upsert 语义）"""
+        """
+        设置元数据（upsert 语义，key 存在则覆盖）。
+
+        Args:
+            key: 键名，如 "schema_hash"
+            value: 值，如 SHA256 哈希字符串
+        """
         self._ensure_collection()
         self.client.upsert(self.COLLECTION, [{"key": key, "value": value, "_dummy_vec": [0.0, 0.0]}])
 
     def get(self, key: str) -> str | None:
-        """获取元数据"""
+        """
+        获取元数据值。
+
+        Args:
+            key: 键名
+
+        Returns:
+            对应的值字符串，key 不存在或 Collection 不存在时返回 None
+        """
         if not self.client.has_collection(self.COLLECTION):
             return None
         results = self.client.query(
@@ -255,6 +377,7 @@ class MilvusMetaStore:
         return None
 
     def drop(self):
+        """删除元数据 Collection（如果存在）。"""
         if self.client.has_collection(self.COLLECTION):
             self.client.drop_collection(self.COLLECTION)
             logger.info(f"已删除元数据 Collection: {self.COLLECTION}")

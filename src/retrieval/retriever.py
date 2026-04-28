@@ -1,4 +1,19 @@
-"""RAG 检索体系统一入口 — 串联所有模块"""
+"""
+RAG 检索体系统一入口 — 串联所有模块。
+
+SchemaRetriever 是外部调用的唯一接口，封装了完整的检索流程:
+    术语解析 → 混合检索 → Reranker 精排 → 关联补回 → 枚举检索 → Few-shot → Prompt 组装
+
+使用示例::
+
+    retriever = SchemaRetriever(offline=True)
+    retriever.initialize()  # 首次启动，加载模型 + 构建/加载索引
+
+    result = retriever.retrieve("目前有多少活跃商户")
+    print(result.relevant_tables)   # [{"table_name": "pmt_account", ...}]
+    print(result.prompt_text)       # 完整 Prompt（DDL + 枚举 + 上下文 + Few-shot）
+    print(result.matched_terms)     # ["活跃商户"]
+"""
 
 import logging
 from pathlib import Path
@@ -23,7 +38,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RetrievalResult:
-    """检索结果"""
+    """
+    检索结果数据类。
+
+    Attributes:
+        relevant_tables: 检索命中的表列表，每个 dict 包含 table_name, score, schema 等
+        relevant_examples: 选中的 Few-shot 示例列表
+        enum_hits: 枚举值命中列表
+        business_context: 术语展开的业务上下文文本
+        prompt_text: 组装好的完整 Prompt 文本（直接拼入 LLM message）
+        matched_terms: 命中的业务术语名列表
+    """
     relevant_tables: list[dict] = field(default_factory=list)
     relevant_examples: list[dict] = field(default_factory=list)
     enum_hits: list[dict] = field(default_factory=list)
@@ -48,6 +73,12 @@ class SchemaRetriever:
         semantic_layer_dir: str | Path | None = None,
         offline: bool = False,
     ):
+        """
+        Args:
+            connection_string: SQLAlchemy 连接字符串，None 时从 config 自动拼接
+            semantic_layer_dir: 语义层目录路径，None 时使用 config.SEMANTIC_LAYER_DIR
+            offline: 是否启用离线模式（不连接 Doris）
+        """
         self.schema_loader = SchemaLoader(
             connection_string=connection_string,
             semantic_layer_dir=semantic_layer_dir or SEMANTIC_LAYER_DIR,
@@ -64,7 +95,12 @@ class SchemaRetriever:
         self._initialized = False
 
     def initialize(self, force_rebuild: bool = False):
-        """启动初始化：加载 Schema → 判断是否需要重建索引 → 构建/加载索引。"""
+        """
+        启动初始化：加载 Schema → 加载术语 → 判断是否需重建索引 → 构建/加载索引。
+
+        Args:
+            force_rebuild: 是否强制重建索引（忽略 schema_hash 检测）
+        """
         logger.info("=" * 60)
         logger.info("RAG 检索体系初始化开始")
         logger.info("=" * 60)
@@ -113,14 +149,27 @@ class SchemaRetriever:
         fewshot_k: int = FEWSHOT_TOP_K,
     ) -> RetrievalResult:
         """
-        完整检索流程:
-        1. 业务术语解析
-        2. Schema 混合检索（Dense + Sparse + RRF）
-        3. 表级 + 列级合并
-        4. Reranker 精排
-        5. 枚举值检索
-        6. Few-shot 示例检索（语义相似 + 表重叠 + MMR）
-        7. Prompt 组装（DDL + 枚举映射 + 业务上下文 + Few-shot）
+        完整 RAG 检索流程。
+
+        流程:
+            1. 业务术语解析 → enriched_query + business_context
+            2. Schema 混合检索（Dense + Sparse + RRF + 列反推 + 枚举反哺 + 关联补全）
+            3. Reranker 精排（如启用）
+            4. Reranker 后关联表补回（被淘汰但与 top 表有关联的表）
+            5. 枚举值检索
+            6. Few-shot 示例检索（语义相似 + 表重叠 + MMR）
+            7. Prompt 组装（DDL + 枚举映射 + 业务上下文 + Few-shot）
+
+        Args:
+            user_query: 用户原始自然语言问题，如 "目前有多少活跃商户"
+            top_k: 最终返回的表数量（Reranker 后）
+            fewshot_k: Few-shot 示例返回数量
+
+        Returns:
+            RetrievalResult: 包含 relevant_tables, enum_hits, prompt_text 等
+
+        Raises:
+            RuntimeError: 未调用 initialize() 时抛出
         """
         if not self._initialized:
             raise RuntimeError("SchemaRetriever 未初始化，请先调用 initialize()")

@@ -1,4 +1,20 @@
-"""文档构建 — Schema dict → 表级/列级/枚举级检索文档"""
+"""
+文档构建 — 将 Schema dict 转换为表级/列级/枚举级检索文档。
+
+每类文档包含一个 "text" 字段，用于 BGE-M3 向量化编码。
+文本内容经过精心设计，包含表名、中文名、描述、关键列等信息，以提升检索召回率。
+
+使用示例::
+
+    builder = DocumentBuilder()
+
+    # 单表文档
+    table_doc = builder.build_table_document(schema)
+    print(table_doc["text"])  # "表名: pmt_account\n中文名: 商户账户表\n..."
+
+    # 批量构建
+    table_docs, column_docs, enum_docs = builder.build_all(schemas, enums)
+"""
 
 import logging
 
@@ -6,19 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentBuilder:
-    """将 Schema dict 转换为可被 BGE-M3 编码的文本文档"""
+    """将 Schema dict 转换为可被 BGE-M3 编码的文本文档。"""
 
     def build_table_document(self, schema: dict) -> dict:
         """
-        构建表级检索文档。
+        构建单张表的表级检索文档。
+
+        文本包含: 表名、中文名、描述、业务标签、关键列摘要、常见问题、关联表、查询提示。
+
+        Args:
+            schema: 合并后的表 Schema dict，需包含 table_name, display_name,
+                description, tags, columns, common_queries, relations 等字段
 
         Returns:
-            {
-                "table_name": str,
-                "doc_type": "table",
-                "text": str,         # 用于向量化的文本
-                "schema": dict,      # 原始 Schema（检索命中后取完整信息）
-            }
+            dict，包含:
+                - "table_name" (str): 表名
+                - "doc_type" (str): 固定为 "table"
+                - "text" (str): 用于向量化的拼接文本
+                - "schema" (dict): 原始 Schema 引用（检索命中后取完整信息）
         """
         parts = [
             f"表名: {schema['table_name']}",
@@ -73,9 +94,24 @@ class DocumentBuilder:
 
     def build_column_documents(self, schema: dict) -> list[dict]:
         """
-        构建列级检索文档。
+        构建列级检索文档（一列一条文档）。
 
-        只对有业务含义的列建索引，跳过技术字段、敏感字段、JSON 配置字段。
+        跳过规则: skip_index=True 的列、sensitive=True 的列、无 comment 且无 display_name 的纯技术列。
+
+        Args:
+            schema: 合并后的表 Schema dict
+
+        Returns:
+            list[dict]: 每条文档包含:
+                - "table_name" (str): 所属表名
+                - "column_name" (str): 列名
+                - "column_cn_name" (str): 列中文名
+                - "column_type" (str): 列类型，如 "INT"、"VARCHAR(128)"
+                - "column_comment" (str): 列描述
+                - "is_enum" (bool): 是否为枚举列
+                - "enum_values_summary" (str): 枚举值摘要
+                - "doc_type" (str): 固定为 "column"
+                - "text" (str): 用于向量化的拼接文本
         """
         table_name = schema["table_name"]
         display_name = schema.get("display_name", "")
@@ -135,13 +171,21 @@ class DocumentBuilder:
 
     def build_enum_documents(self, enums: list[dict]) -> list[dict]:
         """
-        从独立枚举层构建枚举值检索文档。
+        从独立枚举层构建枚举值检索文档（每个枚举值独立成一条文档）。
 
-        每个枚举值独立成一条文档，用于将"持牌商户"映射到 account_type=2000。
+        用途: 将用户自然语言（如 "持牌商户"）映射到 SQL 条件（如 account_type=2000）。
 
         Args:
-            enums: 枚举条目列表，每条包含 table_name, field_name, field_label,
-                   values: [{code, label, label_cn}, ...]
+            enums: SchemaLoader.load_enums() 返回的枚举条目列表，每条包含:
+                - "table_name" (str): 关联表名
+                - "field_name" (str): 字段名
+                - "field_label" (str): 字段中文名
+                - "values" (list[dict]): 枚举值列表，每个含 code, label, label_cn
+
+        Returns:
+            list[dict]: 每条文档包含:
+                - "table_name", "column_name", "enum_code", "enum_label_cn",
+                  "sql_value", "text" 等字段
         """
         docs = []
 
@@ -183,14 +227,17 @@ class DocumentBuilder:
         enums: list[dict] | None = None,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """
-        批量构建所有表的文档。
+        批量构建所有表的三级检索文档。
 
         Args:
-            schemas: 表 Schema 列表
-            enums: 独立枚举条目列表（来自 enums/*.yaml）
+            schemas: SchemaLoader.load_all() 返回的表 Schema 列表
+            enums: SchemaLoader.load_enums() 返回的独立枚举条目列表，None 视为空
 
         Returns:
-            (table_docs, column_docs, enum_docs)
+            tuple: (table_docs, column_docs, enum_docs)
+                - table_docs (list[dict]): 表级文档，每张表一条
+                - column_docs (list[dict]): 列级文档，每个有效列一条
+                - enum_docs (list[dict]): 枚举值文档，每个枚举值一条
         """
         table_docs = []
         column_docs = []
@@ -208,7 +255,15 @@ class DocumentBuilder:
         return table_docs, column_docs, enum_docs
 
     def _format_enum_values(self, enum_values) -> str:
-        """格式化枚举值"""
+        """
+        将枚举值格式化为 "value=label, ..." 字符串。
+
+        Args:
+            enum_values: 枚举值定义，可以是:
+                - list[dict]: [{"value": 1000, "label": "普通账户"}, ...]
+                - list[str]: ["LOW", "MEDIUM", "HIGH"]
+                - 其他: 直接 str() 转换
+        """
         if isinstance(enum_values, list):
             parts = []
             for v in enum_values:

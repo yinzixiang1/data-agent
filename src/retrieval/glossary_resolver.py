@@ -1,4 +1,25 @@
-"""业务术语解析 — 从 glossary 中匹配用户问题里的术语"""
+"""
+业务术语解析 — 从 glossary 中匹配用户问题里的术语。
+
+将用户自然语言中的业务术语（如 "活跃商户"）展开为:
+    - 检索增强词（related_columns + related_tables 追加到 query）
+    - Prompt 业务上下文（definition + sql_hint 注入 LLM Prompt）
+
+使用示例::
+
+    resolver = GlossaryResolver()
+    resolver.load({"活跃商户": {
+        "definition": "account_status=1 且 is_delete=0",
+        "sql_hint": "account_status = 1 AND is_delete = 0",
+        "related_tables": ["pmt_account"],
+        "related_columns": ["pmt_account.account_status"],
+    }})
+
+    result = resolver.resolve("目前有多少活跃商户")
+    # result["enriched_query"]   = "目前有多少活跃商户 account_status pmt_account"
+    # result["business_context"] = "- 活跃商户 = account_status=1 且 is_delete=0, SQL: ..."
+    # result["matched_terms"]    = ["活跃商户"]
+"""
 
 import logging
 
@@ -7,11 +28,10 @@ logger = logging.getLogger(__name__)
 
 class GlossaryResolver:
     """
-    业务术语解析器。
+    业务术语解析器（大小写不敏感匹配）。
 
-    将用户问题中出现的业务术语映射为：
-    - enriched_query: 原始问题 + 术语展开词（增强检索召回）
-    - business_context: 术语→口径/SQL写法（注入 Prompt）
+    Attributes:
+        glossary: 术语字典，{term: info_dict}
     """
 
     def __init__(self):
@@ -22,21 +42,28 @@ class GlossaryResolver:
         加载术语表。
 
         Args:
-            glossary: {term: {definition, sql_hint, related_tables, related_columns}}
+            glossary: SchemaLoader.load_semantic_layer() 返回的术语字典，
+                格式: {term: {"definition": str, "sql_hint": str,
+                              "related_tables": list[str],
+                              "related_columns": list[str]}}
         """
         self.glossary = glossary
         logger.info(f"术语表加载完成: {len(glossary)} 条")
 
     def resolve(self, query: str) -> dict:
         """
-        解析用户提问中的业务术语。
+        解析用户提问中的业务术语（大小写不敏感子串匹配）。
+
+        Args:
+            query: 用户原始查询，如 "目前有多少活跃商户"
 
         Returns:
-            {
-                "enriched_query": str,      # 增强后的查询（用于检索）
-                "business_context": str,    # 业务上下文（注入 Prompt）
-                "matched_terms": list[str], # 命中的术语
-            }
+            dict，包含:
+                - "enriched_query" (str): 原始问题 + 展开关键词（用于检索增强），
+                    如 "目前有多少活跃商户 account_status pmt_account"
+                - "business_context" (str): 术语定义和 SQL 提示（注入 Prompt），
+                    如 "- 活跃商户 = account_status=1, SQL: account_status = 1 AND ..."
+                - "matched_terms" (list[str]): 命中的术语名列表
         """
         matched_terms = []
         context_parts = []
