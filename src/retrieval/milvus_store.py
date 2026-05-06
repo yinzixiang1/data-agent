@@ -102,6 +102,7 @@ class MilvusIndex:
         """
         self.collection_name = collection_name
         self.dim = dim
+        self._cached_count: int | None = None
         self.client = get_milvus_client()
 
     def exists(self) -> bool:
@@ -112,6 +113,7 @@ class MilvusIndex:
         """删除 Collection（如果存在）。"""
         if self.exists():
             self.client.drop_collection(self.collection_name)
+            self._cached_count = None
             logger.info(f"已删除 Collection: {self.collection_name}")
 
     def create(self, scalar_fields: list[dict] | None = None):
@@ -185,6 +187,7 @@ class MilvusIndex:
             data.append(row)
 
         self.client.insert(self.collection_name, data)
+        self._cached_count = n
         logger.info(f"插入 {n} 条到 {self.collection_name}")
 
     def hybrid_search(
@@ -277,6 +280,8 @@ class MilvusIndex:
     @property
     def count(self) -> int:
         """Collection 中的文档总数，不存在时返回 0。"""
+        if self._cached_count is not None:
+            return self._cached_count
         if not self.exists():
             return 0
         stats = self.client.get_collection_stats(self.collection_name)

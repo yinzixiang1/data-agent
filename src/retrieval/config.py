@@ -48,9 +48,17 @@ EMBEDDING_USE_FP16 = os.getenv("EMBEDDING_USE_FP16", "true").lower() == "true"
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 ENABLE_RERANKER = os.getenv("ENABLE_RERANKER", "true").lower() == "true"
 
-# ── 语义层目录 ──
-# SEMANTIC_LAYER_DIR: 存放 tables/*.yaml、glossary/*.yaml、enums/*.yaml 的根目录
-SEMANTIC_LAYER_DIR = PROJECT_ROOT / os.getenv("SEMANTIC_LAYER_DIR", "semantic_layer")
+# ── MySQL 语义层数据库 ──
+# MYSQL_HOST: 语义层 MySQL 地址
+# MYSQL_PORT: MySQL 端口
+# MYSQL_USER: MySQL 用户名
+# MYSQL_PASSWORD: MySQL 密码
+# MYSQL_DATABASE: 语义层数据库名
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "yzx12345.")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "data_agent")
 
 # ── Milvus 向量数据库 ──
 # MILVUS_URI: Milvus 服务地址（含端口）
@@ -73,3 +81,11 @@ RERANK_INPUT_TOP_K = int(os.getenv("RERANK_INPUT_TOP_K", "10"))
 FEWSHOT_TOP_K = int(os.getenv("FEWSHOT_TOP_K", "3"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
+
+# ── 术语检索参数 ──
+# GLOSSARY_SCORE_THRESHOLD: 术语向量检索的余弦相似度阈值，低于此分数的匹配会被过滤
+GLOSSARY_SCORE_THRESHOLD = float(os.getenv("GLOSSARY_SCORE_THRESHOLD", "0.5"))
+
+# ── API 安全 ──
+# DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值
+DEFAULT_AGENT_TOKEN = os.getenv("DEFAULT_AGENT_TOKEN", "")

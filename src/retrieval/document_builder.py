@@ -32,7 +32,7 @@ class DocumentBuilder:
 
         Args:
             schema: 合并后的表 Schema dict，需包含 table_name, display_name,
-                description, tags, columns, common_queries, relations 等字段
+                description, tags, columns, relations 等字段
 
         Returns:
             dict，包含:
@@ -66,10 +66,6 @@ class DocumentBuilder:
                 col_summaries.append(col["name"])
         if col_summaries:
             parts.append(f"主要字段: {', '.join(col_summaries)}")
-
-        # 常见问题（来自语义层 common_queries）
-        for q in schema.get("common_queries", [])[:5]:
-            parts.append(f"常见问题: {q['question']}")
 
         # 关联表
         for rel in schema.get("relations", []):

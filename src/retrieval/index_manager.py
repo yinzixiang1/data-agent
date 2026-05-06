@@ -71,6 +71,17 @@ FEWSHOT_FIELDS = [
     {"name": "difficulty", "dtype": DataType.VARCHAR, "max_length": 32},
 ]
 
+GLOSSARY_COLLECTION = "nl2sql_glossary"
+
+GLOSSARY_FIELDS = [
+    {"name": "term", "dtype": DataType.VARCHAR, "max_length": 256, "inverted": True},
+    {"name": "definition", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "sql_hint", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "related_tables", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "related_columns", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "synonyms", "dtype": DataType.VARCHAR, "max_length": 2048},
+]
+
 
 class IndexManager:
     """
@@ -80,7 +91,7 @@ class IndexManager:
         1. nl2sql_table — 表级索引（每张表一条）
         2. nl2sql_column — 列级索引（每个有效列一条）
         3. nl2sql_enum — 枚举值索引（每个枚举值一条）
-        4. nl2sql_fewshot — Few-shot 示例索引（来自 common_queries）
+        4. nl2sql_fewshot — Few-shot 示例索引（来自 MySQL da_fewshot + da_table_query）
     """
 
     def build(
@@ -88,6 +99,8 @@ class IndexManager:
         schemas: list[dict],
         embedding: BGEEmbedding,
         enums: list[dict] | None = None,
+        fewshot_examples: list[dict] | None = None,
+        glossary: dict[str, dict] | None = None,
     ) -> dict:
         """
         全量构建索引: 构建文档 → BGE-M3 编码 → 写入 Milvus。
@@ -96,6 +109,8 @@ class IndexManager:
             schemas: 表 Schema 列表（SchemaLoader.load_all() 返回）
             embedding: BGEEmbedding 实例，用于向量编码
             enums: 枚举条目列表，为 None 时跳过枚举索引
+            fewshot_examples: Few-shot 示例列表，每条含 question, sql, tables, difficulty
+            glossary: 业务术语字典，{term: {definition, sql_hint, related_tables, related_columns}}
 
         Returns:
             dict，包含:
@@ -103,6 +118,7 @@ class IndexManager:
                 - "column_index" (MilvusIndex): 列级索引
                 - "enum_index" (MilvusIndex): 枚举值索引
                 - "fewshot_selector" (FewShotSelector): Few-shot 选择器（已加载数据）
+                - "glossary_index" (MilvusIndex): 术语索引
                 - "table_schemas" (dict): {table_name: schema_dict} 映射
         """
         builder = DocumentBuilder()
@@ -179,18 +195,39 @@ class IndexManager:
         # 5. Few-shot 索引
         fewshot_index = MilvusIndex(FEWSHOT_COLLECTION)
         fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
-        all_examples = []
-        for schema in schemas:
-            for q in schema.get("common_queries", []):
-                all_examples.append({
-                    "question": q["question"],
-                    "sql": q["sql"],
-                    "tables": q.get("tables", [schema["table_name"]]),
-                    "difficulty": q.get("difficulty", ""),
-                })
-        fewshot.build_index(all_examples)
+        fewshot.build_index(fewshot_examples or [])
 
-        # 6. table_name → schema 映射
+        # 6. 术语索引
+        glossary_index = MilvusIndex(GLOSSARY_COLLECTION)
+        glossary_index.create(GLOSSARY_FIELDS)
+
+        if glossary:
+            dense_texts = []   # Dense: term + definition（语义完整）
+            sparse_texts = []  # Sparse: term + 同义词（词汇精确匹配）
+            glossary_rows = []
+            for term, info in glossary.items():
+                definition = info.get("definition", "")
+                synonyms = info.get("synonyms", [])
+                dense_texts.append(f"{term}: {definition}" if definition else term)
+                sparse_parts = [term] + synonyms
+                sparse_texts.append(" ".join(sparse_parts))
+                glossary_rows.append({
+                    "term": term,
+                    "definition": (definition or "")[:2048],
+                    "sql_hint": (info.get("sql_hint", "") or "")[:2048],
+                    "related_tables": json.dumps(info.get("related_tables", []), ensure_ascii=False)[:2048],
+                    "related_columns": json.dumps(info.get("related_columns", []), ensure_ascii=False)[:2048],
+                    "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
+                })
+
+            # Dense 用完整文本编码（语义匹配）
+            dense_output = embedding.encode(dense_texts, return_dense=True, return_sparse=False)
+            # Sparse 只用术语名编码（词汇精确匹配）
+            sparse_output = embedding.encode(sparse_texts, return_dense=False, return_sparse=True)
+            glossary_index.insert(dense_output["dense_vecs"], sparse_output["lexical_weights"], glossary_rows)
+            logger.info(f"术语索引构建: {len(glossary_rows)} 条 (Dense=完整文本, Sparse=术语名)")
+
+        # 7. table_name → schema 映射
         table_schemas = {s["table_name"]: s for s in schemas}
 
         logger.info("索引构建完成")
@@ -200,5 +237,6 @@ class IndexManager:
             "column_index": column_index,
             "enum_index": enum_index,
             "fewshot_selector": fewshot,
+            "glossary_index": glossary_index,
             "table_schemas": table_schemas,
         }

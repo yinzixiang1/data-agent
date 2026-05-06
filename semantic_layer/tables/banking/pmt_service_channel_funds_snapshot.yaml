@@ -2,93 +2,69 @@ table:
   name: pmt_service_channel_funds_snapshot
   database: dwd_banking
   display_name: 渠道资金快照表
-  description: |
-    记录各渠道在不同币种下的每日资金余额快照，包含可用余额、处理中金额、储备余额。
-    每行代表某渠道某币种在某一天的余额快照，可用于分析渠道资金的历史变化趋势。
-  tags: [渠道余额, 资金快照, 历史余额, channel funds, 趋势分析]
+  description: '记录各渠道在不同币种下的每日资金余额快照，包含可用余额、处理中金额、储备余额。
+
+    每行代表某渠道某币种在某一天的余额快照，可用于分析渠道资金的历史变化趋势。'
+  tags:
+  - 渠道余额
+  - 资金快照
+  - 历史余额
+  - channel funds
+  - 趋势分析
   query_tips: snapshot_date 为快照日期，查历史趋势按此字段筛选和分组
-
 columns:
-  - name: scid
-    display_name: 主键ID
-    skip_index: true
-
-  - name: channel_code
-    display_name: 渠道编码
-    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
-
-  - name: channel_name
-    display_name: 渠道名称
-
-  - name: balance_currency
-    display_name: 账户币种
-    description: 3位ISO-4217币种代码
-
-  - name: available_balance
-    display_name: 可用余额
-
-  - name: pending_balance
-    display_name: 处理中金额
-
-  - name: reserved_balance
-    display_name: 储备余额
-
-  - name: snapshot_date
-    display_name: 快照日期
-
-  - name: snapshot_date_time
-    display_name: 快照记录时间
-
+- name: scid
+  display_name: 主键ID
+  skip_index: true
+- name: channel_code
+  display_name: 渠道编码
+  description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用
+    LIKE '渠道名%' 匹配
+- name: channel_name
+  display_name: 渠道名称
+- name: balance_currency
+  display_name: 账户币种
+  description: 3位ISO-4217币种代码
+- name: available_balance
+  display_name: 可用余额
+- name: pending_balance
+  display_name: 处理中金额
+- name: reserved_balance
+  display_name: 储备余额
+- name: snapshot_date
+  display_name: 快照日期
+- name: snapshot_date_time
+  display_name: 快照记录时间
 relations:
-  - column: channel_code
-    target_table: pmt_service_channel_funds
-    target_column: channel_code
-    join_type: LEFT JOIN
-    description: 关联渠道资金表获取当前余额和预警配置
-
+- column: channel_code
+  target_table: pmt_service_channel_funds
+  target_column: channel_code
+  join_type: LEFT JOIN
 common_queries:
-  - question: 某渠道最近30天的余额变化趋势
-    sql: |
-      SELECT snapshot_date AS "日期",
-             balance_currency AS "币种",
-             available_balance AS "可用余额",
-             pending_balance AS "处理中",
-             reserved_balance AS "储备"
-      FROM dwd_banking.pmt_service_channel_funds_snapshot
-      WHERE channel_code = 'CHANNEL_CODE'
-        AND snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-      ORDER BY snapshot_date
-    tables: [pmt_service_channel_funds_snapshot]
-    difficulty: easy
-
-  - question: 各渠道最新快照的余额汇总
-    sql: |
-      SELECT channel_code AS "渠道",
-             channel_name AS "渠道名称",
-             balance_currency AS "币种",
-             available_balance AS "可用余额",
-             pending_balance AS "处理中",
-             reserved_balance AS "储备"
-      FROM dwd_banking.pmt_service_channel_funds_snapshot
-      WHERE snapshot_date = (
-        SELECT MAX(snapshot_date)
-        FROM dwd_banking.pmt_service_channel_funds_snapshot
-      )
-      ORDER BY channel_code, balance_currency
-    tables: [pmt_service_channel_funds_snapshot]
-    difficulty: medium
-
-  - question: 某渠道某币种的日均余额
-    sql: |
-      SELECT channel_code AS "渠道",
-             balance_currency AS "币种",
-             AVG(available_balance) AS "日均可用余额",
-             MIN(available_balance) AS "最低",
-             MAX(available_balance) AS "最高"
-      FROM dwd_banking.pmt_service_channel_funds_snapshot
-      WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-      GROUP BY channel_code, balance_currency
-      ORDER BY AVG(available_balance) DESC
-      LIMIT 100
-    tables: [pmt_service_channel_funds_snapshot]
-    difficulty: medium
+- question: 某渠道最近30天的余额变化趋势
+  sql: "SELECT snapshot_date AS \"日期\",\n       balance_currency AS \"币种\",\n    \
+    \   available_balance AS \"可用余额\",\n       pending_balance AS \"处理中\",\n     \
+    \  reserved_balance AS \"储备\"\nFROM dwd_banking.pmt_service_channel_funds_snapshot\n\
+    WHERE channel_code = 'CHANNEL_CODE'\n  AND snapshot_date >= DATE_SUB(CURDATE(),\
+    \ INTERVAL 30 DAY)\nORDER BY snapshot_date"
+  tables:
+  - pmt_service_channel_funds_snapshot
+  difficulty: easy
+- question: 各渠道最新快照的余额汇总
+  sql: "SELECT channel_code AS \"渠道\",\n       channel_name AS \"渠道名称\",\n       balance_currency\
+    \ AS \"币种\",\n       available_balance AS \"可用余额\",\n       pending_balance AS\
+    \ \"处理中\",\n       reserved_balance AS \"储备\"\nFROM dwd_banking.pmt_service_channel_funds_snapshot\n\
+    WHERE snapshot_date = (\n  SELECT MAX(snapshot_date)\n  FROM dwd_banking.pmt_service_channel_funds_snapshot\n\
+    )\nORDER BY channel_code, balance_currency"
+  tables:
+  - pmt_service_channel_funds_snapshot
+  difficulty: medium
+- question: 某渠道某币种的日均余额
+  sql: "SELECT channel_code AS \"渠道\",\n       balance_currency AS \"币种\",\n     \
+    \  AVG(available_balance) AS \"日均可用余额\",\n       MIN(available_balance) AS \"\
+    最低\",\n       MAX(available_balance) AS \"最高\"\nFROM dwd_banking.pmt_service_channel_funds_snapshot\n\
+    WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)\nGROUP BY channel_code,\
+    \ balance_currency\nORDER BY AVG(available_balance) DESC\nLIMIT 100"
+  tables:
+  - pmt_service_channel_funds_snapshot
+  difficulty: medium

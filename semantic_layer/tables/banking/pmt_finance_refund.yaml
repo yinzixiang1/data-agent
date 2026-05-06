@@ -2,150 +2,114 @@ table:
   name: pmt_finance_refund
   database: dwd_banking
   display_name: 退款记录表
-  description: |
-    各类交易类型(payin/deposit/payout/transfer/conversion等)的退款流水。
-    每行代表一笔退款，包含原始金额、退款金额、手续费、关联原订单。
-  tags: [退款, refund, 拒付, 退款流水]
+  description: '各类交易类型(payin/deposit/payout/transfer/conversion等)的退款流水。
 
+    每行代表一笔退款，包含原始金额、退款金额、手续费、关联原订单。'
+  tags:
+  - 退款
+  - refund
+  - 拒付
+  - 退款流水
+  query_tips: ''
 columns:
-  - name: frid
-    display_name: 主键ID
-    skip_index: true
-
-  - name: refund_id
-    display_name: 退款ID
-
-  - name: direct_id
-    display_name: 机构ID
-
-  - name: account_id
-    display_name: 账户ID
-
-  - name: account_name
-    display_name: 商户名
-
-  - name: refund_currency
-    display_name: 退款币种
-
-  - name: refund_amount
-    display_name: 原订单本金
-
-  - name: refund_fee
-    display_name: 原订单手续费
-
-  - name: refund_reason
-    display_name: 退款原因
-
-  - name: refund_type
-    display_name: 退款类型(同交易类型)
-
-  - name: fee_amount
-    display_name: 退款手续费
-
-  - name: returned_amount
-    display_name: 实际退回金额
-
-  - name: short_reference_id
-    display_name: 退款短号
-
-  - name: short_account_id
-    display_name: 商户短号
-
-  - name: ref_reference_id
-    display_name: 关联原订单ID
-
-  - name: ref_short_reference_id
-    display_name: 关联原订单短ID
-
-  - name: transaction_id
-    display_name: 关联流水ID
-
-  - name: review_status
-    display_name: 审核状态
-    enum_values:
-      - {value: 1, label: "通过"}
-      - {value: -1, label: "拒绝"}
-
-  - name: review_remark
-    display_name: 审核备注
-
-  - name: refund_status
-    display_name: 退款状态
-    enum_values:
-      - {value: -1, label: "失败"}
-      - {value: 1, label: "成功"}
-
-  - name: complete_time
-    display_name: 完成时间
-
-  - name: update_time
-    display_name: 更新时间
-
-  - name: create_time
-    display_name: 创建时间
-
+- name: frid
+  display_name: 主键ID
+  skip_index: true
+- name: refund_id
+  display_name: 退款ID
+- name: direct_id
+  display_name: 机构ID
+- name: account_id
+  display_name: 账户ID
+- name: account_name
+  display_name: 商户名
+- name: refund_currency
+  display_name: 退款币种
+- name: refund_amount
+  display_name: 原订单本金
+- name: refund_fee
+  display_name: 原订单手续费
+- name: refund_reason
+  display_name: 退款原因
+- name: refund_type
+  display_name: 退款类型(同交易类型)
+- name: fee_amount
+  display_name: 退款手续费
+- name: returned_amount
+  display_name: 实际退回金额
+- name: short_reference_id
+  display_name: 退款短号
+- name: short_account_id
+  display_name: 商户短号
+- name: ref_reference_id
+  display_name: 关联原订单ID
+- name: ref_short_reference_id
+  display_name: 关联原订单短ID
+- name: transaction_id
+  display_name: 关联流水ID
+- name: review_status
+  display_name: 审核状态
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: -1
+    label: 拒绝
+- name: review_remark
+  display_name: 审核备注
+- name: refund_status
+  display_name: 退款状态
+  enum_values:
+  - value: -1
+    label: 失败
+  - value: 1
+    label: 成功
+- name: complete_time
+  display_name: 完成时间
+- name: update_time
+  display_name: 更新时间
+- name: create_time
+  display_name: 创建时间
 relations:
-  - column: account_id
-    target_table: pmt_account
-    target_column: account_id
-    join_type: LEFT JOIN
-
-  - column: ref_reference_id
-    target_table: pmt_finance_payout
-    target_column: payout_id
-    join_type: LEFT JOIN
-
-  - column: transaction_id
-    target_table: pmt_finance_transactions
-    target_column: transaction_id
-    join_type: LEFT JOIN
-
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: ref_reference_id
+  target_table: pmt_finance_payout
+  target_column: payout_id
+  join_type: LEFT JOIN
+- column: transaction_id
+  target_table: pmt_finance_transactions
+  target_column: transaction_id
+  join_type: LEFT JOIN
 common_queries:
-  - question: 月度退款笔数和金额
-    sql: |
-      SELECT DATE_FORMAT(create_time, '%Y-%m') AS "月份",
-             refund_currency AS "币种",
-             COUNT(*) AS "退款数",
-             SUM(returned_amount) AS "实际退回总额"
-      FROM dwd_banking.pmt_finance_refund
-      WHERE refund_status = 1
-      GROUP BY DATE_FORMAT(create_time, '%Y-%m'), refund_currency
-      ORDER BY "月份" DESC;
-    tables: [pmt_finance_refund]
-    difficulty: medium
-
-  - question: 各交易类型退款率
-    sql: |
-      SELECT refund_type AS "退款类型",
-             COUNT(*) AS "退款数",
-             SUM(returned_amount) AS "退款总额"
-      FROM dwd_banking.pmt_finance_refund
-      WHERE refund_status = 1
-      GROUP BY refund_type
-      ORDER BY "退款数" DESC;
-    tables: [pmt_finance_refund]
-    difficulty: easy
-
-  - question: 退款审核拒绝率
-    sql: |
-      SELECT
-        ROUND(SUM(CASE WHEN review_status = -1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "拒绝率%",
-        COUNT(*) AS "总审核数"
-      FROM dwd_banking.pmt_finance_refund
-      WHERE review_status IN (1, -1);
-    tables: [pmt_finance_refund]
-    difficulty: medium
-
-  - question: 退款金额TOP10商户
-    sql: |
-      SELECT account_name AS "商户",
-             short_account_id AS "短号",
-             SUM(returned_amount) AS "退款总额",
-             COUNT(*) AS "退款数"
-      FROM dwd_banking.pmt_finance_refund
-      WHERE refund_status = 1
-      GROUP BY account_name, short_account_id
-      ORDER BY "退款总额" DESC
-      LIMIT 10;
-    tables: [pmt_finance_refund]
-    difficulty: easy
+- question: 月度退款笔数和金额
+  sql: "SELECT DATE_FORMAT(create_time, '%Y-%m') AS \"月份\",\n       refund_currency\
+    \ AS \"币种\",\n       COUNT(*) AS \"退款数\",\n       SUM(returned_amount) AS \"实际退回总额\"\
+    \nFROM dwd_banking.pmt_finance_refund\nWHERE refund_status = 1\nGROUP BY DATE_FORMAT(create_time,\
+    \ '%Y-%m'), refund_currency\nORDER BY \"月份\" DESC;"
+  tables:
+  - pmt_finance_refund
+  difficulty: medium
+- question: 各交易类型退款率
+  sql: "SELECT refund_type AS \"退款类型\",\n       COUNT(*) AS \"退款数\",\n       SUM(returned_amount)\
+    \ AS \"退款总额\"\nFROM dwd_banking.pmt_finance_refund\nWHERE refund_status = 1\n\
+    GROUP BY refund_type\nORDER BY \"退款数\" DESC;"
+  tables:
+  - pmt_finance_refund
+  difficulty: easy
+- question: 退款审核拒绝率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN review_status = -1 THEN 1 ELSE 0 END) * 100.0\
+    \ / COUNT(*), 2) AS \"拒绝率%\",\n  COUNT(*) AS \"总审核数\"\nFROM dwd_banking.pmt_finance_refund\n\
+    WHERE review_status IN (1, -1);"
+  tables:
+  - pmt_finance_refund
+  difficulty: medium
+- question: 退款金额TOP10商户
+  sql: "SELECT account_name AS \"商户\",\n       short_account_id AS \"短号\",\n     \
+    \  SUM(returned_amount) AS \"退款总额\",\n       COUNT(*) AS \"退款数\"\nFROM dwd_banking.pmt_finance_refund\n\
+    WHERE refund_status = 1\nGROUP BY account_name, short_account_id\nORDER BY \"\
+    退款总额\" DESC\nLIMIT 10;"
+  tables:
+  - pmt_finance_refund
+  difficulty: easy

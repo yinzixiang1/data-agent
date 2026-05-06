@@ -2,243 +2,201 @@ table:
   name: pmt_payment_beneficiary
   database: dwd_banking
   display_name: 收款受益人表
-  description: |
-    商户管理的收款人(beneficiary)信息库。
-    每行代表一个受益人(个人/企业实体)，含银行账户详情、KYC验证状态、风险标记，跨多渠道映射。
-  tags: [受益人, beneficiary, 收款人, 转账目标, KYC验证, 黑白名单]
+  description: '商户管理的收款人(beneficiary)信息库。
+
+    每行代表一个受益人(个人/企业实体)，含银行账户详情、KYC验证状态、风险标记，跨多渠道映射。'
+  tags:
+  - 受益人
+  - beneficiary
+  - 收款人
+  - 转账目标
+  - KYC验证
+  - 黑白名单
   query_tips: 可用受益人用 beneficiary_status=1 AND deleted_at IS NULL
-
 columns:
-  - name: rcid
-    display_name: 主键ID
-    skip_index: true
-
-  - name: direct_id
-    display_name: 机构ID
-
-  - name: account_id
-    display_name: 账户ID
-
-  - name: entity_type
-    display_name: 实体类型
-    enum_values:
-      - {value: 1000, label: "个人"}
-      - {value: 2000, label: "企业"}
-
-  - name: beneficiary_id
-    display_name: 受益人ID
-
-  - name: payment_method
-    display_name: 支付方式
-    enum_values:
-      - {value: 1000, label: "LOCAL"}
-      - {value: 2000, label: "SWIFT"}
-
-  - name: beneficiary_email
-    display_name: 受益人邮箱
-    sensitive: true
-
-  - name: beneficiary_nickname
-    display_name: 受益人昵称
-
-  - name: beneficiary_first_name
-    display_name: 受益人名字
-    sensitive: true
-
-  - name: beneficiary_last_name
-    display_name: 受益人姓
-    sensitive: true
-
-  - name: id_number
-    display_name: 身份证号
-    sensitive: true
-
-  - name: beneficiary_company_name
-    display_name: 企业名
-
-  - name: legal_representative_first_name
-    display_name: 法人名字
-    sensitive: true
-
-  - name: legal_representative_last_name
-    display_name: 法人姓
-    sensitive: true
-
-  - name: business_registration_number
-    display_name: 企业注册号
-
-  - name: beneficiary_summary
-    display_name: 受益人摘要
-
-  - name: account_currency_code
-    display_name: 银行账户币种
-
-  - name: bank_country_code
-    display_name: 银行所在国
-
-  - name: account_number
-    display_name: 银行账号
-    sensitive: true
-
-  - name: beneficiary_bank_details
-    display_name: 银行详情JSON
-    skip_index: true
-
-  - name: beneficiary_address
-    display_name: 受益人地址JSON
-    sensitive: true
-
-  - name: short_account_id
-    display_name: 商户短号
-
-  - name: ref_cc_beneficiary_id
-    display_name: CC受益人ID
-    skip_index: true
-
-  - name: ref_cc_main_beneficiary_id
-    display_name: CC main受益人ID
-    skip_index: true
-
-  - name: ref_cc_mango_beneficiary_id
-    display_name: CC mango受益人ID
-    skip_index: true
-
-  - name: ref_cc_mango_main_beneficiary_id
-    display_name: CC mango main ID
-    skip_index: true
-
-  - name: ref_cc_channel_data
-    display_name: 渠道信息
-    skip_index: true
-
-  - name: ref_beneficiary_ids
-    display_name: 渠道ID集合
-    skip_index: true
-
-  - name: short_reference_id
-    display_name: 短号
-
-  - name: execute_reason
-    display_name: 失败原因
-
-  - name: verification_status
-    display_name: 验证状态
-    enum_values:
-      - {value: -1, label: "失败"}
-      - {value: 0, label: "待验证"}
-      - {value: 1, label: "成功"}
-
-  - name: verification_reason
-    display_name: 验证原因
-
-  - name: beneficiary_status
-    display_name: 受益人状态
-    enum_values:
-      - {value: -1, label: "软删除"}
-      - {value: 0, label: "默认不可用"}
-      - {value: 1, label: "可用"}
-
-  - name: risk_flag
-    display_name: 风险标记
-    enum_values:
-      - {value: 0, label: "无"}
-      - {value: 1, label: "白名单"}
-      - {value: 2, label: "黑名单"}
-
-  - name: ext_applicant_id
-    display_name: 外部申请人ID
-
-  - name: additional_info
-    display_name: 附加信息
-    skip_index: true
-
-  - name: id_type
-    display_name: 证件类型
-    enum_values:
-      - {value: 1000, label: "护照"}
-      - {value: 1001, label: "驾照"}
-      - {value: 1002, label: "国民身份证"}
-
-  - name: id_expiry_date
-    display_name: 证件有效期
-
-  - name: deleted_at
-    display_name: 软删除时间
-
-  - name: create_time
-    display_name: 创建时间
-
-  - name: update_time
-    display_name: 更新时间
-
+- name: rcid
+  display_name: 主键ID
+  skip_index: true
+- name: direct_id
+  display_name: 机构ID
+- name: account_id
+  display_name: 账户ID
+- name: entity_type
+  display_name: 实体类型
+  enum_values:
+  - value: 1000
+    label: 个人
+  - value: 2000
+    label: 企业
+- name: beneficiary_id
+  display_name: 受益人ID
+- name: payment_method
+  display_name: 支付方式
+  enum_values:
+  - value: 1000
+    label: LOCAL
+  - value: 2000
+    label: SWIFT
+- name: beneficiary_email
+  display_name: 受益人邮箱
+  sensitive: true
+- name: beneficiary_nickname
+  display_name: 受益人昵称
+- name: beneficiary_first_name
+  display_name: 受益人名字
+  sensitive: true
+- name: beneficiary_last_name
+  display_name: 受益人姓
+  sensitive: true
+- name: id_number
+  display_name: 身份证号
+  sensitive: true
+- name: beneficiary_company_name
+  display_name: 企业名
+- name: legal_representative_first_name
+  display_name: 法人名字
+  sensitive: true
+- name: legal_representative_last_name
+  display_name: 法人姓
+  sensitive: true
+- name: business_registration_number
+  display_name: 企业注册号
+- name: beneficiary_summary
+  display_name: 受益人摘要
+- name: account_currency_code
+  display_name: 银行账户币种
+- name: bank_country_code
+  display_name: 银行所在国
+- name: account_number
+  display_name: 银行账号
+  sensitive: true
+- name: beneficiary_bank_details
+  display_name: 银行详情JSON
+  skip_index: true
+- name: beneficiary_address
+  display_name: 受益人地址JSON
+  sensitive: true
+- name: short_account_id
+  display_name: 商户短号
+- name: ref_cc_beneficiary_id
+  display_name: CC受益人ID
+  skip_index: true
+- name: ref_cc_main_beneficiary_id
+  display_name: CC main受益人ID
+  skip_index: true
+- name: ref_cc_mango_beneficiary_id
+  display_name: CC mango受益人ID
+  skip_index: true
+- name: ref_cc_mango_main_beneficiary_id
+  display_name: CC mango main ID
+  skip_index: true
+- name: ref_cc_channel_data
+  display_name: 渠道信息
+  skip_index: true
+- name: ref_beneficiary_ids
+  display_name: 渠道ID集合
+  skip_index: true
+- name: short_reference_id
+  display_name: 短号
+- name: execute_reason
+  display_name: 失败原因
+- name: verification_status
+  display_name: 验证状态
+  enum_values:
+  - value: -1
+    label: 失败
+  - value: 0
+    label: 待验证
+  - value: 1
+    label: 成功
+- name: verification_reason
+  display_name: 验证原因
+- name: beneficiary_status
+  display_name: 受益人状态
+  enum_values:
+  - value: -1
+    label: 软删除
+  - value: 0
+    label: 默认不可用
+  - value: 1
+    label: 可用
+- name: risk_flag
+  display_name: 风险标记
+  enum_values:
+  - value: 0
+    label: 无
+  - value: 1
+    label: 白名单
+  - value: 2
+    label: 黑名单
+- name: ext_applicant_id
+  display_name: 外部申请人ID
+- name: additional_info
+  display_name: 附加信息
+  skip_index: true
+- name: id_type
+  display_name: 证件类型
+  enum_values:
+  - value: 1000
+    label: 护照
+  - value: 1001
+    label: 驾照
+  - value: 1002
+    label: 国民身份证
+- name: id_expiry_date
+  display_name: 证件有效期
+- name: deleted_at
+  display_name: 软删除时间
+- name: create_time
+  display_name: 创建时间
+- name: update_time
+  display_name: 更新时间
 relations:
-  - column: account_id
-    target_table: pmt_account
-    target_column: account_id
-    join_type: LEFT JOIN
-
-  - column: beneficiary_id
-    target_table: pmt_finance_payout
-    target_column: beneficiary_id
-    join_type: LEFT JOIN
-
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: beneficiary_id
+  target_table: pmt_finance_payout
+  target_column: beneficiary_id
+  join_type: LEFT JOIN
 common_queries:
-  - question: 各商户的受益人数量
-    sql: |
-      SELECT a.short_account_id AS "商户短号",
-             a.account_name AS "商户名",
-             COUNT(*) AS "受益人数"
-      FROM dwd_banking.pmt_payment_beneficiary b
-      LEFT JOIN dwd_banking.pmt_account a ON b.account_id = a.account_id
-      WHERE b.beneficiary_status = 1
-        AND b.deleted_at IS NULL
-      GROUP BY a.short_account_id, a.account_name
-      ORDER BY "受益人数" DESC
-      LIMIT 20;
-    tables: [pmt_payment_beneficiary, pmt_account]
-    difficulty: medium
-
-  - question: KYC验证通过率
-    sql: |
-      SELECT
-        ROUND(SUM(CASE WHEN verification_status = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "通过率%"
-      FROM dwd_banking.pmt_payment_beneficiary
-      WHERE deleted_at IS NULL
-        AND verification_status IN (1, -1);
-    tables: [pmt_payment_beneficiary]
-    difficulty: medium
-
-  - question: 黑名单受益人列表
-    sql: |
-      SELECT short_reference_id AS "短号",
-             beneficiary_nickname AS "昵称",
-             bank_country_code AS "银行国家",
-             account_currency_code AS "币种"
-      FROM dwd_banking.pmt_payment_beneficiary
-      WHERE risk_flag = 2
-        AND deleted_at IS NULL;
-    tables: [pmt_payment_beneficiary]
-    difficulty: easy
-
-  - question: 受益人地区分布
-    sql: |
-      SELECT bank_country_code AS "银行国家",
-             COUNT(*) AS "受益人数"
-      FROM dwd_banking.pmt_payment_beneficiary
-      WHERE deleted_at IS NULL
-        AND beneficiary_status = 1
-      GROUP BY bank_country_code
-      ORDER BY "受益人数" DESC;
-    tables: [pmt_payment_beneficiary]
-    difficulty: easy
-
-  - question: 个人 vs 企业受益人占比
-    sql: |
-      SELECT
-        CASE entity_type WHEN 1000 THEN '个人' WHEN 2000 THEN '企业' END AS "类型",
-        COUNT(*) AS "数量"
-      FROM dwd_banking.pmt_payment_beneficiary
-      WHERE deleted_at IS NULL
-      GROUP BY entity_type;
-    tables: [pmt_payment_beneficiary]
-    difficulty: easy
+- question: 各商户的受益人数量
+  sql: "SELECT a.short_account_id AS \"商户短号\",\n       a.account_name AS \"商户名\",\n\
+    \       COUNT(*) AS \"受益人数\"\nFROM dwd_banking.pmt_payment_beneficiary b\nLEFT\
+    \ JOIN dwd_banking.pmt_account a ON b.account_id = a.account_id\nWHERE b.beneficiary_status\
+    \ = 1\n  AND b.deleted_at IS NULL\nGROUP BY a.short_account_id, a.account_name\n\
+    ORDER BY \"受益人数\" DESC\nLIMIT 20;"
+  tables:
+  - pmt_payment_beneficiary
+  - pmt_account
+  difficulty: medium
+- question: KYC验证通过率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN verification_status = 1 THEN 1 ELSE 0 END) *\
+    \ 100.0 / COUNT(*), 2) AS \"通过率%\"\nFROM dwd_banking.pmt_payment_beneficiary\n\
+    WHERE deleted_at IS NULL\n  AND verification_status IN (1, -1);"
+  tables:
+  - pmt_payment_beneficiary
+  difficulty: medium
+- question: 黑名单受益人列表
+  sql: "SELECT short_reference_id AS \"短号\",\n       beneficiary_nickname AS \"昵称\"\
+    ,\n       bank_country_code AS \"银行国家\",\n       account_currency_code AS \"币种\"\
+    \nFROM dwd_banking.pmt_payment_beneficiary\nWHERE risk_flag = 2\n  AND deleted_at\
+    \ IS NULL;"
+  tables:
+  - pmt_payment_beneficiary
+  difficulty: easy
+- question: 受益人地区分布
+  sql: "SELECT bank_country_code AS \"银行国家\",\n       COUNT(*) AS \"受益人数\"\nFROM dwd_banking.pmt_payment_beneficiary\n\
+    WHERE deleted_at IS NULL\n  AND beneficiary_status = 1\nGROUP BY bank_country_code\n\
+    ORDER BY \"受益人数\" DESC;"
+  tables:
+  - pmt_payment_beneficiary
+  difficulty: easy
+- question: 个人 vs 企业受益人占比
+  sql: "SELECT\n  CASE entity_type WHEN 1000 THEN '个人' WHEN 2000 THEN '企业' END AS\
+    \ \"类型\",\n  COUNT(*) AS \"数量\"\nFROM dwd_banking.pmt_payment_beneficiary\nWHERE\
+    \ deleted_at IS NULL\nGROUP BY entity_type;"
+  tables:
+  - pmt_payment_beneficiary
+  difficulty: easy

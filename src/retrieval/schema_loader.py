@@ -1,26 +1,24 @@
 """
-数据源加载 — 从 Doris DDL + 语义层 YAML 合并出完整 Schema。
+数据源加载 — Doris DDL + MySQL 语义层合并出完整 Schema。
 
-连接 Doris 读取 DDL，再用语义层 YAML 补充业务信息（display_name, description 等）。
+连接 Doris 读取 DDL，再从 MySQL（data_agent 库）加载语义层数据，
+合并为完整 Schema。MySQL 表结构对接 dataAgent-admin-api 定义的 da_* 系列表。
 
 使用示例::
 
     loader = SchemaLoader()
-    schemas, glossary, enums = loader.load_all()
-    # schemas: [{"table_name": "pmt_account", "columns": [...], ...}, ...]
-    # glossary: {"活跃商户": {"definition": ..., "sql_hint": ...}, ...}
-    # enums: [{"table_name": "pmt_account", "field_name": "account_type", "values": [...]}, ...]
+    schemas, glossary, enums, fewshot = loader.load_all()
 """
 
+import json
 import logging
-from pathlib import Path
+from collections import OrderedDict
 
-import yaml
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE,
-    SEMANTIC_LAYER_DIR,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,62 +26,49 @@ logger = logging.getLogger(__name__)
 
 class SchemaLoader:
     """
-    加载 Doris Schema + 语义层 YAML，合并为完整 Schema dict 列表。
+    加载 Doris DDL + MySQL 语义层，合并为完整 Schema。
 
-    Attributes:
-        engine: SQLAlchemy Engine 实例
-        semantic_layer_dir: 语义层 YAML 根目录路径
+    MySQL 表结构（dataAgent-admin-api 定义）:
+        da_table          — 表语义
+        da_table_column   — 列语义（FK → da_table.id）
+        da_table_relation — 关联关系（FK → da_table.id）
+        da_table_query    — 表级常见问题（FK → da_table.id）
+        da_glossary       — 业务术语
+        da_enum_def       — 枚举定义
+        da_enum_value     — 枚举值（FK → da_enum_def.id）
+        da_fewshot        — 全局 Few-shot 示例
     """
 
     def __init__(
         self,
         connection_string: str | None = None,
-        semantic_layer_dir: str | Path | None = None,
+        mysql_connection_string: str | None = None,
     ):
-        """
-        Args:
-            connection_string: SQLAlchemy 连接字符串，如
-                "mysql+pymysql://root:@localhost:9030/dwd_banking?charset=utf8mb4"
-                为 None 时自动从 config 中的 DORIS_* 参数拼接
-            semantic_layer_dir: 语义层 YAML 根目录，默认使用 config.SEMANTIC_LAYER_DIR
-        """
         if connection_string is None:
             connection_string = (
                 f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}"
                 f"@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
             )
-        self.engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
-        self.semantic_layer_dir = Path(semantic_layer_dir or SEMANTIC_LAYER_DIR)
+        self.doris_engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
+
+        if mysql_connection_string is None:
+            mysql_connection_string = (
+                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+                f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+            )
+        self.mysql_engine = create_engine(mysql_connection_string, pool_size=5, pool_recycle=3600)
 
     # ── Doris 元数据加载 ──
 
     def get_all_tables(self) -> list[str]:
-        """
-        获取 Doris 数据库中所有表名（执行 SHOW TABLES）。
-
-        Returns:
-            表名字符串列表，如 ["pmt_account", "pmt_transaction", ...]
-        """
-        with self.engine.connect() as conn:
+        """获取 Doris 数据库中所有表名。"""
+        with self.doris_engine.connect() as conn:
             rows = conn.execute(text("SHOW TABLES")).fetchall()
             return [row[0] for row in rows]
 
     def get_table_schema(self, table_name: str) -> dict:
-        """
-        通过 DESCRIBE + SHOW CREATE TABLE 获取单张表的完整 Schema。
-
-        Args:
-            table_name: 表名，如 "pmt_account"
-
-        Returns:
-            dict，包含:
-                - "database": 数据库名
-                - "table_name": 表名
-                - "table_comment": 表注释（从 DDL 中提取）
-                - "columns": list[dict]，每列包含 name, type, nullable, key, default, comment
-        """
-        with self.engine.connect() as conn:
-            # 列信息
+        """通过 DESCRIBE + SHOW CREATE TABLE 获取单张表的 Schema。"""
+        with self.doris_engine.connect() as conn:
             col_rows = conn.execute(text(f"DESCRIBE `{table_name}`")).fetchall()
             columns = []
             for row in col_rows:
@@ -96,16 +81,14 @@ class SchemaLoader:
                     "comment": row[5] if len(row) > 5 else "",
                 })
 
-            # 尝试获取表注释
             table_comment = ""
             try:
                 create_rows = conn.execute(
                     text(f"SHOW CREATE TABLE `{table_name}`")
                 ).fetchone()
                 if create_rows:
-                    ddl_text = create_rows[1]
                     import re
-                    match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", ddl_text)
+                    match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", create_rows[1])
                     if match:
                         table_comment = match.group(1)
             except Exception:
@@ -118,104 +101,149 @@ class SchemaLoader:
                 "columns": columns,
             }
 
-    def get_sample_rows(self, table_name: str, limit: int = 3) -> list[list]:
-        """
-        获取表的样例数据行（SELECT * LIMIT）。
+    # ── MySQL 语义层加载（对接 dataAgent-admin-api 的 da_* 表） ──
 
-        Args:
-            table_name: 表名
-            limit: 返回的最大行数，默认 3
+    def _load_table_semantics(self) -> dict[str, dict]:
+        """从 da_table 加载表语义 → {table_name: {display_name, description, tags, query_tips}}"""
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT name, database_name, display_name, description, tags, query_tips "
+                "FROM da_table WHERE status = 1"
+            )).fetchall()
 
-        Returns:
-            list[list]: 每行为一个列值列表，失败时返回空列表
-        """
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(text(f"SELECT * FROM `{table_name}` LIMIT {limit}")).fetchall()
-                return [list(row) for row in rows]
-        except Exception as e:
-            logger.warning(f"获取 {table_name} 样例数据失败: {e}")
-            return []
+        result = {}
+        for row in rows:
+            tags = []
+            if row[4]:
+                try:
+                    tags = json.loads(row[4])
+                except (json.JSONDecodeError, TypeError):
+                    tags = [t.strip() for t in row[4].split(",") if t.strip()]
+            result[row[0]] = {
+                "database_name": row[1] or DORIS_DATABASE,
+                "display_name": row[2] or "",
+                "description": row[3] or "",
+                "tags": tags,
+                "query_tips": row[5] or "",
+            }
 
-    # ── 语义层 YAML 加载 ──
+        logger.info(f"MySQL 表语义加载: {len(result)} 张表")
+        return result
 
-    def load_semantic_layer(self) -> tuple[dict[str, dict], dict]:
-        """
-        加载语义层 YAML 文件（表语义 + 业务术语）。
+    def _load_column_semantics(self) -> dict[str, list[dict]]:
+        """从 da_table_column JOIN da_table 加载列语义 → {table_name: [col_dict, ...]}"""
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT t.name, c.name, c.display_name, c.description, "
+                "c.enum_values, c.business_logic, c.sensitive, c.skip_index "
+                "FROM da_table_column c "
+                "JOIN da_table t ON c.table_id = t.id "
+                "WHERE t.status = 1 "
+                "ORDER BY t.name, c.sort_order"
+            )).fetchall()
 
-        扫描路径:
-            - 表语义: semantic_layer/tables/**/*.yaml
-            - 业务术语: semantic_layer/glossary/**/*.yaml
+        result: dict[str, list[dict]] = {}
+        for row in rows:
+            enum_values = None
+            if row[4]:
+                try:
+                    parsed = json.loads(row[4])
+                    if parsed and parsed != []:
+                        enum_values = parsed
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
-        Returns:
-            tuple: (table_semantics, glossary)
-                - table_semantics (dict): {table_name: yaml_data}，yaml_data 包含
-                    table, columns, relations, common_queries 等顶层键
-                - glossary (dict): {term: info}，info 包含
-                    definition, sql_hint, related_tables, related_columns
-        """
-        table_semantics = {}
+            col = {
+                "name": row[1],
+                "display_name": row[2] or "",
+                "description": row[3] or "",
+                "enum_values": enum_values,
+                "business_logic": row[5] or "",
+                "sensitive": bool(row[6]),
+                "skip_index": bool(row[7]),
+            }
+            result.setdefault(row[0], []).append(col)
+
+        logger.info(f"MySQL 列语义加载: {sum(len(v) for v in result.values())} 列")
+        return result
+
+    def _load_relations(self) -> dict[str, list[dict]]:
+        """从 da_table_relation JOIN da_table 加载关联关系 → {source_table: [relation_dict, ...]}"""
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type "
+                "FROM da_table_relation r "
+                "JOIN da_table t ON r.table_id = t.id "
+                "WHERE t.status = 1"
+            )).fetchall()
+
+        result: dict[str, list[dict]] = {}
+        for row in rows:
+            rel = {
+                "column": row[1],
+                "target_table": row[2],
+                "target_column": row[3],
+                "join_type": row[4] or "LEFT JOIN",
+            }
+            result.setdefault(row[0], []).append(rel)
+
+        logger.info(f"MySQL 关联关系加载: {sum(len(v) for v in result.values())} 条")
+        return result
+
+    def load_glossary(self) -> dict[str, dict]:
+        """从 da_glossary 加载业务术语 → {term: info_dict}"""
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT term, definition, sql_hint, related_tables, related_columns, synonyms "
+                "FROM da_glossary WHERE status = 1"
+            )).fetchall()
+
         glossary = {}
-
-        # 加载表语义
-        tables_dir = self.semantic_layer_dir / "tables"
-        if tables_dir.exists():
-            for f in tables_dir.glob("**/*.yaml"):
+        for row in rows:
+            related_tables = []
+            if row[3]:
                 try:
-                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
-                    if data and "table" in data:
-                        table_name = data["table"]["name"]
-                        table_semantics[table_name] = data
-                except Exception as e:
-                    logger.warning(f"加载语义层文件 {f} 失败: {e}")
+                    related_tables = json.loads(row[3])
+                except (json.JSONDecodeError, TypeError):
+                    related_tables = [t.strip() for t in row[3].split(",") if t.strip()]
 
-        # 加载业务术语
-        glossary_dir = self.semantic_layer_dir / "glossary"
-        if glossary_dir.exists():
-            for f in glossary_dir.glob("**/*.yaml"):
+            related_columns = []
+            if row[4]:
                 try:
-                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
-                    if data and "glossary" in data:
-                        for item in data["glossary"]:
-                            glossary[item["term"]] = item
-                except Exception as e:
-                    logger.warning(f"加载术语文件 {f} 失败: {e}")
+                    related_columns = json.loads(row[4])
+                except (json.JSONDecodeError, TypeError):
+                    related_columns = [c.strip() for c in row[4].split(",") if c.strip()]
 
-        logger.info(f"语义层加载完成: {len(table_semantics)} 张表, {len(glossary)} 条术语")
-        return table_semantics, glossary
+            synonyms = []
+            if row[5]:
+                try:
+                    synonyms = json.loads(row[5])
+                except (json.JSONDecodeError, TypeError):
+                    synonyms = [s.strip() for s in row[5].split(",") if s.strip()]
+
+            glossary[row[0]] = {
+                "term": row[0],
+                "definition": row[1] or "",
+                "sql_hint": row[2] or "",
+                "related_tables": related_tables,
+                "related_columns": related_columns,
+                "synonyms": synonyms,
+            }
+
+        logger.info(f"MySQL 业务术语加载: {len(glossary)} 条")
+        return glossary
 
     def load_enums(self) -> list[dict]:
-        """
-        从 Doris warehouse_sys.sys_dim_enum_dict 加载枚举字典。
+        """从 da_enum_def JOIN da_enum_value 加载枚举字典 → [{table_name, field_name, field_label, values: [...]}]"""
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT d.table_name, d.field_name, d.field_label, "
+                "v.code, v.label, v.label_cn "
+                "FROM da_enum_value v "
+                "JOIN da_enum_def d ON v.definition_id = d.id "
+                "ORDER BY d.table_name, d.field_name, v.sort_order"
+            )).fetchall()
 
-        Returns:
-            list[dict]: 扁平化的枚举条目列表，每条包含:
-                - "table_name" (str): 关联表名，如 "pmt_account"
-                - "field_name" (str): 字段名，如 "account_type"
-                - "field_label" (str): 字段中文名，如 "账户类型"
-                - "values" (list[dict]): 枚举值列表，每个:
-                    - "code" (str): 实际存储值，如 "1000"
-                    - "label" (str): 英文标签
-                    - "label_cn" (str): 中文标签，如 "普通账户"
-        """
-        try:
-            return self._load_enums_from_doris()
-        except Exception as e:
-            logger.warning(f"从 Doris 加载枚举失败，回退到本地 YAML: {e}")
-            return self._load_enums_from_yaml()
-
-    def _load_enums_from_doris(self) -> list[dict]:
-        """从 Doris warehouse_sys.sys_dim_enum_dict 查询枚举字典"""
-        sql = text("""
-            SELECT src_table_name, src_field_name, field_label,
-                   src_field_value, src_value_label, status_desc
-            FROM warehouse_sys.sys_dim_enum_dict
-            ORDER BY src_table_name, src_field_name, sort_order
-        """)
-        with self.engine.connect() as conn:
-            rows = conn.execute(sql).fetchall()
-
-        from collections import OrderedDict
         groups: dict[tuple, dict] = OrderedDict()
         for row in rows:
             key = (row[0], row[1])
@@ -227,108 +255,145 @@ class SchemaLoader:
                     "values": [],
                 }
             groups[key]["values"].append({
-                "code": str(row[3]),
+                "code": row[3],
                 "label": row[4] or "",
                 "label_cn": row[5] or "",
             })
 
-        return list(groups.values())
+        result = list(groups.values())
+        logger.info(f"MySQL 枚举字典加载: {len(result)} 个字段, {sum(len(g['values']) for g in result)} 个值")
+        return result
 
-    def _load_enums_from_yaml(self) -> list[dict]:
-        """从本地 semantic_layer/enums/*.yaml 加载枚举（Doris 查询失败时的回退）"""
-        enums = []
-        enums_dir = self.semantic_layer_dir / "enums"
-        if enums_dir.exists():
-            for f in enums_dir.glob("*.yaml"):
-                try:
-                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
-                    if data and "enums" in data:
-                        enums.extend(data["enums"])
-                except Exception as e:
-                    logger.warning(f"加载枚举文件 {f} 失败: {e}")
-        return enums
+    def load_fewshot(self) -> list[dict]:
+        """从 da_fewshot + da_table_query 加载 Few-shot 示例。"""
+        examples = []
+
+        with self.mysql_engine.connect() as conn:
+            # 全局 Few-shot
+            rows = conn.execute(text(
+                "SELECT question, `sql`, tables, difficulty "
+                "FROM da_fewshot WHERE status = 1"
+            )).fetchall()
+
+            for row in rows:
+                tables = self._parse_json_list(row[2])
+                examples.append({
+                    "question": row[0],
+                    "sql": row[1],
+                    "tables": tables,
+                    "difficulty": row[3] or "",
+                })
+
+            # 表级常见问题（也作为 Few-shot）
+            query_rows = conn.execute(text(
+                "SELECT q.question, q.`sql`, q.tables, q.difficulty "
+                "FROM da_table_query q "
+                "JOIN da_table t ON q.table_id = t.id "
+                "WHERE t.status = 1"
+            )).fetchall()
+
+            for row in query_rows:
+                tables = self._parse_json_list(row[2])
+                examples.append({
+                    "question": row[0],
+                    "sql": row[1],
+                    "tables": tables,
+                    "difficulty": row[3] or "",
+                })
+
+        logger.info(f"MySQL Few-shot 加载: {len(examples)} 条 (全局 {len(rows)} + 表级 {len(query_rows)})")
+        return examples
 
     # ── 合并 ──
 
-    def merge_schema(self, doris_schema: dict, semantic: dict | None) -> dict:
-        """
-        将 Doris DDL Schema 和语义层 YAML 合并，YAML 信息优先覆盖 DDL。
-
-        Args:
-            doris_schema: get_table_schema() 返回的 Doris 原始 Schema
-            semantic: 语义层 YAML 解析结果（包含 table, columns, relations 等），
-                为 None 时直接返回 doris_schema
-
-        Returns:
-            dict: 合并后的 Schema，新增 display_name, description, tags,
-                query_tips, relations, common_queries 等字段；
-                列级信息中 YAML 的 display_name, description, enum_values 等覆盖 DDL
-        """
-        if semantic is None:
-            return doris_schema
-
-        table_info = semantic.get("table", {})
+    def merge_schema(
+        self,
+        doris_schema: dict,
+        table_sem: dict | None,
+        col_sems: list[dict] | None,
+        relations: list[dict] | None,
+    ) -> dict:
+        """将 Doris DDL + MySQL 语义层合并为完整 Schema。"""
         schema = doris_schema.copy()
 
-        # 表级信息覆盖
-        schema["display_name"] = table_info.get("display_name", "")
-        schema["description"] = table_info.get("description", schema.get("table_comment", ""))
-        schema["tags"] = table_info.get("tags", [])
-        schema["query_tips"] = table_info.get("query_tips", "")
+        # 表级信息
+        if table_sem:
+            schema["display_name"] = table_sem.get("display_name", "")
+            schema["description"] = table_sem.get("description", schema.get("table_comment", ""))
+            schema["tags"] = table_sem.get("tags", [])
+            schema["query_tips"] = table_sem.get("query_tips", "")
 
         # 关联关系
-        schema["relations"] = semantic.get("relations", [])
+        schema["relations"] = relations or []
 
-        # 常见问题
-        schema["common_queries"] = semantic.get("common_queries", [])
-
-        # 列级信息合并：YAML 覆盖补充 DDL
-        col_map = {}
-        for col in semantic.get("columns", []):
-            col_map[col["name"]] = col
-
-        for col in schema["columns"]:
-            if col["name"] in col_map:
-                yaml_col = col_map[col["name"]]
-                if "display_name" in yaml_col:
-                    col["display_name"] = yaml_col["display_name"]
-                if "description" in yaml_col:
-                    col["description"] = yaml_col["description"]
-                if "enum_values" in yaml_col:
-                    col["enum_values"] = yaml_col["enum_values"]
-                if "business_logic" in yaml_col:
-                    col["business_logic"] = yaml_col["business_logic"]
-                if yaml_col.get("sensitive"):
-                    col["sensitive"] = True
-                if yaml_col.get("skip_index"):
-                    col["skip_index"] = True
+        # 列级信息合并
+        if col_sems:
+            col_map = {col["name"]: col for col in col_sems}
+            for col in schema["columns"]:
+                if col["name"] in col_map:
+                    sem_col = col_map[col["name"]]
+                    if sem_col.get("display_name"):
+                        col["display_name"] = sem_col["display_name"]
+                    if sem_col.get("description"):
+                        col["description"] = sem_col["description"]
+                    if sem_col.get("enum_values"):
+                        col["enum_values"] = sem_col["enum_values"]
+                    if sem_col.get("business_logic"):
+                        col["business_logic"] = sem_col["business_logic"]
+                    if sem_col.get("sensitive"):
+                        col["sensitive"] = True
+                    if sem_col.get("skip_index"):
+                        col["skip_index"] = True
 
         return schema
 
     # ── 统一入口 ──
 
-    def load_all(self) -> tuple[list[dict], dict, list[dict]]:
+    def load_all(self) -> tuple[list[dict], dict, list[dict], list[dict]]:
         """
-        加载并合并所有 Schema（Doris DDL + 语义层 YAML）。
+        加载并合并所有 Schema。
 
         Returns:
-            tuple: (schemas, glossary, enums)
-                - schemas: 完整 Schema dict 列表
-                - glossary: 业务术语表
-                - enums: 独立枚举条目列表
+            tuple: (schemas, glossary, enums, fewshot)
         """
-        table_semantics, glossary = self.load_semantic_layer()
+        # 从 MySQL 加载语义层
+        table_semantics = self._load_table_semantics()
+        column_semantics = self._load_column_semantics()
+        relations = self._load_relations()
+        glossary = self.load_glossary()
         enums = self.load_enums()
+        fewshot = self.load_fewshot()
 
+        # 从 Doris 加载 DDL
         table_names = self.get_all_tables()
         logger.info(f"从 Doris 加载到 {len(table_names)} 张表")
 
         schemas = []
         for table_name in table_names:
             doris_schema = self.get_table_schema(table_name)
-            semantic = table_semantics.get(table_name)
-            merged = self.merge_schema(doris_schema, semantic)
+            merged = self.merge_schema(
+                doris_schema,
+                table_sem=table_semantics.get(table_name),
+                col_sems=column_semantics.get(table_name),
+                relations=relations.get(table_name),
+            )
             schemas.append(merged)
 
-        logger.info(f"Schema 合并完成: {len(schemas)} 张表, 其中 {len(table_semantics)} 张有语义层补充")
-        return schemas, glossary, enums
+        logger.info(
+            f"Schema 合并完成: {len(schemas)} 张表, "
+            f"其中 {len(table_semantics)} 张有语义层补充"
+        )
+        return schemas, glossary, enums, fewshot
+
+    # ── 工具方法 ──
+
+    @staticmethod
+    def _parse_json_list(value: str | None) -> list:
+        """解析 JSON 数组字符串，兼容逗号分隔格式。"""
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return [t.strip() for t in value.split(",") if t.strip()]

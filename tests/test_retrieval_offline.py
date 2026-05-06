@@ -1,5 +1,5 @@
 """
-离线测试脚本 — 不依赖 Doris，用 mock Schema 验证 RAG 全链路。
+离线测试脚本 — 不依赖 Doris/MySQL，用 mock Schema 验证 RAG 全链路。
 
 运行: python -m tests.test_retrieval_offline
 """
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_mock_schemas() -> list[dict]:
-    """构造 mock Schema 数据（模拟 Doris DDL + 语义层合并后的结果）"""
+    """构造 mock Schema 数据（模拟 Doris DDL + MySQL 语义层合并后的结果）"""
     return [
         {
             "database": "dwd_banking",
@@ -61,14 +61,6 @@ def build_mock_schemas() -> list[dict]:
             "relations": [
                 {"column": "customer_id", "target_table": "dim_customer", "target_column": "customer_id", "join_type": "LEFT JOIN"},
             ],
-            "common_queries": [
-                {"question": "目前有多少活跃商户", "sql": "SELECT COUNT(*) AS \"活跃商户数\" FROM dwd_banking.pmt_account WHERE account_status = 1 AND is_delete = 0", "tables": ["pmt_account"], "difficulty": "easy"},
-                {"question": "各国家的商户数量分布", "sql": "SELECT country AS \"国家\", COUNT(*) AS \"商户数\" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY country ORDER BY COUNT(*) DESC LIMIT 100", "tables": ["pmt_account"], "difficulty": "easy"},
-                {"question": "KYC认证通过率", "sql": "SELECT ROUND(COUNT(CASE WHEN verification_status = 1 THEN 1 END) / COUNT(*) * 100, 2) AS \"通过率(%)\" FROM dwd_banking.pmt_account WHERE is_delete = 0", "tables": ["pmt_account"], "difficulty": "medium"},
-                {"question": "各风险等级的商户数量", "sql": "SELECT risk_rating_level AS \"风险等级\", COUNT(*) AS \"商户数\" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY risk_rating_level ORDER BY COUNT(*) DESC", "tables": ["pmt_account"], "difficulty": "easy"},
-                {"question": "最近一个月新开户的商户数", "sql": "SELECT COUNT(*) AS \"新开户数\" FROM dwd_banking.pmt_account WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND is_delete = 0", "tables": ["pmt_account"], "difficulty": "easy"},
-                {"question": "各账户类型的商户占比", "sql": "SELECT CASE account_type WHEN 1000 THEN '普通账户' WHEN 2000 THEN 'LPSP' WHEN 2001 THEN 'TPSP' WHEN 3000 THEN 'RPSP' ELSE '其他' END AS \"账户类型\", COUNT(*) AS \"数量\" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY account_type", "tables": ["pmt_account"], "difficulty": "medium"},
-            ],
         },
         {
             "database": "dwd_banking",
@@ -90,11 +82,6 @@ def build_mock_schemas() -> list[dict]:
             ],
             "relations": [
                 {"column": "paid", "target_table": "pmt_account", "target_column": "paid", "join_type": "INNER JOIN"},
-            ],
-            "common_queries": [
-                {"question": "今天的交易总额", "sql": "SELECT SUM(amount) AS \"交易总额\" FROM dwd_banking.pmt_transaction WHERE DATE(create_time) = CURDATE() AND txn_status = 'SUCCESS'", "tables": ["pmt_transaction"], "difficulty": "easy"},
-                {"question": "各渠道的交易量分布", "sql": "SELECT channel AS \"渠道\", COUNT(*) AS \"交易量\", SUM(amount) AS \"交易额\" FROM dwd_banking.pmt_transaction WHERE txn_status = 'SUCCESS' GROUP BY channel ORDER BY SUM(amount) DESC LIMIT 100", "tables": ["pmt_transaction"], "difficulty": "easy"},
-                {"question": "交易成功率", "sql": "SELECT ROUND(COUNT(CASE WHEN txn_status = 'SUCCESS' THEN 1 END) / COUNT(*) * 100, 2) AS \"成功率(%)\" FROM dwd_banking.pmt_transaction", "tables": ["pmt_transaction"], "difficulty": "medium"},
             ],
         },
     ]
@@ -134,12 +121,29 @@ def build_mock_glossary() -> dict:
     }
 
 
+def build_mock_fewshot() -> list[dict]:
+    """构造 mock Few-shot 示例"""
+    return [
+        {
+            "question": "目前有多少活跃商户",
+            "sql": "SELECT COUNT(*) AS \"活跃商户数\" FROM dwd_banking.pmt_account WHERE account_status = 1 AND is_delete = 0",
+            "tables": ["pmt_account"],
+            "difficulty": "easy",
+        },
+        {
+            "question": "各国家的商户数量分布",
+            "sql": "SELECT country AS \"国家\", COUNT(*) AS \"商户数\" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY country ORDER BY COUNT(*) DESC",
+            "tables": ["pmt_account"],
+            "difficulty": "easy",
+        },
+    ]
+
+
 def main():
     from src.retrieval.embedding import get_embedding
     from src.retrieval.index_manager import IndexManager
     from src.retrieval.hybrid_searcher import HybridSearcher
     from src.retrieval.reranker import get_reranker
-    from src.retrieval.fewshot_selector import FewShotSelector
     from src.retrieval.glossary_resolver import GlossaryResolver
     from src.retrieval.schema_formatter import SchemaFormatter
     from src.retrieval.config import RERANK_INPUT_TOP_K, TABLE_SEARCH_TOP_K, ENABLE_RERANKER
@@ -147,20 +151,19 @@ def main():
     # 1. 准备数据
     schemas = build_mock_schemas()
     glossary = build_mock_glossary()
+    fewshot_examples = build_mock_fewshot()
 
     # 2. 初始化
     embedding = get_embedding()
     index_manager = IndexManager()
-    indices = index_manager.build_and_save(schemas, embedding)
+    indices = index_manager.build(schemas, embedding, fewshot_examples=fewshot_examples)
 
     searcher = HybridSearcher(
         embedding=embedding,
-        table_dense=indices["table_dense"],
-        table_sparse=indices["table_sparse"],
-        column_dense=indices["column_dense"],
-        column_sparse=indices["column_sparse"],
-        table_docs=indices["table_docs"],
-        column_docs=indices["column_docs"],
+        table_index=indices["table_index"],
+        column_index=indices["column_index"],
+        enum_index=indices["enum_index"],
+        table_schemas=indices["table_schemas"],
     )
 
     fewshot = indices["fewshot_selector"]
@@ -210,37 +213,16 @@ def main():
         print(f"  命中表: {[c['table_name'] for c in candidates]}")
         for c in candidates:
             score_key = "rerank_score" if "rerank_score" in c else "score"
-            print(f"    - {c['table_name']}: {score_key}={c.get(score_key, 0):.4f}, 列级命中={c.get('hit_by_column', False)}")
+            print(f"    - {c['table_name']}: {score_key}={c.get(score_key, 0):.4f}")
 
         # Few-shot
         examples = fewshot.select(query, tables=[c["table_name"] for c in candidates], top_k=3)
         if examples:
             print(f"  Few-shot: {[ex['question'][:30] for ex in examples]}")
 
-        # Prompt 预览（只显示前 200 字）
+        # Prompt 预览
         prompt = formatter.format_all(candidates, examples, g_result["business_context"])
         print(f"  Prompt 长度: {len(prompt)} 字符")
-
-    # 4. 测试从磁盘加载
-    print(f"\n{'=' * 80}")
-    print("测试从磁盘加载索引")
-    print(f"{'=' * 80}")
-    loaded = index_manager.load_all(embedding)
-    # 恢复 schema 引用
-    for doc in loaded["table_docs"]:
-        doc["schema"] = loaded["table_schemas"].get(doc["table_name"], {})
-
-    searcher2 = HybridSearcher(
-        embedding=embedding,
-        table_dense=loaded["table_dense"],
-        table_sparse=loaded["table_sparse"],
-        column_dense=loaded["column_dense"],
-        column_sparse=loaded["column_sparse"],
-        table_docs=loaded["table_docs"],
-        column_docs=loaded["column_docs"],
-    )
-    result = searcher2.search("活跃商户数量", top_k=3)
-    print(f"  从磁盘加载后检索: {[r['table_name'] for r in result]}")
 
     print(f"\n{'=' * 80}")
     print("全部测试通过")

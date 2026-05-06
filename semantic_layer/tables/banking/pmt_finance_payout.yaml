@@ -2,336 +2,281 @@ table:
   name: pmt_finance_payout
   database: dwd_banking
   display_name: 账户代付表
-  description: |
-    商户发起的代付/出金交易，是平台核心出款表。
-    每行代表一笔代付订单，含source/target金额币种、受益人、汇率锁定、渠道、退款状态、风险等级、MT103等完整信息。
-  tags: [代付, payout, 出金, 转账, 跨境支付, 出款]
+  description: '商户发起的代付/出金交易，是平台核心出款表。
+
+    每行代表一笔代付订单，含source/target金额币种、受益人、汇率锁定、渠道、退款状态、风险等级、MT103等完整信息。'
+  tags:
+  - 代付
+  - payout
+  - 出金
+  - 转账
+  - 跨境支付
+  - 出款
   query_tips: 已完成代付用 payout_status=1；查询客户实际出账金额用 source_amount
-
 columns:
-  - name: poid
-    display_name: 主键ID
-    skip_index: true
-
-  - name: payout_id
-    display_name: 代付ID
-
-  - name: direct_id
-    display_name: 机构ID
-
-  - name: account_id
-    display_name: 账户ID
-
-  - name: account_name
-    display_name: 商户名
-
-  - name: source_amount
-    display_name: 源金额(出账金额)
-
-  - name: source_currency
-    display_name: 源币种
-
-  - name: target_amount
-    display_name: 目标金额(到账金额)
-
-  - name: target_currency
-    display_name: 目标币种
-
-  - name: fee_amount
-    display_name: 手续费
-
-  - name: fee_paid_by
-    display_name: 费用承担方
-    enum_values: [shared, our]
-
-  - name: guaranteed_rate
-    display_name: 锁汇汇率
-
-  - name: guaranteed_date
-    display_name: 锁汇时间
-
-  - name: beneficiary_id
-    display_name: 受益人ID
-
-  - name: beneficiary_name
-    display_name: 受益人名
-    sensitive: true
-
-  - name: beneficiary_body
-    display_name: 受益人快照
-    skip_index: true
-
-  - name: payer_id
-    display_name: 付款人ID
-
-  - name: payout_date
-    display_name: 转账时间
-
-  - name: purpose_code
-    display_name: 转账用途代码
-
-  - name: payout_reason
-    display_name: 代付原因
-
-  - name: payout_reference
-    display_name: 银行附言
-
-  - name: channel_code
-    display_name: 渠道编码
-    description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用 LIKE '渠道名%' 匹配
-
-  - name: channel_code_before
-    display_name: 切换前渠道
-
-  - name: channel_req_body
-    display_name: 渠道请求Body
-    skip_index: true
-
-  - name: channel_resp_id
-    display_name: 渠道响应ID
-
-  - name: channel_resp_status
-    display_name: 渠道响应状态
-
-  - name: channel_resp_body
-    display_name: 渠道响应Body
-    skip_index: true
-
-  - name: execute_reason
-    display_name: 失败原因
-
-  - name: mt103_id
-    display_name: MT103 ID
-
-  - name: submission
-    display_name: MT103内容
-    skip_index: true
-
-  - name: short_account_id
-    display_name: 商户短号
-
-  - name: short_reference_id
-    display_name: 代付短号
-
-  - name: unique_request_id
-    display_name: 客户端幂等键
-
-  - name: client_idempotency_key
-    display_name: 客户端幂等键(durable)
-
-  - name: client_request_fingerprint
-    display_name: 请求指纹sha256
-    skip_index: true
-
-  - name: payment_scope
-    display_name: 支付范围
-    enum_values: [internal, domestic, cross-border]
-
-  - name: payment_internal_info
-    display_name: 内部支付信息
-
-  - name: creator_id
-    display_name: 创建人ID
-
-  - name: creator_name
-    display_name: 创建人名
-
-  - name: creator_ip
-    display_name: 创建人IP
-    sensitive: true
-
-  - name: transaction_id
-    display_name: 交易流水ID
-
-  - name: debit_status
-    display_name: 扣款状态
-    enum_values:
-      - {value: -1, label: "异常"}
-      - {value: 0, label: "默认"}
-      - {value: 1, label: "已扣款"}
-
-  - name: refund_status
-    display_name: 退款状态
-    enum_values:
-      - {value: -1, label: "退款失败"}
-      - {value: 0, label: "默认"}
-      - {value: 1, label: "退款成功"}
-      - {value: 2, label: "退款审核"}
-      - {value: 3, label: "退款拒绝"}
-
-  - name: refund_reason
-    display_name: 退款原因
-
-  - name: review_status
-    display_name: 审查状态
-    enum_values:
-      - {value: 1, label: "通过"}
-      - {value: 0, label: "审核中"}
-      - {value: -1, label: "拒绝"}
-
-  - name: payout_status
-    display_name: 代付状态
-    enum_values:
-      - {value: -1, label: "失败"}
-      - {value: 0, label: "pending"}
-      - {value: 1, label: "completed"}
-      - {value: 2, label: "已提交渠道"}
-      - {value: 3, label: "客户挂起"}
-      - {value: 9, label: "提交渠道失败"}
-
-  - name: status_type
-    display_name: 状态类型
-    enum_values: [normal, reverse]
-
-  - name: payout_way
-    display_name: 创建方式
-    enum_values:
-      - {value: 0, label: "商户端"}
-      - {value: 1, label: "接口"}
-
-  - name: risk_level
-    display_name: 风险等级
-    description: 0=无风险，>0风险等级，数值越大风险越高
-
-  - name: risk_remark
-    display_name: 风险备注
-    skip_index: true
-
-  - name: payment_mode
-    display_name: 支付模式
-    enum_values: [house, client]
-
-  - name: quote_id
-    display_name: 报价ID
-
-  - name: money_movement
-    display_name: 跨业务线标记
-    enum_values:
-      - {value: 0, label: "正常payout"}
-      - {value: 1, label: "跨业务线转账"}
-
-  - name: channel_customer_number
-    display_name: 渠道商户号
-
-  - name: exchange_rate
-    display_name: USD汇率
-
-  - name: remark
-    display_name: 备注
-    skip_index: true
-
-  - name: complete_time
-    display_name: 完成时间
-
-  - name: create_time
-    display_name: 创建时间
-
-  - name: update_time
-    display_name: 更新时间
-
+- name: poid
+  display_name: 主键ID
+  skip_index: true
+- name: payout_id
+  display_name: 代付ID
+- name: direct_id
+  display_name: 机构ID
+- name: account_id
+  display_name: 账户ID
+- name: account_name
+  display_name: 商户名
+- name: source_amount
+  display_name: 源金额(出账金额)
+- name: source_currency
+  display_name: 源币种
+- name: target_amount
+  display_name: 目标金额(到账金额)
+- name: target_currency
+  display_name: 目标币种
+- name: fee_amount
+  display_name: 手续费
+- name: fee_paid_by
+  display_name: 费用承担方
+  enum_values:
+  - shared
+  - our
+- name: guaranteed_rate
+  display_name: 锁汇汇率
+- name: guaranteed_date
+  display_name: 锁汇时间
+- name: beneficiary_id
+  display_name: 受益人ID
+- name: beneficiary_name
+  display_name: 受益人名
+  sensitive: true
+- name: beneficiary_body
+  display_name: 受益人快照
+  skip_index: true
+- name: payer_id
+  display_name: 付款人ID
+- name: payout_date
+  display_name: 转账时间
+- name: purpose_code
+  display_name: 转账用途代码
+- name: payout_reason
+  display_name: 代付原因
+- name: payout_reference
+  display_name: 银行附言
+- name: channel_code
+  display_name: 渠道编码
+  description: 上游银行/卡组织渠道，格式为"渠道名_后缀"如 CIMB_20241017, VISA_UQPAY20240627, WISE_FX_20250303，查询时用
+    LIKE '渠道名%' 匹配
+- name: channel_code_before
+  display_name: 切换前渠道
+- name: channel_req_body
+  display_name: 渠道请求Body
+  skip_index: true
+- name: channel_resp_id
+  display_name: 渠道响应ID
+- name: channel_resp_status
+  display_name: 渠道响应状态
+- name: channel_resp_body
+  display_name: 渠道响应Body
+  skip_index: true
+- name: execute_reason
+  display_name: 失败原因
+- name: mt103_id
+  display_name: MT103 ID
+- name: submission
+  display_name: MT103内容
+  skip_index: true
+- name: short_account_id
+  display_name: 商户短号
+- name: short_reference_id
+  display_name: 代付短号
+- name: unique_request_id
+  display_name: 客户端幂等键
+- name: client_idempotency_key
+  display_name: 客户端幂等键(durable)
+- name: client_request_fingerprint
+  display_name: 请求指纹sha256
+  skip_index: true
+- name: payment_scope
+  display_name: 支付范围
+  enum_values:
+  - internal
+  - domestic
+  - cross-border
+- name: payment_internal_info
+  display_name: 内部支付信息
+- name: creator_id
+  display_name: 创建人ID
+- name: creator_name
+  display_name: 创建人名
+- name: creator_ip
+  display_name: 创建人IP
+  sensitive: true
+- name: transaction_id
+  display_name: 交易流水ID
+- name: debit_status
+  display_name: 扣款状态
+  enum_values:
+  - value: -1
+    label: 异常
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 已扣款
+- name: refund_status
+  display_name: 退款状态
+  enum_values:
+  - value: -1
+    label: 退款失败
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 退款成功
+  - value: 2
+    label: 退款审核
+  - value: 3
+    label: 退款拒绝
+- name: refund_reason
+  display_name: 退款原因
+- name: review_status
+  display_name: 审查状态
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: 0
+    label: 审核中
+  - value: -1
+    label: 拒绝
+- name: payout_status
+  display_name: 代付状态
+  enum_values:
+  - value: -1
+    label: 失败
+  - value: 0
+    label: pending
+  - value: 1
+    label: completed
+  - value: 2
+    label: 已提交渠道
+  - value: 3
+    label: 客户挂起
+  - value: 9
+    label: 提交渠道失败
+- name: status_type
+  display_name: 状态类型
+  enum_values:
+  - normal
+  - reverse
+- name: payout_way
+  display_name: 创建方式
+  enum_values:
+  - value: 0
+    label: 商户端
+  - value: 1
+    label: 接口
+- name: risk_level
+  display_name: 风险等级
+  description: 0=无风险，>0风险等级，数值越大风险越高
+- name: risk_remark
+  display_name: 风险备注
+  skip_index: true
+- name: payment_mode
+  display_name: 支付模式
+  enum_values:
+  - house
+  - client
+- name: quote_id
+  display_name: 报价ID
+- name: money_movement
+  display_name: 跨业务线标记
+  enum_values:
+  - value: 0
+    label: 正常payout
+  - value: 1
+    label: 跨业务线转账
+- name: channel_customer_number
+  display_name: 渠道商户号
+- name: exchange_rate
+  display_name: USD汇率
+- name: remark
+  display_name: 备注
+  skip_index: true
+- name: complete_time
+  display_name: 完成时间
+- name: create_time
+  display_name: 创建时间
+- name: update_time
+  display_name: 更新时间
 relations:
-  - column: account_id
-    target_table: pmt_account
-    target_column: account_id
-    join_type: LEFT JOIN
-
-  - column: beneficiary_id
-    target_table: pmt_payment_beneficiary
-    target_column: beneficiary_id
-    join_type: LEFT JOIN
-
-  - column: quote_id
-    target_table: pmt_conversion_quotes
-    target_column: quote_id
-    join_type: LEFT JOIN
-
-  - column: channel_code
-    target_table: pmt_service_channel
-    target_column: channel_code
-    join_type: LEFT JOIN
-
-  - column: transaction_id
-    target_table: pmt_finance_transactions
-    target_column: transaction_id
-    join_type: LEFT JOIN
-
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: beneficiary_id
+  target_table: pmt_payment_beneficiary
+  target_column: beneficiary_id
+  join_type: LEFT JOIN
+- column: quote_id
+  target_table: pmt_conversion_quotes
+  target_column: quote_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+- column: transaction_id
+  target_table: pmt_finance_transactions
+  target_column: transaction_id
+  join_type: LEFT JOIN
 common_queries:
-  - question: 月度代付总额(按币种)
-    sql: |
-      SELECT DATE_FORMAT(create_time, '%Y-%m') AS "月份",
-             source_currency AS "币种",
-             COUNT(*) AS "笔数",
-             SUM(source_amount) AS "源金额总和",
-             SUM(target_amount) AS "目标金额总和"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE payout_status = 1
-      GROUP BY DATE_FORMAT(create_time, '%Y-%m'), source_currency
-      ORDER BY "月份" DESC, "源金额总和" DESC;
-    tables: [pmt_finance_payout]
-    difficulty: medium
-
-  - question: 代付成功率
-    sql: |
-      SELECT
-        ROUND(SUM(CASE WHEN payout_status = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "成功率%",
-        SUM(CASE WHEN payout_status = 1 THEN 1 ELSE 0 END) AS "成功数",
-        SUM(CASE WHEN payout_status = -1 THEN 1 ELSE 0 END) AS "失败数",
-        COUNT(*) AS "总数"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY);
-    tables: [pmt_finance_payout]
-    difficulty: medium
-
-  - question: 代付退款率(按渠道)
-    sql: |
-      SELECT channel_code AS "渠道",
-             COUNT(*) AS "总笔数",
-             SUM(CASE WHEN refund_status = 1 THEN 1 ELSE 0 END) AS "退款成功数",
-             ROUND(SUM(CASE WHEN refund_status = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "退款率%"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE payout_status IN (1, -1)
-      GROUP BY channel_code
-      ORDER BY "退款率%" DESC;
-    tables: [pmt_finance_payout]
-    difficulty: medium
-
-  - question: 高风险代付订单
-    sql: |
-      SELECT short_reference_id AS "代付短号",
-             account_name AS "商户",
-             source_amount AS "金额",
-             source_currency AS "币种",
-             risk_level AS "风险等级",
-             risk_remark AS "风险备注"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE risk_level > 0
-        AND payout_status NOT IN (1, -1)
-      ORDER BY risk_level DESC;
-    tables: [pmt_finance_payout]
-    difficulty: easy
-
-  - question: pending超过24h的代付
-    sql: |
-      SELECT short_reference_id AS "短号",
-             account_name AS "商户",
-             source_amount AS "金额",
-             source_currency AS "币种",
-             channel_code AS "渠道",
-             create_time AS "创建时间",
-             TIMESTAMPDIFF(HOUR, create_time, NOW()) AS "已等待小时"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE payout_status IN (0, 2)
-        AND create_time < DATE_SUB(NOW(), INTERVAL 24 HOUR);
-    tables: [pmt_finance_payout]
-    difficulty: medium
-
-  - question: house模式 vs client模式分布
-    sql: |
-      SELECT payment_mode AS "支付模式",
-             COUNT(*) AS "笔数",
-             SUM(source_amount * exchange_rate) AS "USD等值"
-      FROM dwd_banking.pmt_finance_payout
-      WHERE payout_status = 1
-      GROUP BY payment_mode;
-    tables: [pmt_finance_payout]
-    difficulty: medium
+- question: 月度代付总额(按币种)
+  sql: "SELECT DATE_FORMAT(create_time, '%Y-%m') AS \"月份\",\n       source_currency\
+    \ AS \"币种\",\n       COUNT(*) AS \"笔数\",\n       SUM(source_amount) AS \"源金额总和\"\
+    ,\n       SUM(target_amount) AS \"目标金额总和\"\nFROM dwd_banking.pmt_finance_payout\n\
+    WHERE payout_status = 1\nGROUP BY DATE_FORMAT(create_time, '%Y-%m'), source_currency\n\
+    ORDER BY \"月份\" DESC, \"源金额总和\" DESC;"
+  tables:
+  - pmt_finance_payout
+  difficulty: medium
+- question: 代付成功率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN payout_status = 1 THEN 1 ELSE 0 END) * 100.0\
+    \ / COUNT(*), 2) AS \"成功率%\",\n  SUM(CASE WHEN payout_status = 1 THEN 1 ELSE 0\
+    \ END) AS \"成功数\",\n  SUM(CASE WHEN payout_status = -1 THEN 1 ELSE 0 END) AS \"\
+    失败数\",\n  COUNT(*) AS \"总数\"\nFROM dwd_banking.pmt_finance_payout\nWHERE create_time\
+    \ >= DATE_SUB(NOW(), INTERVAL 30 DAY);"
+  tables:
+  - pmt_finance_payout
+  difficulty: medium
+- question: 代付退款率(按渠道)
+  sql: "SELECT channel_code AS \"渠道\",\n       COUNT(*) AS \"总笔数\",\n       SUM(CASE\
+    \ WHEN refund_status = 1 THEN 1 ELSE 0 END) AS \"退款成功数\",\n       ROUND(SUM(CASE\
+    \ WHEN refund_status = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS \"退款率%\"\
+    \nFROM dwd_banking.pmt_finance_payout\nWHERE payout_status IN (1, -1)\nGROUP BY\
+    \ channel_code\nORDER BY \"退款率%\" DESC;"
+  tables:
+  - pmt_finance_payout
+  difficulty: medium
+- question: 高风险代付订单
+  sql: "SELECT short_reference_id AS \"代付短号\",\n       account_name AS \"商户\",\n \
+    \      source_amount AS \"金额\",\n       source_currency AS \"币种\",\n       risk_level\
+    \ AS \"风险等级\",\n       risk_remark AS \"风险备注\"\nFROM dwd_banking.pmt_finance_payout\n\
+    WHERE risk_level > 0\n  AND payout_status NOT IN (1, -1)\nORDER BY risk_level\
+    \ DESC;"
+  tables:
+  - pmt_finance_payout
+  difficulty: easy
+- question: pending超过24h的代付
+  sql: "SELECT short_reference_id AS \"短号\",\n       account_name AS \"商户\",\n   \
+    \    source_amount AS \"金额\",\n       source_currency AS \"币种\",\n       channel_code\
+    \ AS \"渠道\",\n       create_time AS \"创建时间\",\n       TIMESTAMPDIFF(HOUR, create_time,\
+    \ NOW()) AS \"已等待小时\"\nFROM dwd_banking.pmt_finance_payout\nWHERE payout_status\
+    \ IN (0, 2)\n  AND create_time < DATE_SUB(NOW(), INTERVAL 24 HOUR);"
+  tables:
+  - pmt_finance_payout
+  difficulty: medium
+- question: house模式 vs client模式分布
+  sql: "SELECT payment_mode AS \"支付模式\",\n       COUNT(*) AS \"笔数\",\n       SUM(source_amount\
+    \ * exchange_rate) AS \"USD等值\"\nFROM dwd_banking.pmt_finance_payout\nWHERE payout_status\
+    \ = 1\nGROUP BY payment_mode;"
+  tables:
+  - pmt_finance_payout
+  difficulty: medium

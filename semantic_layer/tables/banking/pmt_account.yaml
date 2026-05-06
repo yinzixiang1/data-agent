@@ -2,349 +2,303 @@ table:
   name: pmt_account
   database: dwd_banking
   display_name: 商户账户表
-  description: |
-    支付系统的核心账户表，记录所有商户/个人的账户信息。
-    每行代表一个独立账户，包含基本信息、法人实体、KYC认证、风险评级、账户状态、结算与白标配置。
-  tags: [账户, 商户, merchant, account, KYC, KYB, 开户, 风险等级, 白标, LPSP, TPSP, RPSP]
+  description: '支付系统的核心账户表，记录所有商户/个人的账户信息。
+
+    每行代表一个独立账户，包含基本信息、法人实体、KYC认证、风险评级、账户状态、结算与白标配置。'
+  tags:
+  - 账户
+  - 商户
+  - merchant
+  - account
+  - KYC
+  - KYB
+  - 开户
+  - 风险等级
+  - 白标
+  - LPSP
+  - TPSP
+  - RPSP
   query_tips: 查询活跃商户需带 account_status=1 AND is_delete=0；机构模式下需关注 direct_id
-
 columns:
-  - name: paid
-    display_name: 账户主键ID
-    skip_index: true
-
-  - name: customer_id
-    display_name: 客户ID
-    description: 关联 dim_customer 的客户ID，一个客户可有多个account
-
-  - name: direct_id
-    display_name: 父级机构ID
-    description: 机构模式下指向上级机构的account_id，0表示无上级
-
-  - name: account_id
-    display_name: 系统内部账户ID
-    description: 业务唯一长ID，所有交易表通过此字段关联
-
-  - name: account_type
-    display_name: 账户类型
-    enum_values:
-      - {value: 1000, label: "普通账户"}
-      - {value: 2000, label: "LPSP-持牌支付服务商"}
-      - {value: 2001, label: "TPSP-技术支付服务商"}
-      - {value: 3000, label: "RPSP-引荐支付服务商"}
-
-  - name: account_name
-    display_name: 商户短名
-    description: VM中显示在客户账单上的名称
-
-  - name: nick_name
-    display_name: 商户昵称
-
-  - name: legal_entity_type
-    display_name: 法人实体类型
-    enum_values:
-      - {value: 1000, label: "个人"}
-      - {value: 2000, label: "企业"}
-
-  - name: legal_entity_name
-    display_name: 企业名称
-    description: legal_entity_type=2000 时填写
-
-  - name: legal_reg_name
-    display_name: 企业法定名（非英文）
-
-  - name: legal_first_name
-    display_name: 法人/个人名
-
-  - name: legal_last_name
-    display_name: 法人/个人姓
-
-  - name: legal_date_of_birth
-    display_name: 出生日期
-
-  - name: identification_type
-    display_name: 证件类型
-    enum_values:
-      - {value: 1000, label: "护照"}
-      - {value: 1001, label: "驾照"}
-      - {value: 1002, label: "国民身份证"}
-      - {value: 2000, label: "公司注册号"}
-
-  - name: identification_value
-    display_name: 证件号
-    sensitive: true
-
-  - name: identification_issue_date
-    display_name: 证件签发日期
-
-  - name: identification_expiry_date
-    display_name: 证件过期日期
-
-  - name: incorporate_date
-    display_name: 企业注册时间
-
-  - name: industry_mcc_info
-    display_name: 行业属性
-    skip_index: true
-
-  - name: industry_mcc_code
-    display_name: 行业MCC代码
-    description: 关联 sys_industry_mcc.code
-
-  - name: risk_rating_level
-    display_name: 风险等级
-    enum_values: [LOW, MEDIUM, HIGH, VERY_HIGH, MANUAL_REVIEW, NONE, NORMAL]
-
-  - name: risk_score
-    display_name: 风险评分
-
-  - name: risk_cra_level
-    display_name: CRA风险评级
-
-  - name: business_scope
-    display_name: 业务范围
-
-  - name: business_owners
-    display_name: 企业权益人
-    sensitive: true
-
-  - name: website_url
-    display_name: 网站地址
-
-  - name: purpose
-    display_name: 开户用途
-
-  - name: country
-    display_name: 国家
-    description: 3位ISO国家代码
-
-  - name: city
-    display_name: 城市
-
-  - name: state
-    display_name: 州/省
-
-  - name: address
-    display_name: 地址
-    sensitive: true
-
-  - name: postal_code
-    display_name: 邮编
-
-  - name: monthly_revenue
-    display_name: 月营业额
-
-  - name: trading_address
-    display_name: 经营地址
-    skip_index: true
-
-  - name: short_account_id
-    display_name: 商户短号
-    description: 用户友好的标识，唯一索引
-
-  - name: ref_bnb_sub_uid
-    display_name: 关联BNB子UID
-    skip_index: true
-
-  - name: ref_bnb_sub_email
-    display_name: 关联BNB邮箱
-    sensitive: true
-
-  - name: ref_metacomp_uid
-    display_name: 关联Metacomp UID
-    skip_index: true
-
-  - name: ref_cc_account_id
-    display_name: 关联CurrencyCloud账户ID
-    skip_index: true
-
-  - name: ref_dbs_account_id
-    display_name: 关联DBS账户ID
-    skip_index: true
-
-  - name: verification_status
-    display_name: KYC/KYB认证状态
-    enum_values:
-      - {value: -1, label: "拒绝"}
-      - {value: 0, label: "未提交"}
-      - {value: 2, label: "待审核"}
-      - {value: 1, label: "已通过"}
-
-  - name: api_trading_status
-    display_name: API交易状态
-    enum_values:
-      - {value: 1, label: "启用"}
-      - {value: -1, label: "禁用"}
-      - {value: 0, label: "默认"}
-
-  - name: payment_authorisation
-    display_name: 支付授权多签配置
-    skip_index: true
-
-  - name: automatic_settlement_config
-    display_name: 自动结算配置
-    skip_index: true
-
-  - name: allow_verification_subaccount
-    display_name: 允许审核下级商户
-    enum_values:
-      - {value: 0, label: "否"}
-      - {value: 1, label: "是"}
-
-  - name: allow_follow_direct_account
-    display_name: 跟随主账户信息
-    enum_values:
-      - {value: 0, label: "否"}
-      - {value: 1, label: "是"}
-
-  - name: account_status
-    display_name: 账户状态
-    enum_values:
-      - {value: 0, label: "默认"}
-      - {value: 1, label: "激活"}
-      - {value: 2, label: "停用"}
-
-  - name: main_email
-    display_name: 开户邮箱
-    sensitive: true
-
-  - name: sync_to_uq
-    display_name: 同步UQ标记
-    enum_values:
-      - {value: 0, label: "未同步"}
-      - {value: 1, label: "已同步"}
-      - {value: 2, label: "暂不处理"}
-
-  - name: tags
-    display_name: 标记
-
-  - name: temp_product
-    display_name: 模板account标记
-
-  - name: white_label_status
-    display_name: 白标状态
-    enum_values:
-      - {value: 0, label: "未开通"}
-      - {value: 1, label: "已开通"}
-
-  - name: restrict_id
-    display_name: 约束ID
-
-  - name: is_delete
-    display_name: 是否删除
-    enum_values:
-      - {value: 0, label: "未删除"}
-      - {value: 1, label: "已删除"}
-
-  - name: metadata
-    display_name: 元数据
-    skip_index: true
-
-  - name: fx_management_id
-    display_name: 换汇规则配置ID
-    description: 关联 sys_conversion_management.fx_management_id
-
-  - name: create_time
-    display_name: 创建时间
-
-  - name: update_time
-    display_name: 更新时间
-
+- name: paid
+  display_name: 账户主键ID
+  skip_index: true
+- name: customer_id
+  display_name: 客户ID
+  description: 关联 dim_customer 的客户ID，一个客户可有多个account
+- name: direct_id
+  display_name: 父级机构ID
+  description: 机构模式下指向上级机构的account_id，0表示无上级
+- name: account_id
+  display_name: 系统内部账户ID
+  description: 业务唯一长ID，所有交易表通过此字段关联
+- name: account_type
+  display_name: 账户类型
+  enum_values:
+  - value: 1000
+    label: 普通账户
+  - value: 2000
+    label: LPSP-持牌支付服务商
+  - value: 2001
+    label: TPSP-技术支付服务商
+  - value: 3000
+    label: RPSP-引荐支付服务商
+- name: account_name
+  display_name: 商户短名
+  description: VM中显示在客户账单上的名称
+- name: nick_name
+  display_name: 商户昵称
+- name: legal_entity_type
+  display_name: 法人实体类型
+  enum_values:
+  - value: 1000
+    label: 个人
+  - value: 2000
+    label: 企业
+- name: legal_entity_name
+  display_name: 企业名称
+  description: legal_entity_type=2000 时填写
+- name: legal_reg_name
+  display_name: 企业法定名（非英文）
+- name: legal_first_name
+  display_name: 法人/个人名
+- name: legal_last_name
+  display_name: 法人/个人姓
+- name: legal_date_of_birth
+  display_name: 出生日期
+- name: identification_type
+  display_name: 证件类型
+  enum_values:
+  - value: 1000
+    label: 护照
+  - value: 1001
+    label: 驾照
+  - value: 1002
+    label: 国民身份证
+  - value: 2000
+    label: 公司注册号
+- name: identification_value
+  display_name: 证件号
+  sensitive: true
+- name: identification_issue_date
+  display_name: 证件签发日期
+- name: identification_expiry_date
+  display_name: 证件过期日期
+- name: incorporate_date
+  display_name: 企业注册时间
+- name: industry_mcc_info
+  display_name: 行业属性
+  skip_index: true
+- name: industry_mcc_code
+  display_name: 行业MCC代码
+  description: 关联 sys_industry_mcc.code
+- name: risk_rating_level
+  display_name: 风险等级
+  enum_values:
+  - LOW
+  - MEDIUM
+  - HIGH
+  - VERY_HIGH
+  - MANUAL_REVIEW
+  - NONE
+  - NORMAL
+- name: risk_score
+  display_name: 风险评分
+- name: risk_cra_level
+  display_name: CRA风险评级
+- name: business_scope
+  display_name: 业务范围
+- name: business_owners
+  display_name: 企业权益人
+  sensitive: true
+- name: website_url
+  display_name: 网站地址
+- name: purpose
+  display_name: 开户用途
+- name: country
+  display_name: 国家
+  description: 3位ISO国家代码
+- name: city
+  display_name: 城市
+- name: state
+  display_name: 州/省
+- name: address
+  display_name: 地址
+  sensitive: true
+- name: postal_code
+  display_name: 邮编
+- name: monthly_revenue
+  display_name: 月营业额
+- name: trading_address
+  display_name: 经营地址
+  skip_index: true
+- name: short_account_id
+  display_name: 商户短号
+  description: 用户友好的标识，唯一索引
+- name: ref_bnb_sub_uid
+  display_name: 关联BNB子UID
+  skip_index: true
+- name: ref_bnb_sub_email
+  display_name: 关联BNB邮箱
+  sensitive: true
+- name: ref_metacomp_uid
+  display_name: 关联Metacomp UID
+  skip_index: true
+- name: ref_cc_account_id
+  display_name: 关联CurrencyCloud账户ID
+  skip_index: true
+- name: ref_dbs_account_id
+  display_name: 关联DBS账户ID
+  skip_index: true
+- name: verification_status
+  display_name: KYC/KYB认证状态
+  enum_values:
+  - value: -1
+    label: 拒绝
+  - value: 0
+    label: 未提交
+  - value: 2
+    label: 待审核
+  - value: 1
+    label: 已通过
+- name: api_trading_status
+  display_name: API交易状态
+  enum_values:
+  - value: 1
+    label: 启用
+  - value: -1
+    label: 禁用
+  - value: 0
+    label: 默认
+- name: payment_authorisation
+  display_name: 支付授权多签配置
+  skip_index: true
+- name: automatic_settlement_config
+  display_name: 自动结算配置
+  skip_index: true
+- name: allow_verification_subaccount
+  display_name: 允许审核下级商户
+  enum_values:
+  - value: 0
+    label: 否
+  - value: 1
+    label: 是
+- name: allow_follow_direct_account
+  display_name: 跟随主账户信息
+  enum_values:
+  - value: 0
+    label: 否
+  - value: 1
+    label: 是
+- name: account_status
+  display_name: 账户状态
+  enum_values:
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 激活
+  - value: 2
+    label: 停用
+- name: main_email
+  display_name: 开户邮箱
+  sensitive: true
+- name: sync_to_uq
+  display_name: 同步UQ标记
+  enum_values:
+  - value: 0
+    label: 未同步
+  - value: 1
+    label: 已同步
+  - value: 2
+    label: 暂不处理
+- name: tags
+  display_name: 标记
+- name: temp_product
+  display_name: 模板account标记
+- name: white_label_status
+  display_name: 白标状态
+  enum_values:
+  - value: 0
+    label: 未开通
+  - value: 1
+    label: 已开通
+- name: restrict_id
+  display_name: 约束ID
+- name: is_delete
+  display_name: 是否删除
+  enum_values:
+  - value: 0
+    label: 未删除
+  - value: 1
+    label: 已删除
+- name: metadata
+  display_name: 元数据
+  skip_index: true
+- name: fx_management_id
+  display_name: 换汇规则配置ID
+  description: 关联 sys_conversion_management.fx_management_id
+- name: create_time
+  display_name: 创建时间
+- name: update_time
+  display_name: 更新时间
 relations:
-  - column: industry_mcc_code
-    target_table: sys_industry_mcc
-    target_column: code
-    join_type: LEFT JOIN
-    description: 关联行业MCC
-
-  - column: country
-    target_table: sys_country_code
-    target_column: alpha_three_code
-    join_type: LEFT JOIN
-    description: 关联国家字典
-
-  - column: fx_management_id
-    target_table: sys_conversion_management
-    target_column: fx_management_id
-    join_type: LEFT JOIN
-    description: 关联外汇规则
-
-  - column: restrict_id
-    target_table: pmt_service_restrict
-    target_column: restrict_id
-    join_type: LEFT JOIN
-
+- column: industry_mcc_code
+  target_table: sys_industry_mcc
+  target_column: code
+  join_type: LEFT JOIN
+- column: country
+  target_table: sys_country_code
+  target_column: alpha_three_code
+  join_type: LEFT JOIN
+- column: fx_management_id
+  target_table: sys_conversion_management
+  target_column: fx_management_id
+  join_type: LEFT JOIN
+- column: restrict_id
+  target_table: pmt_service_restrict
+  target_column: restrict_id
+  join_type: LEFT JOIN
 common_queries:
-  - question: 目前有多少活跃商户？
-    sql: |
-      SELECT COUNT(*) AS "活跃商户数"
-      FROM dwd_banking.pmt_account
-      WHERE account_status = 1
-        AND is_delete = 0;
-    tables: [pmt_account]
-    difficulty: easy
-
-  - question: 各国家的商户数量分布TOP10
-    sql: |
-      SELECT country AS "国家",
-             COUNT(*) AS "商户数"
-      FROM dwd_banking.pmt_account
-      WHERE is_delete = 0
-        AND country IS NOT NULL
-      GROUP BY country
-      ORDER BY "商户数" DESC
-      LIMIT 10;
-    tables: [pmt_account]
-    difficulty: easy
-
-  - question: KYC/KYB 认证通过率
-    sql: |
-      SELECT
-        ROUND(SUM(CASE WHEN verification_status = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "通过率%",
-        SUM(CASE WHEN verification_status = 1 THEN 1 ELSE 0 END) AS "通过数",
-        COUNT(*) AS "总数"
-      FROM dwd_banking.pmt_account
-      WHERE is_delete = 0;
-    tables: [pmt_account]
-    difficulty: medium
-
-  - question: 各风险等级的商户数量
-    sql: |
-      SELECT risk_rating_level AS "风险等级",
-             COUNT(*) AS "商户数"
-      FROM dwd_banking.pmt_account
-      WHERE is_delete = 0
-      GROUP BY risk_rating_level
-      ORDER BY "商户数" DESC;
-    tables: [pmt_account]
-    difficulty: easy
-
-  - question: 最近一个月新开户的商户数（按账户类型分）
-    sql: |
-      SELECT
-        CASE account_type
-          WHEN 1000 THEN '普通账户'
-          WHEN 2000 THEN 'LPSP'
-          WHEN 2001 THEN 'TPSP'
-          WHEN 3000 THEN 'RPSP'
-          ELSE '其他' END AS "账户类型",
-        COUNT(*) AS "新开户数"
-      FROM dwd_banking.pmt_account
-      WHERE create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-        AND is_delete = 0
-      GROUP BY account_type;
-    tables: [pmt_account]
-    difficulty: medium
-
-  - question: 已开通白标的商户列表
-    sql: |
-      SELECT short_account_id AS "商户短号",
-             account_name AS "商户名",
-             country AS "国家",
-             create_time AS "开户时间"
-      FROM dwd_banking.pmt_account
-      WHERE white_label_status = 1
-        AND is_delete = 0
-      ORDER BY create_time DESC;
-    tables: [pmt_account]
-    difficulty: easy
+- question: 目前有多少活跃商户？
+  sql: "SELECT COUNT(*) AS \"活跃商户数\"\nFROM dwd_banking.pmt_account\nWHERE account_status\
+    \ = 1\n  AND is_delete = 0;"
+  tables:
+  - pmt_account
+  difficulty: easy
+- question: 各国家的商户数量分布TOP10
+  sql: "SELECT country AS \"国家\",\n       COUNT(*) AS \"商户数\"\nFROM dwd_banking.pmt_account\n\
+    WHERE is_delete = 0\n  AND country IS NOT NULL\nGROUP BY country\nORDER BY \"\
+    商户数\" DESC\nLIMIT 10;"
+  tables:
+  - pmt_account
+  difficulty: easy
+- question: KYC/KYB 认证通过率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN verification_status = 1 THEN 1 ELSE 0 END) *\
+    \ 100.0 / COUNT(*), 2) AS \"通过率%\",\n  SUM(CASE WHEN verification_status = 1 THEN\
+    \ 1 ELSE 0 END) AS \"通过数\",\n  COUNT(*) AS \"总数\"\nFROM dwd_banking.pmt_account\n\
+    WHERE is_delete = 0;"
+  tables:
+  - pmt_account
+  difficulty: medium
+- question: 各风险等级的商户数量
+  sql: "SELECT risk_rating_level AS \"风险等级\",\n       COUNT(*) AS \"商户数\"\nFROM dwd_banking.pmt_account\n\
+    WHERE is_delete = 0\nGROUP BY risk_rating_level\nORDER BY \"商户数\" DESC;"
+  tables:
+  - pmt_account
+  difficulty: easy
+- question: 最近一个月新开户的商户数（按账户类型分）
+  sql: "SELECT\n  CASE account_type\n    WHEN 1000 THEN '普通账户'\n    WHEN 2000 THEN\
+    \ 'LPSP'\n    WHEN 2001 THEN 'TPSP'\n    WHEN 3000 THEN 'RPSP'\n    ELSE '其他'\
+    \ END AS \"账户类型\",\n  COUNT(*) AS \"新开户数\"\nFROM dwd_banking.pmt_account\nWHERE\
+    \ create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\n  AND is_delete = 0\nGROUP\
+    \ BY account_type;"
+  tables:
+  - pmt_account
+  difficulty: medium
+- question: 已开通白标的商户列表
+  sql: "SELECT short_account_id AS \"商户短号\",\n       account_name AS \"商户名\",\n  \
+    \     country AS \"国家\",\n       create_time AS \"开户时间\"\nFROM dwd_banking.pmt_account\n\
+    WHERE white_label_status = 1\n  AND is_delete = 0\nORDER BY create_time DESC;"
+  tables:
+  - pmt_account
+  difficulty: easy

@@ -16,11 +16,9 @@ SchemaRetriever 是外部调用的唯一接口，封装了完整的检索流程:
 """
 
 import logging
-from pathlib import Path
 from dataclasses import dataclass, field
 
 from src.retrieval.config import (
-    SEMANTIC_LAYER_DIR,
     TABLE_SEARCH_TOP_K, RERANK_INPUT_TOP_K, FEWSHOT_TOP_K,
     ENABLE_RERANKER,
 )
@@ -70,20 +68,17 @@ class SchemaRetriever:
     def __init__(
         self,
         connection_string: str | None = None,
-        semantic_layer_dir: str | Path | None = None,
     ):
         """
         Args:
-            connection_string: SQLAlchemy 连接字符串，None 时从 config 自动拼接
-            semantic_layer_dir: 语义层目录路径，None 时使用 config.SEMANTIC_LAYER_DIR
+            connection_string: Doris SQLAlchemy 连接字符串，None 时从 config 自动拼接
         """
         self.schema_loader = SchemaLoader(
             connection_string=connection_string,
-            semantic_layer_dir=semantic_layer_dir or SEMANTIC_LAYER_DIR,
         )
         self.index_manager = IndexManager()
         self.formatter = SchemaFormatter()
-        self.glossary_resolver = GlossaryResolver()
+        self.glossary_resolver: GlossaryResolver | None = None
 
         # 以下在 initialize() 中赋值
         self.searcher: HybridSearcher | None = None
@@ -99,15 +94,15 @@ class SchemaRetriever:
 
         embedding = get_embedding()
 
-        # 1. 加载 Schema + 语义层 + 枚举
-        schemas, glossary, enums = self.schema_loader.load_all()
+        # 1. 加载 Schema + 语义层 + 枚举 + Fewshot
+        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all()
 
-        # 2. 加载业务术语
-        self.glossary_resolver.load(glossary)
-
-        # 3. 全量构建索引
+        # 2. 全量构建索引（含术语向量化）
         logger.info("开始全量构建索引...")
-        indices = self.index_manager.build(schemas, embedding, enums)
+        indices = self.index_manager.build(schemas, embedding, enums, fewshot_examples, glossary)
+
+        # 3. 初始化术语解析器（向量语义匹配）
+        self.glossary_resolver = GlossaryResolver(embedding, indices["glossary_index"])
 
         # 4. 初始化混合检索器
         self.searcher = HybridSearcher(
@@ -135,6 +130,7 @@ class SchemaRetriever:
         user_query: str,
         top_k: int = TABLE_SEARCH_TOP_K,
         fewshot_k: int = FEWSHOT_TOP_K,
+        glossary_score_threshold: float | None = None,
     ) -> RetrievalResult:
         """
         完整 RAG 检索流程。
@@ -165,7 +161,10 @@ class SchemaRetriever:
         logger.info(f"开始检索: '{user_query}'")
 
         # ❶ 业务术语解析
-        glossary_result = self.glossary_resolver.resolve(user_query)
+        resolve_kwargs = {}
+        if glossary_score_threshold is not None:
+            resolve_kwargs["score_threshold"] = glossary_score_threshold
+        glossary_result = self.glossary_resolver.resolve(user_query, **resolve_kwargs)
         enriched_query = glossary_result["enriched_query"]
         business_context = glossary_result["business_context"]
 
