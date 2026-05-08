@@ -1,0 +1,138 @@
+table:
+  name: "issuing_cardbin_pool"
+  database: "dwd_banking"
+  display_name: "卡bin【可优化】表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的卡bin【可优化】。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "cardbin", "池", "issuing_cardbin_pool"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "master_id"
+    type: "varchar(36)"
+    display_name: "master id"
+    description: "master id"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "卡bin【可优化】表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "卡bin【可优化】表字段 account_id。"
+
+  - name: "pool_id"
+    type: "varchar(36)"
+    display_name: "关联到卡池分组，null表示未分配"
+    description: "关联到卡池分组，null表示未分配"
+
+  - name: "card_type"
+    type: "smallint"
+    display_name: "卡类型"
+    description: "Card type - 1000=PREPAID 2000=DEBIT"
+    enum_values:
+      - {value: 1000, label: "PREPAID"}
+      - {value: 2000, label: "DEBIT"}
+
+  - name: "card_scheme"
+    type: "smallint"
+    display_name: "卡组织"
+    description: "卡品牌 1000=VISA  2000=MASTER"
+    enum_values:
+      - {value: 1000, label: "VISA"}
+      - {value: 2000, label: "MASTER"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "卡bin【可优化】表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "卡bin【可优化】表字段 update_time。"
+
+  - name: "bin_mode"
+    type: "tinyint"
+    display_name: "二级卡bin模式，0=PUBLIC"
+    description: "二级卡bin模式，0=PUBLIC, 1=PRIVATE"
+    enum_values:
+      - {value: 0, label: "PUBLIC"}
+      - {value: 1, label: "PRIVATE"}
+
+  - name: "bin_status"
+    type: "tinyint"
+    display_name: "BIN 状态 -1=不可用， 0=待可用 1=已"
+    description: "BIN 状态 -1=不可用， 0=待可用 1=已用"
+    enum_values:
+      - {value: -1, label: "不可用"}
+      - {value: 0, label: "待可用"}
+      - {value: 1, label: "已用"}
+
+  - name: "pan_exhausted"
+    type: "tinyint(1)"
+    display_name: "该子卡BIN下卡号是否已用完 0=未用完 1=已"
+    description: "该子卡BIN下卡号是否已用完 0=未用完 1=已用完"
+    sensitive: true
+
+relations: []
+
+common_queries:
+  - question: "卡bin【可优化】表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_cardbin_pool`;
+    tables: ["issuing_cardbin_pool"]
+    difficulty: "easy"
+  - question: "最近30天卡bin【可优化】表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_cardbin_pool`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_cardbin_pool"]
+    difficulty: "easy"
+  - question: "卡bin【可优化】表按状态分布"
+    sql: |
+      SELECT
+          CASE bin_status
+            WHEN -1 THEN '不可用'
+            WHEN 0 THEN '待可用'
+            WHEN 1 THEN '已用'
+            ELSE CONCAT('其他:', CAST(bin_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_cardbin_pool`
+      GROUP BY bin_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_cardbin_pool"]
+    difficulty: "medium"
+  - question: "卡bin【可优化】表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_cardbin_pool`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_cardbin_pool"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_cardbin_pool.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/issuing_cardbin_pool.go"
+  - "uqpay-issuing-gateway/internal/service/manager/visa_card_manager.go"
+  - "uqpay-issuing-message/internal/entity/issuing_cardbin_pool.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_generatecard.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_periphery.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_visa.go"
+  - "uqpay-issuing-portal-api/internal/domain/entity/issuing_cardbin_pool.go"

@@ -1,0 +1,47 @@
+table:
+  name: "pmt_card_control"
+  database: "dwd_banking"
+  display_name: "卡控制表"
+  description: |
+    这张表记录支付/银行账户业务中的卡控制。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "卡片", "控制", "pmt_card_control"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "spending_controls"
+    type: "text"
+    display_name: "卡控制规则\"limits\""
+    description: "卡控制规则\"limits\": {\"currency\": \"SGD\",\"spendingLimits\": [{\"interval\": \"MONTHLY\",\"amount\": 1000,},{\"interval\": \"PER_TRANSACTION\",\"amount\": 75000,}],},"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "卡控制表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_card_control`;
+    tables: ["pmt_card_control"]
+    difficulty: "easy"
+  - question: "卡控制表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_card_control`
+      ORDER BY ccid DESC
+      LIMIT 100;
+    tables: ["pmt_card_control"]
+    difficulty: "easy"
+  - question: "查看卡控制表样例记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_card_control`
+      LIMIT 100;
+    tables: ["pmt_card_control"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

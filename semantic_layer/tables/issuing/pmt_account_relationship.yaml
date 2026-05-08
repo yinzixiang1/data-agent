@@ -1,0 +1,51 @@
+table:
+  name: "pmt_account_relationship"
+  database: "dwd_banking"
+  display_name: "个人与企业关系表"
+  description: |
+    这张表记录支付/银行账户业务中的个人与企业关系。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "账户", "关系", "pmt_account_relationship"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "source_account_id"
+    type: "varchar(36)"
+    display_name: "source账户id"
+    description: "个人与企业关系表字段 source_account_id。"
+
+  - name: "target_account_id"
+    type: "varchar(36)"
+    display_name: "target账户id"
+    description: "个人与企业关系表字段 target_account_id。"
+
+relations: []
+
+common_queries:
+  - question: "个人与企业关系表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_relationship`;
+    tables: ["pmt_account_relationship"]
+    difficulty: "easy"
+  - question: "个人与企业关系表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_account_relationship`
+      ORDER BY arid DESC
+      LIMIT 100;
+    tables: ["pmt_account_relationship"]
+    difficulty: "easy"
+  - question: "查看个人与企业关系表样例记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_account_relationship`
+      LIMIT 100;
+    tables: ["pmt_account_relationship"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

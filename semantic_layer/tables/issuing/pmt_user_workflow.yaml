@@ -1,0 +1,104 @@
+table:
+  name: "pmt_user_workflow"
+  database: "dwd_banking"
+  display_name: "用户工作流记录表"
+  description: |
+    这张表记录支付/银行账户业务中的用户工作流记录。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "用户", "工作流", "pmt_user_workflow"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "flow_id"
+    type: "varchar(64)"
+    display_name: "流ID"
+    description: "流ID"
+
+  - name: "flow_type"
+    type: "int"
+    display_name: "流类型，1000=用户类，2000=财务类，90"
+    description: "流类型，1000=用户类，2000=财务类，9000=配置类"
+    enum_values:
+      - {value: 1000, label: "用户类"}
+      - {value: 2000, label: "财务类"}
+      - {value: 9000, label: "配置类"}
+
+  - name: "reference_id"
+    type: "varchar(48)"
+    display_name: "关联ID，唯一与creator_id"
+    description: "关联ID，唯一与creator_id"
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "关联ID短号"
+    description: "关联ID短号"
+
+  - name: "reference_params"
+    type: "text"
+    display_name: "参数"
+    description: "参数"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "创建者ID"
+    description: "创建者ID"
+
+  - name: "review_status"
+    type: "tinyint(1)"
+    display_name: "最后审查状态"
+    description: "最后审查状态：1=passed, 0=in_review, -1=rejected"
+    enum_values:
+      - {value: 1, label: "passed"}
+      - {value: 0, label: "in_review"}
+      - {value: -1, label: "rejected"}
+
+relations: []
+
+common_queries:
+  - question: "用户工作流记录表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_workflow`;
+    tables: ["pmt_user_workflow"]
+    difficulty: "easy"
+  - question: "最近30天用户工作流记录表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_workflow`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_user_workflow"]
+    difficulty: "easy"
+  - question: "用户工作流记录表按状态分布"
+    sql: |
+      SELECT
+          CASE review_status
+            WHEN 1 THEN 'passed'
+            WHEN 0 THEN 'in_review'
+            WHEN -1 THEN 'rejected'
+            ELSE CONCAT('其他:', CAST(review_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_user_workflow`
+      GROUP BY review_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_user_workflow"]
+    difficulty: "medium"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

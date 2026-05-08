@@ -1,0 +1,97 @@
+table:
+  name: "pmt_message_queue"
+  database: "dwd_banking"
+  display_name: "消息对列表"
+  description: |
+    这张表记录支付/银行账户业务中的消息对列。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "消息", "队列", "pmt_message_queue"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "msg_type"
+    type: "int"
+    display_name: "MSG TYPE"
+    description: "MSG TYPE: 1000=VA, 2000=FX, 3000=AC, 4000=IC, 9000=GENERAL"
+    enum_values:
+      - {value: 1000, label: "VA"}
+      - {value: 2000, label: "FX"}
+      - {value: 3000, label: "AC"}
+      - {value: 4000, label: "IC"}
+      - {value: 9000, label: "GENERAL"}
+
+  - name: "msg_body"
+    type: "text"
+    display_name: "msgbody"
+    description: "消息对列表字段 msg_body。"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "消息对列表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "消息对列表字段 update_time。"
+
+  - name: "msg_status"
+    type: "int"
+    display_name: "-1处理失败 2"
+    description: "-1处理失败 2:处理中"
+    enum_values:
+      - {value: 2, label: "处理中"}
+
+  - name: "msg_reason"
+    type: "text"
+    display_name: "对内说明原因"
+    description: "对内说明原因"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "消息对列表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_message_queue`;
+    tables: ["pmt_message_queue"]
+    difficulty: "easy"
+  - question: "最近30天消息对列表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_message_queue`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_message_queue"]
+    difficulty: "easy"
+  - question: "消息对列表按状态分布"
+    sql: |
+      SELECT
+          CASE msg_status
+            WHEN 2 THEN '处理中'
+            ELSE CONCAT('其他:', CAST(msg_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_message_queue`
+      GROUP BY msg_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_message_queue"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/agreement_store.go"
+  - "uqpay-task/internal/repository/store/agreemnet_repo.go"
+  - "uqpay-issuing-admincp-api/internal/consts/constants.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_message_queue.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_bank_details_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/message_queue_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/new_card_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_pool_service.go"

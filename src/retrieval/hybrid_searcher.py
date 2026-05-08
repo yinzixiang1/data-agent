@@ -1,31 +1,27 @@
 """
-混合检索 — Dense + Sparse hybrid search，表级 + 列级 + 枚举联合。
+混合检索 — Dense + BM25 hybrid search，表级 + 列级 + 枚举联合。
 
 检索流程:
-    1. 表级混合检索（Dense + Sparse → RRF）
-    2. 列级混合检索 → 命中的列反推其所属表，给表加分
-    3. 枚举值检索 → 命中的枚举反哺其关联表分数
-    4. 关联表补全 → top 表的 relations 中的关联表获得 bonus 分
+    1. 表级混合检索（Dense + BM25，per-collection ranker）
+    2. 列级混合检索 -> 命中的列反推其所属表，给表加分
+    3. 枚举值检索 -> 命中的枚举反哺其关联表分数
+    4. 关联表补全 -> top 表的 relations 中的关联表获得 bonus 分
 
 使用示例::
 
-    searcher = HybridSearcher(embedding, table_index, column_index, enum_index, table_schemas)
+    searcher = HybridSearcher(embedding, table_index, column_index,
+                              enum_index, table_schemas, config)
 
-    # 表级检索
     results = searcher.search("活跃商户数量", top_k=5)
-    # results: [{"table_name": "pmt_account", "score": 0.85, "schema": {...}}, ...]
-
-    # 枚举值检索
     enums = searcher.search_enums("持牌商户")
-    # enums: [{"table_name": "pmt_account", "column_name": "account_type",
-    #          "enum_label_cn": "LPSP", "sql_value": "2000", "score": 0.9}, ...]
 """
 
 import logging
 
-from src.retrieval.config import RECALL_TOP_K
+from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
-from src.retrieval.embedding import BGEEmbedding
+from src.retrieval.ranker_strategy import get_search_params
+from src.retrieval.agent_config import AgentRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,74 +31,78 @@ class HybridSearcher:
     混合检索器：表级 + 列级 + 枚举联合检索，多信号融合排序。
 
     Attributes:
-        embedding: BGEEmbedding 实例
+        embedding: Qwen3Embedding 实例
         table_index: 表级 MilvusIndex
         column_index: 列级 MilvusIndex
         enum_index: 枚举值 MilvusIndex
         table_schemas: {table_name: schema_dict} 映射
+        config: AgentRuntimeConfig（提供 collection_search_config 和 index_build_config）
     """
 
     def __init__(
         self,
-        embedding: BGEEmbedding,
+        embedding: Qwen3Embedding,
         table_index: MilvusIndex,
         column_index: MilvusIndex,
         enum_index: MilvusIndex,
         table_schemas: dict,
+        config: AgentRuntimeConfig,
     ):
-        """
-        Args:
-            embedding: BGEEmbedding 实例，用于编码查询
-            table_index: 表级 Collection 的 MilvusIndex
-            column_index: 列级 Collection 的 MilvusIndex
-            enum_index: 枚举值 Collection 的 MilvusIndex
-            table_schemas: {table_name: schema_dict} 映射，用于读取关联表信息
-        """
         self.embedding = embedding
         self.table_index = table_index
         self.column_index = column_index
         self.enum_index = enum_index
         self.table_schemas = table_schemas
+        self.config = config
 
-    def search(self, query: str, top_k: int = 5, recall_k: int = RECALL_TOP_K) -> list[dict]:
+    @property
+    def _ef_search(self) -> int:
+        return self.config.index_build_config.get("hnsw", {}).get("ef_search", 64)
+
+    def search(self, query: str, top_k: int = 5) -> list[dict]:
         """
         表级 + 列级混合检索，融合枚举反哺和关联表补全。
 
         评分规则:
-            - 表级检索: RRF 基础分
+            - 表级检索: ranker 融合基础分
             - 列级命中: +0.01（列所属的表）
             - 枚举反哺: +0.02（枚举值关联的表）
-            - 关联补全: +parent_score × 0.1（top 表的关联表）
+            - 关联补全: +parent_score x 0.1（top 表的关联表）
 
         Args:
-            query: 用户查询（可能已经过术语增强），如 "活跃商户 account_status is_delete"
+            query: 用户查询（可能已经过术语增强）
             top_k: 最终返回的表数量
-            recall_k: Dense/Sparse 各自的召回数量
 
         Returns:
-            list[dict]: 按 score 降序排列，每个元素包含:
-                - "table_name" (str): 表名
-                - "score" (float): 综合得分
-                - "source" (str): 固定为 "hybrid"
-                - "hit_by_column" (bool): 是否被列级检索命中
-                - "schema" (dict): 完整表 Schema
+            list[dict]: 按 score 降序，每个元素含 table_name, score, source,
+                hit_by_column, schema
         """
-        q_output = self.embedding.encode_query(query)
-        q_dense = q_output["dense_vecs"]
-        q_sparse = q_output["lexical_weights"][0]
+        csc = self.config.collection_search_config
 
         # ── 表级混合检索 ──
+        table_params = get_search_params(csc, "table")
+        q_dense_table = self.embedding.encode_query(query, "table")
         table_results = self.table_index.hybrid_search(
-            q_dense, q_sparse, top_k=recall_k, recall_k=recall_k,
+            q_dense_table,
+            query,
+            ranker=table_params.ranker,
+            recall_k=table_params.recall_limit,
             output_fields=["table_name"],
+            ef_search=self._ef_search,
         )
 
-        # ── 列级混合检索 → 反推表 ──
+        # ── 列级混合检索 -> 反推表 ──
         column_hit_tables: set[str] = set()
         if self.column_index.count > 0:
+            col_params = get_search_params(csc, "column")
+            q_dense_col = self.embedding.encode_query(query, "column")
             col_results = self.column_index.hybrid_search(
-                q_dense, q_sparse, top_k=recall_k, recall_k=recall_k,
+                q_dense_col,
+                query,
+                ranker=col_params.ranker,
+                recall_k=col_params.recall_limit,
                 output_fields=["table_name"],
+                ef_search=self._ef_search,
             )
             for doc_id, score, entity in col_results:
                 column_hit_tables.add(entity["table_name"])
@@ -122,9 +122,15 @@ class HybridSearcher:
         # ── 枚举命中反哺表分数 ──
         enum_boost_tables: set[str] = set()
         if self.enum_index.count > 0:
+            enum_params = get_search_params(csc, "enum")
+            q_dense_enum = self.embedding.encode_query(query, "enum")
             enum_results = self.enum_index.hybrid_search(
-                q_dense, q_sparse, top_k=8, recall_k=8,
+                q_dense_enum,
+                query,
+                ranker=enum_params.ranker,
+                recall_k=enum_params.recall_limit,
                 output_fields=["table_name"],
+                ef_search=self._ef_search,
             )
             for doc_id, score, entity in enum_results:
                 enum_boost_tables.add(entity["table_name"])
@@ -178,35 +184,30 @@ class HybridSearcher:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
 
-        用途: 当用户说 "持牌商户" 时，检索到 account_type=2000，
-        注入 Prompt 帮助 LLM 生成正确的 WHERE 条件。
-
         Args:
             query: 用户原始查询
             top_k: 返回的最大枚举命中数
 
         Returns:
-            list[dict]: 每条包含:
-                - "table_name" (str): 关联表名
-                - "column_name" (str): 字段名
-                - "enum_label_cn" (str): 枚举中文标签
-                - "sql_value" (str): SQL 中使用的实际值
-                - "score" (float): 检索相关度分数
+            list[dict]: table_name, column_name, enum_label_cn, sql_value, score
         """
         if self.enum_index.count == 0:
             return []
 
-        q_output = self.embedding.encode_query(query)
-        q_dense = q_output["dense_vecs"]
-        q_sparse = q_output["lexical_weights"][0]
+        enum_params = get_search_params(self.config.collection_search_config, "enum")
+        q_dense = self.embedding.encode_query(query, "enum")
 
         results = self.enum_index.hybrid_search(
-            q_dense, q_sparse, top_k=top_k, recall_k=top_k,
+            q_dense,
+            query,
+            ranker=enum_params.ranker,
+            recall_k=max(top_k, enum_params.recall_limit),
             output_fields=["table_name", "column_name", "enum_label_cn", "sql_value", "enum_code"],
+            ef_search=self._ef_search,
         )
 
         enum_hits = []
-        for doc_id, score, entity in results:
+        for doc_id, score, entity in results[:top_k]:
             enum_hits.append({
                 "table_name": entity["table_name"],
                 "column_name": entity["column_name"],
@@ -218,6 +219,6 @@ class HybridSearcher:
         if enum_hits:
             logger.info(
                 f"枚举检索: {len(enum_hits)} 条命中, "
-                f"top={[f'{e['enum_label_cn']}→{e['column_name']}={e['sql_value']}' for e in enum_hits[:3]]}"
+                f"top={[f'{e['enum_label_cn']}->{e['column_name']}={e['sql_value']}' for e in enum_hits[:3]]}"
             )
         return enum_hits

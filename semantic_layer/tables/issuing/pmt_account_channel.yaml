@@ -1,0 +1,152 @@
+table:
+  name: "pmt_account_channel"
+  database: "dwd_banking"
+  display_name: "上游渠道帐户关联表"
+  description: |
+    这张表记录支付/银行账户业务中的上游渠道帐户关联。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "渠道", "账户", "pmt_account_channel"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "account_channel_id"
+    type: "varchar(36)"
+    display_name: "用户渠道ID"
+    description: "用户渠道ID"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "机构ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "系统内部账户ID"
+
+  - name: "channel_customer_id"
+    type: "varchar(36)"
+    display_name: "渠道唯一ID"
+    description: "渠道唯一ID"
+
+  - name: "customer_data"
+    type: "text"
+    display_name: "客户渠道数据"
+    description: "客户渠道数据"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "上游渠道帐户关联表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "上游渠道帐户关联表字段 update_time。"
+
+  - name: "open_status"
+    type: "int"
+    display_name: "账号开通状态"
+    description: "账号开通状态：0=默认未开，1=开通成功，2=申请中，-1=关闭"
+    enum_values:
+      - {value: 0, label: "默认未开"}
+      - {value: 1, label: "开通成功"}
+      - {value: 2, label: "申请中"}
+      - {value: -1, label: "关闭"}
+
+  - name: "file_status"
+    type: "int"
+    display_name: "文件状态"
+    description: "文件状态：默认0=无，2=pending(waiting upload), 1=completed，-1=failed"
+    enum_values:
+      - {value: 0, label: "无"}
+      - {value: 2, label: "pending(waiting upload)"}
+      - {value: 1, label: "completed"}
+      - {value: -1, label: "failed"}
+
+  - name: "review_status"
+    type: "int"
+    display_name: "审查状态"
+    description: "审查状态：0默认，1=passed, 2=in_review, 3=send email,-1=rejected"
+    sensitive: true
+
+  - name: "rfi_status"
+    type: "int"
+    display_name: "RFI 状态"
+    description: "RFI 状态: 0=不需要额外信息, 1=需要额外信息"
+    enum_values:
+      - {value: 0, label: "不需要额外信息"}
+      - {value: 1, label: "需要额外信息"}
+
+  - name: "execute_reason"
+    type: "text"
+    display_name: "内部msg"
+    description: "内部msg"
+    skip_index: true
+
+  - name: "source_config_data"
+    type: "text"
+    display_name: "渠道源数据"
+    description: "渠道源数据"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "上游渠道帐户关联表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_channel`;
+    tables: ["pmt_account_channel"]
+    difficulty: "easy"
+  - question: "最近30天上游渠道帐户关联表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_channel`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_account_channel"]
+    difficulty: "easy"
+  - question: "上游渠道帐户关联表按状态分布"
+    sql: |
+      SELECT
+          CASE open_status
+            WHEN 0 THEN '默认未开'
+            WHEN 1 THEN '开通成功'
+            WHEN 2 THEN '申请中'
+            WHEN -1 THEN '关闭'
+            ELSE CONCAT('其他:', CAST(open_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_account_channel`
+      GROUP BY open_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_account_channel"]
+    difficulty: "medium"
+  - question: "上游渠道帐户关联表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_channel`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_account_channel"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_account_channel.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_channel_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_product_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_balance_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_bank_details_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_channel_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service_tool.go"

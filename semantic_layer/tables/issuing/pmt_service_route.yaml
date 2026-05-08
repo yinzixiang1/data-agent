@@ -1,0 +1,110 @@
+table:
+  name: "pmt_service_route"
+  database: "dwd_banking"
+  display_name: "路由表"
+  description: |
+    这张表记录支付/银行账户业务中的路由。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "服务", "路由", "pmt_service_route"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "route_id"
+    type: "int"
+    display_name: "路由id"
+    description: "路由表字段 route_id。"
+
+  - name: "route_params"
+    type: "text"
+    display_name: "路由参数"
+    description: "路由参数"
+    skip_index: true
+
+  - name: "source_route_rules"
+    type: "text"
+    display_name: "源路由规则"
+    description: "源路由规则"
+    skip_index: true
+
+  - name: "route_rules"
+    type: "text"
+    display_name: "路由规则"
+    description: "路由规则"
+    skip_index: true
+
+  - name: "business_code"
+    type: "smallint"
+    display_name: "1000=Banking，2000=Foreig"
+    description: "1000=Banking，2000=Foreign，3000=Acquiring，4000=Issuing，5000=Ramp"
+    enum_values:
+      - {value: 1000, label: "Banking"}
+      - {value: 2000, label: "Foreign"}
+      - {value: 3000, label: "Acquiring"}
+      - {value: 4000, label: "Issuing"}
+      - {value: 5000, label: "Ramp"}
+
+  - name: "route_status"
+    type: "int"
+    display_name: "状态"
+    description: "状态：0=无效 1=有效"
+    enum_values:
+      - {value: 0, label: "无效"}
+      - {value: 1, label: "有效"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "路由表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "路由表字段 update_time。"
+
+relations: []
+
+common_queries:
+  - question: "路由表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_route`;
+    tables: ["pmt_service_route"]
+    difficulty: "easy"
+  - question: "最近30天路由表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_route`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_service_route"]
+    difficulty: "easy"
+  - question: "路由表按状态分布"
+    sql: |
+      SELECT
+          CASE route_status
+            WHEN 0 THEN '无效'
+            WHEN 1 THEN '有效'
+            ELSE CONCAT('其他:', CAST(route_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_service_route`
+      GROUP BY route_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_service_route"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_service_route.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_service_route_bind.go"
+  - "uqpay-issuing-admincp-api/internal/repo/new_card_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/service_route_bind_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/service_route_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service_tool.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_product_template_service.go"

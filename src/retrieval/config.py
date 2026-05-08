@@ -1,14 +1,18 @@
 """
 全局配置 — 所有模块共享的常量和环境变量。
 
-所有配置项均可通过 .env 文件或环境变量覆盖。
+分两层：
+  - 本文件: .env 级启动默认值（连接地址、设备、模型 fallback）
+  - agent_config.py: 运行时从 MySQL sys_config 加载结构化 JSON 配置
+
+NL2SQL_ENV 环境变量控制 dev / prod 默认值差异。
 
 使用示例::
 
-    from src.retrieval.config import DORIS_HOST, MILVUS_URI, TABLE_SEARCH_TOP_K
+    from src.retrieval.config import DORIS_HOST, MILVUS_URI, NL2SQL_ENV
 
-    print(DORIS_HOST)          # "localhost"（默认）或 .env 中配置的值
-    print(TABLE_SEARCH_TOP_K)  # 5（默认的表检索 top-k）
+    print(NL2SQL_ENV)    # "dev"（默认）或 .env 中配置的值
+    print(DORIS_HOST)    # "localhost"（默认）或 .env 中配置的值
 """
 
 import os
@@ -24,6 +28,14 @@ load_dotenv(override=True)
 # 项目根目录（推导自本文件位置: src/retrieval/config.py → 上溯两级）
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
+# ── 环境标识 ──
+# NL2SQL_ENV: 运行环境，影响模型、维度、索引参数的默认值
+NL2SQL_ENV = os.getenv("NL2SQL_ENV", "dev")
+
+# ── 硬件设备 ──
+# DENSE_DEVICE: Embedding / Reranker 推理设备
+DENSE_DEVICE = os.getenv("DENSE_DEVICE", "mps" if NL2SQL_ENV == "dev" else "cuda")
+
 # ── Doris 连接 ──
 # DORIS_HOST: Doris FE 节点地址
 # DORIS_PORT: Doris MySQL 协议端口（默认 9030）
@@ -36,16 +48,23 @@ DORIS_USER = os.getenv("DORIS_USER", "root")
 DORIS_PASSWORD = os.getenv("DORIS_PASSWORD", "")
 DORIS_DATABASE = os.getenv("DORIS_DATABASE", "dwd_banking")
 
-# ── BGE-M3 Embedding 模型 ──
-# EMBEDDING_MODEL: HuggingFace 模型名称或本地路径，用于生成 Dense + Sparse 向量
-# EMBEDDING_USE_FP16: 是否使用半精度推理（加速 + 省显存）
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+# ── Dense Embedding 模型 ──
+# DENSE_MODEL: 默认 Embedding 模型（会被 sys_config EMBEDDING_CONFIG.model 覆盖）
+# DENSE_DIM: 默认向量维度（dev 用 MRL 截断 1024，prod 用满血 2560）
+DENSE_MODEL = os.getenv("DENSE_MODEL", "Qwen/Qwen3-Embedding-4B")
+DENSE_DIM = int(os.getenv("DENSE_DIM", "1024" if NL2SQL_ENV == "dev" else "2560"))
+
+# 向后兼容：旧变量名映射到新变量（Phase 2 完成后可移除）
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", DENSE_MODEL)
 EMBEDDING_USE_FP16 = os.getenv("EMBEDDING_USE_FP16", "true").lower() == "true"
 
-# ── BGE-Reranker 精排模型 ──
-# RERANKER_MODEL: Cross-Encoder 模型，对检索候选做精排
+# ── Reranker 精排模型 ──
+# RERANKER_MODEL: 默认 Reranker 模型（会被 sys_config INDEX_BUILD_CONFIG.reranker.model 覆盖）
 # ENABLE_RERANKER: 是否启用 Reranker（关闭后直接用混合检索分数排序）
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANKER_MODEL = os.getenv(
+    "RERANKER_MODEL",
+    "Qwen/Qwen3-Reranker-0.6B" if NL2SQL_ENV == "dev" else "Qwen/Qwen3-Reranker-4B",
+)
 ENABLE_RERANKER = os.getenv("ENABLE_RERANKER", "true").lower() == "true"
 
 # ── MySQL 语义层数据库 ──

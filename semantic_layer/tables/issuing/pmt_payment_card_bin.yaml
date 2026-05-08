@@ -1,0 +1,84 @@
+table:
+  name: "pmt_payment_card_bin"
+  database: "dwd_banking"
+  display_name: "卡BIN校验库表"
+  description: |
+    这张表记录支付/银行账户业务中的卡BIN校验库。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "卡片", "BIN", "pmt_payment_card_bin"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "卡BIN校验库表字段 id。"
+
+  - name: "card_type"
+    type: "varchar(6)"
+    display_name: "卡类型"
+    description: "卡类型，限制为C=credit信用卡、D=debit借记卡、P=prepaid预付卡、N=UNKNOWN未知"
+    enum_values:
+      - {value: 1000, label: "PREPAID/预付卡"}
+      - {value: 2000, label: "DEBIT/借记卡"}
+
+  - name: "card_number_length"
+    type: "tinyint"
+    display_name: "该BIN对应的完整卡号长度"
+    description: "该BIN对应的完整卡号长度（如16/19位）"
+    sensitive: true
+
+  - name: "create_time"
+    type: "datetime(3)"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "issuer_country"
+    type: "varchar(2)"
+    display_name: "发卡国家代码"
+    description: "发卡国家代码（ISO 3166-1）"
+    enum_values:
+      - {value: 3166, label: "1）"}
+
+relations: []
+
+common_queries:
+  - question: "卡BIN校验库表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_card_bin`;
+    tables: ["pmt_payment_card_bin"]
+    difficulty: "easy"
+  - question: "最近30天卡BIN校验库表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_card_bin`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_payment_card_bin"]
+    difficulty: "easy"
+  - question: "卡BIN校验库表最近创建的记录有哪些"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_payment_card_bin`
+      ORDER BY create_time DESC
+      LIMIT 100;
+    tables: ["pmt_payment_card_bin"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_payment_card_bin.go"
+  - "uqpay-issuing-admincp-api/internal/repo/payment_card_bin_repo.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_payment_card_bin_data.go"
+  - "uqpay-issuing-admincp-api/internal/data/sys_workflow_data.go"

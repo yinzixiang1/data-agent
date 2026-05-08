@@ -1,12 +1,12 @@
 # 向量化文档格式示例 — pmt_account
 
-基于真实 Doris DDL `dwd_banking.pmt_account` 生成。
+基于真实 MySQL DDL `dwd_banking.pmt_account` 生成。展示从原始 DDL 到最终 Prompt 的完整链路。
 
 ---
 
-## 1. 数据源：Doris DDL 原始解析结果
+## 1. 数据源：MySQL DDL 原始解析结果
 
-`schema_loader.py` 从 Doris 加载后输出的 Schema dict：
+`schema_loader.py` 从 MySQL 业务库加载后输出的 Schema dict：
 
 ```json
 {
@@ -264,7 +264,7 @@ common_queries:
 
 ## 4. 向量化文档：表级文档
 
-`document_builder.py` 将合并后的 Schema dict 转换为一段纯文本，交给 BGE-M3 编码。
+`document_builder.py` 将合并后的 Schema dict 转换为一段纯文本，交给 BGE-M3 编码后写入 Milvus `nl2sql_table` Collection。
 
 **这段文本直接决定了"什么样的用户提问能匹配到这张表"**。
 
@@ -290,7 +290,7 @@ common_queries:
 
 ## 5. 向量化文档：列级文档
 
-每列一个独立文档。只对**有业务含义的列**建索引，纯技术/内部字段跳过。
+每列一个独立文档，写入 Milvus `nl2sql_column` Collection。只对**有业务含义的列**建索引，纯技术/内部字段跳过。
 
 ### 5.1 高价值列（建索引）
 
@@ -474,27 +474,27 @@ CREATE TABLE `dwd_banking`.`pmt_account` (
 
 ## 7. 检索效果验证示例
 
-以下模拟不同用户提问命中 `pmt_account` 的路径：
+以下模拟不同用户提问经过 Milvus Hybrid Search（Dense + Sparse → RRF 融合）命中 `pmt_account` 的路径：
 
 | 用户提问 | 命中路径 | 说明 |
 |---------|---------|------|
-| "有多少活跃商户" | 表级 Dense（语义匹配"商户账户表"）+ 常见问题匹配 | 直接命中 |
-| "KYC通过率" | 列级 Dense 命中 `verification_status`(KYC认证状态) → 反推 `pmt_account` | 列级检索价值 |
+| "有多少活跃商户" | 表级 Dense 语义匹配"商户账户表" + 术语解析命中"活跃商户" | 术语 + 表级协同 |
+| "KYC通过率" | 术语命中"KYC" → enriched_query + 列级命中 `verification_status` → 反推表 +0.01 | 术语 + 列级反推 |
 | "pmt_account" | 表级 Sparse 精确匹配表名 | Sparse 价值 |
-| "高风险商户有哪些" | 列级 Dense 命中 `risk_rating_level`(风险等级) → 反推 `pmt_account` | 列级检索价值 |
-| "各国家的开户数" | 表级 Dense（"开户"标签）+ 列级命中 `country`(国家) | 混合命中 |
-| "白标商户数量" | 列级 Dense 命中 `white_label_status`(白标状态) → 反推 `pmt_account` | 列级检索价值 |
-| "LPSP 和 TPSP 分别有多少" | 列级 Sparse 命中 `account_type` 的枚举值文本 | Sparse 精确匹配 |
+| "高风险商户有哪些" | 列级 Dense 命中 `risk_rating_level`(风险等级) → 反推 `pmt_account` +0.01 | 列级反推 |
+| "各国家的开户数" | 表级 Dense（"开户"标签）+ 列级命中 `country`(国家) +0.01 | 混合命中 |
+| "白标商户数量" | 术语命中"白标" → sql_hint + 列级命中 `white_label_status` → 反推表 | 术语 + 列级协同 |
+| "LPSP 和 TPSP 分别有多少" | 枚举检索命中 enum → 反推 `pmt_account` +0.02 | 枚举反哺 |
 | "上个月新注册的企业账户" | 表级 Dense + 列级命中 `create_time` + `legal_entity_type` | 多列联合 |
 
 ---
 
 ## 8. 总结：单表需要产出的向量化产物
 
-| 产物 | 数量 | 用途 |
-|------|------|------|
-| 表级文档 | 1 个 | Dense + Sparse 编码 → 表级索引 |
-| 列级文档 | 约 12 个（跳过技术/敏感字段） | Dense + Sparse 编码 → 列级索引 |
-| Few-shot 示例 | 6 个（来自 common_queries） | Dense 编码 → 示例索引 |
-| 完整 Schema dict | 1 个 | 检索命中后取完整信息用于 DDL 格式化 |
-| DDL Prompt 文本 | 1 个（运行时生成） | 注入 SQL 生成 Prompt |
+| 产物 | 数量 | 存储位置 | 用途 |
+|------|------|---------|------|
+| 表级文档 | 1 个 | Milvus `nl2sql_table` | Dense + Sparse 编码，表级检索 |
+| 列级文档 | 约 12 个（跳过技术/敏感字段） | Milvus `nl2sql_column` | Dense + Sparse 编码，列级检索 → 反推表 |
+| Few-shot 示例 | 6 个（来自 common_queries） | Milvus `nl2sql_fewshot` | Dense + Sparse 编码，示例检索 |
+| 完整 Schema dict | 1 个 | Milvus `nl2sql_table.schema_json` | 检索命中后取完整信息用于 DDL 格式化 |
+| DDL Prompt 文本 | 1 个（运行时生成） | — | 注入 SQL 生成 Prompt |

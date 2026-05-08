@@ -1,0 +1,96 @@
+glossary:
+  - term: "发卡"
+    definition: "UQPAY Issuing 业务线，包含卡片、持卡人、额度、授权、清算、对账、钱包令牌等数据。"
+    sql_hint: "table name LIKE 'issuing_%' OR table name LIKE 'pmt_issuing_%'"
+    related_tables: ["issuing_card", "issuing_card_transactions"]
+    related_columns: ["issuing_card.card_id"]
+  - term: "PAN"
+    definition: "Primary Account Number，卡号。明文、加密值、哈希值、脱敏值均属于敏感或准敏感字段。"
+    sql_hint: "优先使用 pan_hash 或 mask_card_number 查询，不输出 card_number/pan_encrypted/cvv/expiry 明文"
+    related_tables: ["issuing_card", "issuing_card_transactions"]
+    related_columns: ["issuing_card.pan_hash", "issuing_card.mask_card_number"]
+  - term: "脱敏卡号"
+    definition: "只保留部分卡号位数用于展示或检索的卡号字段，通常为 mask_card_number。"
+    sql_hint: "mask_card_number IS NOT NULL"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.mask_card_number"]
+  - term: "卡状态"
+    definition: "发卡卡片生命周期状态，常见值包括 PENDING、ACTIVE、FROZEN、BLOCKED、LOST、STOLEN、CANCELLED、PRE_CANCEL、FAILED。"
+    sql_hint: "card_status IN (0,1,-1,-2,-3,-4,-5,-6,-9)"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.card_status"]
+  - term: "虚拟卡"
+    definition: "form_factor=1000 的卡片。"
+    sql_hint: "form_factor = 1000"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.form_factor"]
+  - term: "实体卡"
+    definition: "form_factor=2000 的卡片。"
+    sql_hint: "form_factor = 2000"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.form_factor"]
+  - term: "预付卡"
+    definition: "card_type=1000 的发卡卡片。"
+    sql_hint: "card_type = 1000"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.card_type"]
+  - term: "借记卡"
+    definition: "card_type=2000 的发卡卡片。"
+    sql_hint: "card_type = 2000"
+    related_tables: ["issuing_card"]
+    related_columns: ["issuing_card.card_type"]
+  - term: "卡授权"
+    definition: "卡组织或渠道侧的授权交易，通常对应 transaction_type=1000 或 AUTHORIZATION 语义。"
+    sql_hint: "transaction_type = 1000"
+    related_tables: ["issuing_card_transactions", "issuing_network_transactions"]
+    related_columns: ["issuing_card_transactions.transaction_type"]
+  - term: "卡退款"
+    definition: "授权或清算后的退款交易，通常对应 transaction_type=2000 或 REFUND 语义。"
+    sql_hint: "transaction_type = 2000"
+    related_tables: ["issuing_card_transactions"]
+    related_columns: ["issuing_card_transactions.transaction_type"]
+  - term: "卡撤销"
+    definition: "授权撤销/冲正交易，通常对应 transaction_type=3000 或 REVERSAL 语义。"
+    sql_hint: "transaction_type = 3000"
+    related_tables: ["issuing_card_transactions"]
+    related_columns: ["issuing_card_transactions.transaction_type"]
+  - term: "卡清算"
+    definition: "已入账或待入账的卡交易清算数据，对应 issuing_card_settlements 和 issuing_channel_settlements。"
+    sql_hint: "按 transaction_id、authorization_code、network_transaction_id 关联交易和渠道清算记录"
+    related_tables: ["issuing_card_settlements", "issuing_channel_settlements"]
+    related_columns: ["issuing_card_settlements.transaction_id"]
+  - term: "对账"
+    definition: "将 UQ 卡交易、渠道交易、卡组织交易或清算文件进行匹配并记录差异。"
+    sql_hint: "reconciliation_status / settlement_reconciliation_status 表示匹配状态"
+    related_tables: ["issuing_reconciliation_records", "issuing_reconciliation_exceptions"]
+    related_columns: ["issuing_reconciliation_records.reconciliation_status"]
+  - term: "余额快照"
+    definition: "某个日期账户余额的快照，主要用于历史余额和负余额报表。"
+    sql_hint: "按 snapshot_date 和 balance_currency 查询"
+    related_tables: ["pmt_account_balance_snapshot"]
+    related_columns: ["pmt_account_balance_snapshot.snapshot_date"]
+  - term: "负余额"
+    definition: "账户可用余额小于 0 的情况。"
+    sql_hint: "available_balance < 0"
+    related_tables: ["pmt_account_balance"]
+    related_columns: ["pmt_account_balance.available_balance"]
+  - term: "VA账户"
+    definition: "Virtual Account，虚拟账户，银行收款账户的一种。"
+    sql_hint: "account_bank_type = 1000"
+    related_tables: ["pmt_account_bank_details"]
+    related_columns: ["pmt_account_bank_details.account_bank_type"]
+  - term: "KYC/KYB"
+    definition: "客户或企业认证状态，常见 verification_status: -1=拒绝, 0=未认证, 1=已通过, 2=审核中。"
+    sql_hint: "verification_status = 1 表示通过"
+    related_tables: ["pmt_account"]
+    related_columns: ["pmt_account.verification_status"]
+  - term: "MCC"
+    definition: "Merchant Category Code，商户类别码，常用于卡交易商户行业统计。"
+    sql_hint: "按 mcc 分组统计"
+    related_tables: ["issuing_card_transactions", "issuing_acs_transactions", "sys_industry_mcc"]
+    related_columns: ["issuing_card_transactions.mcc"]
+  - term: "渠道编码"
+    definition: "上游银行、卡组织或支付渠道的编码，常见字段 channel_code。"
+    sql_hint: "channel_code = '<渠道编码>' 或 channel_code LIKE '<渠道前缀>%'"
+    related_tables: ["issuing_channel_transactions", "issuing_card"]
+    related_columns: ["issuing_channel_transactions.channel_code"]

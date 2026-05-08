@@ -1,0 +1,96 @@
+table:
+  name: "sys_file"
+  database: "dwd_banking"
+  display_name: "UQ-文件表"
+  description: |
+    这张表记录系统侧的UQ-文件。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "文件", "sys_file"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "file_id"
+    type: "varchar(36)"
+    display_name: "长ID"
+    description: "长ID"
+
+  - name: "parent_id"
+    type: "varchar(36)"
+    display_name: "父ID"
+    description: "父ID"
+
+  - name: "customer_id"
+    type: "varchar(36)"
+    display_name: "系统内部客户ID"
+    description: "系统内部客户ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "UQ-文件表字段 account_id。"
+
+  - name: "file_type"
+    type: "varchar(45)"
+    display_name: "文件类型"
+    description: "文件类型：文件后缀名 "
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "UQ-文件表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "UQ-文件表字段 update_time。"
+
+  - name: "storage_location"
+    type: "tinyint(1)"
+    display_name: "1"
+    description: "1:cloud;2:local;3:cloud+local"
+    enum_values:
+      - {value: 1, label: "cloud"}
+      - {value: 2, label: "local"}
+      - {value: 3, label: "cloud+local"}
+
+  - name: "is_deleted"
+    type: "tinyint(1)"
+    display_name: "是否删除"
+    description: "是否删除:0默认，1=删除"
+    enum_values:
+      - {value: 1, label: "删除"}
+
+relations: []
+
+common_queries:
+  - question: "UQ-文件表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_file`;
+    tables: ["sys_file"]
+    difficulty: "easy"
+  - question: "最近30天UQ-文件表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_file`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["sys_file"]
+    difficulty: "easy"
+  - question: "UQ-文件表按customer_id分布最多的是哪些"
+    sql: |
+      SELECT customer_id AS "customer_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_file`
+      WHERE customer_id IS NOT NULL AND customer_id != ''
+      GROUP BY customer_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["sys_file"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

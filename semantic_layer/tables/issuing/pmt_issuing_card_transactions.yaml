@@ -1,0 +1,177 @@
+table:
+  name: "pmt_issuing_card_transactions"
+  database: "dwd_banking"
+  display_name: "卡交易流水表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的卡交易流水。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "支付", "pmt", "卡片", "交易", "pmt_issuing_card_transactions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_id"
+    type: "varchar(36)"
+    display_name: "卡片ID"
+    description: "TripLink专用卡标识 卡关联ID"
+
+  - name: "direct_id"
+    type: "varchar(48)"
+    display_name: "直属账户ID"
+    description: "卡交易流水表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(48)"
+    display_name: "账户ID"
+    description: "卡交易流水表字段 account_id。"
+
+  - name: "card_holder_id"
+    type: "varchar(36)"
+    display_name: "持卡人ID"
+    description: "卡交易流水表字段 card_holder_id。"
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内TXID"
+    description: "系统内TXID"
+
+  - name: "transaction_type"
+    type: "smallint"
+    display_name: "交易类型"
+    description: "参考LARK编码表"
+
+  - name: "card_number"
+    type: "varchar(36)"
+    display_name: "卡号"
+    description: "蒙遮卡号 4001-35xx-xxxx-1950"
+    sensitive: true
+
+  - name: "local_amount"
+    type: "decimal(16,2)"
+    display_name: "本地交易金额"
+    description: "本地交易金额	"
+
+  - name: "local_currency"
+    type: "varchar(4)"
+    display_name: "本地交易币种"
+    description: "本地交易币种	"
+
+  - name: "transaction_amount"
+    type: "decimal(16,2)"
+    display_name: "账单金额"
+    description: "账单金额"
+
+  - name: "transaction_currency"
+    type: "varchar(4)"
+    display_name: "账单币种"
+    description: "账单币种"
+
+  - name: "transaction_fee_currency"
+    type: "varchar(4)"
+    display_name: "交易费币种，若有"
+    description: "交易费币种，若有"
+
+  - name: "balance_transaction_id"
+    type: "varchar(36)"
+    display_name: "账户余额明细ID，关联finance_trans"
+    description: "账户余额明细ID，关联finance_transactions表，shared模式下启用"
+
+  - name: "merchant_id"
+    type: "varchar(100)"
+    display_name: "商户ID"
+    description: "商户ID	"
+
+  - name: "channel_resp_body"
+    type: "text"
+    display_name: "渠道respbody"
+    description: "卡交易流水表字段 channel_resp_body。"
+    skip_index: true
+
+  - name: "channel_transaction_id"
+    type: "varchar(255)"
+    display_name: "关联渠道的TXID"
+    description: "关联渠道的TXID"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "account短号"
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "系统短号ID"
+    description: "系统短号ID"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "卡交易流水表字段 create_time。"
+
+  - name: "transaction_status"
+    type: "smallint"
+    display_name: "参考LARK编码表"
+    description: "参考LARK编码表"
+    enum_values:
+      - {value: -2, label: "已删除"}
+      - {value: -1, label: "失败"}
+      - {value: 0, label: "处理中/待处理"}
+      - {value: 1, label: "完成/成功"}
+
+relations: []
+
+common_queries:
+  - question: "卡交易流水表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_issuing_card_transactions`;
+    tables: ["pmt_issuing_card_transactions"]
+    difficulty: "easy"
+  - question: "最近30天卡交易流水表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_issuing_card_transactions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_issuing_card_transactions"]
+    difficulty: "easy"
+  - question: "卡交易流水表按状态分布"
+    sql: |
+      SELECT
+          CASE transaction_status
+            WHEN -2 THEN '已删除'
+            WHEN -1 THEN '失败'
+            WHEN 0 THEN '处理中/待处理'
+            WHEN 1 THEN '完成/成功'
+            ELSE CONCAT('其他:', CAST(transaction_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_issuing_card_transactions`
+      GROUP BY transaction_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_issuing_card_transactions"]
+    difficulty: "medium"
+  - question: "卡交易流水表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`pmt_issuing_card_transactions`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["pmt_issuing_card_transactions"]
+    difficulty: "medium"
+  - question: "卡交易流水表按card_id分布最多的是哪些"
+    sql: |
+      SELECT card_id AS "card_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_issuing_card_transactions`
+      WHERE card_id IS NOT NULL AND card_id != ''
+      GROUP BY card_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_issuing_card_transactions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_issuing_card_transactions.go"

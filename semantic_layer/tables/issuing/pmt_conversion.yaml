@@ -1,0 +1,258 @@
+table:
+  name: "pmt_conversion"
+  database: "dwd_banking"
+  display_name: "汇兑表"
+  description: |
+    这张表记录支付/银行账户业务中的汇兑。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "换汇", "pmt_conversion"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "汇兑表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "汇兑表字段 account_id。"
+
+  - name: "conversion_id"
+    type: "varchar(36)"
+    display_name: "换汇id"
+    description: "汇兑表字段 conversion_id。"
+
+  - name: "buy_amount"
+    type: "decimal(16,2)"
+    display_name: "buyamount"
+    description: "汇兑表字段 buy_amount。"
+
+  - name: "buy_currency"
+    type: "varchar(3)"
+    display_name: "buy币种"
+    description: "汇兑表字段 buy_currency。"
+
+  - name: "currency_pair"
+    type: "varchar(6)"
+    display_name: "交易对"
+    description: "交易对"
+
+  - name: "sell_amount"
+    type: "decimal(16,2)"
+    display_name: "sellamount"
+    description: "汇兑表字段 sell_amount。"
+
+  - name: "sell_currency"
+    type: "varchar(3)"
+    display_name: "sell币种"
+    description: "汇兑表字段 sell_currency。"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "汇兑表字段 short_account_id。"
+
+  - name: "short_reference_id"
+    type: "varchar(36)"
+    display_name: "shortreferenceid"
+    description: "汇兑表字段 short_reference_id。"
+
+  - name: "unique_request_id"
+    type: "varchar(36)"
+    display_name: "User-generated idempoten"
+    description: "User-generated idempotency key."
+    skip_index: true
+
+  - name: "quote_id"
+    type: "varchar(36)"
+    display_name: "quoteid"
+    description: "汇兑表字段 quote_id。"
+
+  - name: "lockfx_quote_id"
+    type: "varchar(36)"
+    display_name: "LockFX quote id"
+    description: "LockFX quote id"
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "创建人ID"
+    description: "创建人ID"
+
+  - name: "channel_resp_id"
+    type: "varchar(36)"
+    display_name: "渠道respid"
+    description: "汇兑表字段 channel_resp_id。"
+
+  - name: "channel_resp_status"
+    type: "varchar(20)"
+    display_name: "渠道respstatus"
+    description: "汇兑表字段 channel_resp_status。"
+
+  - name: "channel_resp_body"
+    type: "text"
+    display_name: "渠道respbody"
+    description: "汇兑表字段 channel_resp_body。"
+    skip_index: true
+
+  - name: "execute_reason"
+    type: "text"
+    display_name: "对应失败原因"
+    description: "对应失败原因"
+    skip_index: true
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "交易流水ID"
+    description: "交易流水ID"
+
+  - name: "sub_split_cids"
+    type: "text"
+    display_name: "关联子订单ID list"
+    description: "关联子订单ID list"
+    skip_index: true
+
+  - name: "hedged_amount"
+    type: "decimal(16,2)"
+    display_name: "已对冲金额"
+    description: "已对冲金额"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "汇兑表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "汇兑表字段 update_time。"
+
+  - name: "review_status"
+    type: "tinyint(1)"
+    display_name: "审查状态"
+    description: "审查状态：1=passed, 0=in_review, -1=rejected"
+    enum_values:
+      - {value: 1, label: "passed"}
+      - {value: 0, label: "in_review"}
+      - {value: -1, label: "rejected"}
+
+  - name: "conversion_status"
+    type: "tinyint(1)"
+    display_name: "0=AWAITING_FUNDS"
+    description: "0=AWAITING_FUNDS, -1=CLOSED, 2=FUNDS_ARRIVED, 3=SENT_TO_CHANNEL, 1=TRADE_SETTLED"
+    enum_values:
+      - {value: 0, label: "AWAITING_FUNDS"}
+      - {value: -1, label: "CLOSED"}
+      - {value: 2, label: "FUNDS_ARRIVED"}
+      - {value: 3, label: "SENT_TO_CHANNEL"}
+      - {value: 1, label: "TRADE_SETTLED"}
+
+  - name: "conversion_flag"
+    type: "int"
+    display_name: "1000=order hedging;2000="
+    description: "1000=order hedging;2000=channel conversion;3000=other"
+    enum_values:
+      - {value: 1000, label: "order hedging"}
+      - {value: 2000, label: "channel conversion"}
+      - {value: 3000, label: "other"}
+
+  - name: "hedge_status"
+    type: "int"
+    display_name: "对冲状态"
+    description: "对冲状态, 1:对冲完成 2:部分对冲 0:未对冲"
+    enum_values:
+      - {value: 1, label: "对冲完成"}
+      - {value: 2, label: "部分对冲"}
+      - {value: 0, label: "未对冲"}
+
+  - name: "credit_status"
+    type: "int"
+    display_name: "加款状态 1"
+    description: "加款状态 1:加款成功 -1:加款失败"
+    enum_values:
+      - {value: 1, label: "加款成功"}
+      - {value: -1, label: "加款失败"}
+
+  - name: "transfer_to_house_status"
+    type: "int"
+    display_name: "转账tohousestatus"
+    description: "汇兑表字段 transfer_to_house_status。"
+
+  - name: "transfer_to_client_status"
+    type: "int"
+    display_name: "transfer status"
+    description: "transfer status, 1:success, -1:failed, 2:processing. 用于内部消息判断使用"
+    enum_values:
+      - {value: 1, label: "success"}
+      - {value: -1, label: "failed"}
+      - {value: 2, label: "processing. 用于内部消息判断使用"}
+
+  - name: "conversion_way"
+    type: "int"
+    display_name: "0-默认"
+    description: "0-默认(商户端创建) 1-接口创建"
+    enum_values:
+      - {value: 0, label: "默认(商户端创建)"}
+      - {value: 1, label: "接口创建"}
+
+relations: []
+
+common_queries:
+  - question: "汇兑表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion`;
+    tables: ["pmt_conversion"]
+    difficulty: "easy"
+  - question: "最近30天汇兑表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_conversion"]
+    difficulty: "easy"
+  - question: "汇兑表按状态分布"
+    sql: |
+      SELECT
+          channel_resp_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_conversion`
+      GROUP BY channel_resp_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_conversion"]
+    difficulty: "easy"
+  - question: "汇兑表按币种汇总金额"
+    sql: |
+      SELECT buy_currency AS "币种", COUNT(*) AS "笔数", SUM(buy_amount) AS "金额"
+      FROM dwd_banking.`pmt_conversion`
+      GROUP BY buy_currency
+      ORDER BY SUM(buy_amount) DESC;
+    tables: ["pmt_conversion"]
+    difficulty: "medium"
+  - question: "汇兑表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_conversion"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_conversion.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_conversion_connect.go"
+  - "uqpay-issuing-admincp-api/internal/repo/conversion_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_finance_transactions_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_conversion_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_finance_deposit_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_finance_payout_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_workflow_service.go"

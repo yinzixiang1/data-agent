@@ -1,0 +1,53 @@
+table:
+  name: "sys_notification_tpl_code"
+  database: "dwd_banking"
+  display_name: "系统通知模版表"
+  description: |
+    这张表记录系统侧的系统通知模版。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "通知", "tpl", "code", "sys_notification_tpl_code"]
+  query_tips: "时间范围优先使用 updated_at 字段。"
+
+columns:
+  - name: "tpl_mode"
+    type: "varchar(100)"
+    display_name: "通知模板方式"
+    description: "通知模板方式：service=服务，market=营销，opt=OTP"
+    sensitive: true
+
+relations: []
+
+common_queries:
+  - question: "系统通知模版表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_notification_tpl_code`;
+    tables: ["sys_notification_tpl_code"]
+    difficulty: "easy"
+  - question: "最近30天系统通知模版表每天新增多少"
+    sql: |
+      SELECT DATE(updated_at) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_notification_tpl_code`
+      WHERE updated_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(updated_at)
+      ORDER BY DATE(updated_at) DESC;
+    tables: ["sys_notification_tpl_code"]
+    difficulty: "easy"
+  - question: "系统通知模版表最近创建的记录有哪些"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`sys_notification_tpl_code`
+      ORDER BY updated_at DESC
+      LIMIT 100;
+    tables: ["sys_notification_tpl_code"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_notification_tpl_code.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_notification_tpl_code_repo.go"
+  - "uqpay-issuing-admincp-api/internal/data/sys_notification_tpl_code_data.go"

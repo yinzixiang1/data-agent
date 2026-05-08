@@ -1,0 +1,109 @@
+table:
+  name: "issuing_check_aml"
+  database: "dwd_banking"
+  display_name: "AML表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的AML。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "检查", "AML检查", "issuing_check_aml"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "AML表字段 id。"
+
+  - name: "first_name"
+    type: "varchar(45)"
+    display_name: "姓 个人需要填"
+    description: "姓 个人需要填"
+    sensitive: true
+
+  - name: "last_name"
+    type: "varchar(45)"
+    display_name: "名称"
+    description: "名称"
+    sensitive: true
+
+  - name: "entity_type"
+    type: "int"
+    display_name: "主体类型"
+    description: "1000=PERSONAL, 2000=COMPANY"
+    enum_values:
+      - {value: 1000, label: "PERSONAL"}
+      - {value: 2000, label: "COMPANY"}
+
+  - name: "overall_status"
+    type: "varchar(20)"
+    display_name: "可疑状态"
+    description: "可疑状态"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "AML表字段 create_time。"
+
+  - name: "idenfy_body"
+    type: "text"
+    display_name: "API结果"
+    description: "API结果"
+    skip_index: true
+
+  - name: "reference_id"
+    type: "varchar(48)"
+    display_name: "关联ID"
+    description: "关联ID"
+
+  - name: "batch_id"
+    type: "varchar(32)"
+    display_name: "批次号"
+    description: "批次号"
+
+  - name: "sumsub_response"
+    type: "text"
+    display_name: "sumsub API response"
+    description: "sumsub API response"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "AML表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_check_aml`;
+    tables: ["issuing_check_aml"]
+    difficulty: "easy"
+  - question: "最近30天AML表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_check_aml`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_check_aml"]
+    difficulty: "easy"
+  - question: "AML表按状态分布"
+    sql: |
+      SELECT
+          overall_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_check_aml`
+      GROUP BY overall_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_check_aml"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_aml_check.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_check_aml_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_holder_service.go"
+  - "uqpay-issuing-admincp-api/api/routers/issuing/new_card_router.go"
+  - "uqpay-issuing-admincp-api/internal/data/issuing_check_aml_data.go"
+  - "uqpay-issuing-admincp-api/internal/domain/response/cardholder_response.go"

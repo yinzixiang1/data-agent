@@ -55,8 +55,8 @@ def build_mock_schemas() -> list[dict]:
                 {"name": "main_email", "type": "VARCHAR(360)", "key": "", "comment": "开户邮箱", "display_name": "开户邮箱"},
                 {"name": "is_delete", "type": "INT", "key": "", "comment": "是否删除", "display_name": "是否删除",
                  "enum_values": [{"value": 0, "label": "未删除"}, {"value": 1, "label": "已删除"}]},
-                {"name": "metadata", "type": "STRING", "key": "", "comment": "元数据", "skip_index": True},
-                {"name": "identification_value", "type": "VARCHAR(144)", "key": "", "comment": "", "sensitive": True},
+                {"name": "metadata", "type": "STRING", "key": "", "comment": "元数据", "is_skip_index": True},
+                {"name": "identification_value", "type": "VARCHAR(144)", "key": "", "comment": "", "is_sensitive": True},
             ],
             "relations": [
                 {"column": "customer_id", "target_table": "dim_customer", "target_column": "customer_id", "join_type": "LEFT JOIN"},

@@ -1,0 +1,96 @@
+table:
+  name: "pmt_service_restrict"
+  database: "dwd_banking"
+  display_name: "约束表"
+  description: |
+    这张表记录支付/银行账户业务中的约束。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "服务", "限制", "pmt_service_restrict"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "restrict_id"
+    type: "int"
+    display_name: "限制id"
+    description: "约束表字段 restrict_id。"
+
+  - name: "restrict_type"
+    type: "int"
+    display_name: "约束类型"
+    description: "约束类型：1000-merchant,3000-product, 4000-channel"
+    enum_values:
+      - {value: 1000, label: "merchant"}
+      - {value: 3000, label: "product"}
+      - {value: 4000, label: "channel"}
+
+  - name: "restrict_params"
+    type: "text"
+    display_name: "约束参数json"
+    description: "约束参数json"
+    skip_index: true
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "约束表字段 create_time。"
+
+  - name: "restrict_status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "状态：0=无效 1=有效"
+    enum_values:
+      - {value: 0, label: "无效"}
+      - {value: 1, label: "有效"}
+
+relations: []
+
+common_queries:
+  - question: "约束表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_restrict`;
+    tables: ["pmt_service_restrict"]
+    difficulty: "easy"
+  - question: "最近30天约束表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_restrict`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_service_restrict"]
+    difficulty: "easy"
+  - question: "约束表按状态分布"
+    sql: |
+      SELECT
+          CASE restrict_status
+            WHEN 0 THEN '无效'
+            WHEN 1 THEN '有效'
+            ELSE CONCAT('其他:', CAST(restrict_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_service_restrict`
+      GROUP BY restrict_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_service_restrict"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_service_restrict.go"
+  - "uqpay-issuing-admincp-api/internal/repo/new_card_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/service_restrict_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_balance_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_bank_details_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service_tool.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_service.go"

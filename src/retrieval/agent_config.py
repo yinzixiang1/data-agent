@@ -1,7 +1,7 @@
 """
 Agent 动态配置加载 — 从 MySQL 读取 Agent 配置和资源信息。
 
-从 da_agent + da_agent_config + da_agent_ref + res_resource + sys_config 表
+从 da_agent + da_agent_config + da_agent_ref + sys_resource + sys_config 表
 加载 Agent 的 LLM / Prompt / 检索参数等配置，替代 .env 硬编码。
 
 使用示例::
@@ -23,6 +23,7 @@ from src.retrieval.config import (
     TABLE_SEARCH_TOP_K, COLUMN_SEARCH_TOP_K, RECALL_TOP_K,
     RERANK_INPUT_TOP_K, FEWSHOT_TOP_K, RRF_K, MMR_LAMBDA,
     ENABLE_RERANKER, GLOSSARY_SCORE_THRESHOLD, DEFAULT_AGENT_TOKEN,
+    NL2SQL_ENV, DENSE_MODEL, DENSE_DIM, RERANKER_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class AgentRuntimeConfig:
     agent_name: str = ""
     agent_handle: str = ""
 
-    # LLM 配置（来自 agent_config.model 分区 + res_resource provider）
+    # LLM 配置（来自 agent_config.model 分区 + sys_resource provider）
     llm_provider: str = ""
     llm_model: str = "deepseek-chat"
     llm_base_url: str = ""
@@ -61,6 +62,11 @@ class AgentRuntimeConfig:
     # EXPLAIN 配置
     max_fix_retries: int = 5
     enable_explain: bool = True
+
+    # 结构化配置（from sys_config JSON，hot-reload 可更新）
+    collection_search_config: dict = field(default_factory=dict)
+    embedding_config: dict = field(default_factory=dict)
+    index_build_config: dict = field(default_factory=dict)
 
     # 安全
     token: str = ""
@@ -210,11 +216,11 @@ class AgentConfigLoader:
             return {}
 
     def _load_resource_config(self, resource_type: str, name: str) -> dict:
-        """从 res_resource 加载资源配置。"""
+        """从 sys_resource 加载资源配置。"""
         try:
             with self.engine.connect() as conn:
                 row = conn.execute(text(
-                    "SELECT config_json FROM res_resource "
+                    "SELECT config_json FROM sys_resource "
                     "WHERE resource_type = :type AND name = :name AND status = 1"
                 ), {"type": resource_type, "name": name}).fetchone()
             if row and row[0]:
@@ -271,6 +277,32 @@ class AgentConfigLoader:
             else:
                 config.llm_model = value
 
+        # 结构化 JSON 配置（优先读 {env}.KEY，fallback 到 KEY）
+        env = NL2SQL_ENV
+        json_keys = {
+            "COLLECTION_SEARCH_CONFIG": "collection_search_config",
+            "EMBEDDING_CONFIG": "embedding_config",
+            "INDEX_BUILD_CONFIG": "index_build_config",
+        }
+        for key, attr in json_keys.items():
+            env_key = f"{env}.{key}"
+            actual_key = env_key if env_key in sys_configs else key
+            if actual_key in sys_configs:
+                try:
+                    setattr(config, attr, json.loads(sys_configs[actual_key]))
+                    if actual_key == env_key:
+                        logger.info(f"使用环境配置: {env_key}")
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"sys_config {actual_key} JSON 解析失败，使用默认值")
+
+        # 如果 sys_config 未配置结构化 JSON，使用环境感知默认值
+        if not config.embedding_config:
+            config.embedding_config = self._default_embedding_config()
+        if not config.index_build_config:
+            config.index_build_config = self._default_index_build_config()
+        if not config.collection_search_config:
+            config.collection_search_config = self._default_collection_search_config()
+
     def _apply_agent_configs(
         self,
         config: AgentRuntimeConfig,
@@ -292,6 +324,11 @@ class AgentConfigLoader:
                 config.llm_api_key = model_cfg["api_key"]
             if "base_url" in model_cfg:
                 config.llm_base_url = model_cfg["base_url"]
+            if "max_fix_retries" in model_cfg:
+                try:
+                    config.max_fix_retries = int(model_cfg["max_fix_retries"])
+                except (ValueError, TypeError):
+                    pass
 
         # 从 agent_ref 的 provider 引用解析 base_url
         provider_refs = agent_refs.get("provider", [])
@@ -339,6 +376,124 @@ class AgentConfigLoader:
                 v = retrieval_cfg["enable_explain"]
                 config.enable_explain = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
 
+        # collection_overrides: Agent 级 Collection 策略覆盖
+        self._merge_collection_overrides(config, agent_configs)
+
+    def _merge_collection_overrides(
+        self,
+        config: AgentRuntimeConfig,
+        agent_configs: dict[str, dict],
+    ):
+        """将 Agent 级 collection_overrides 逐字段 merge 到全局 collection_search_config。"""
+        overrides = agent_configs.get("retrieval", {}).get("collection_overrides", {})
+        if not overrides:
+            return
+        for col_name, col_override in overrides.items():
+            if col_name in config.collection_search_config:
+                config.collection_search_config[col_name].update(col_override)
+            else:
+                logger.warning(f"collection_overrides 中的 {col_name} 不在全局配置中，已忽略")
+
+    def _default_embedding_config(self) -> dict:
+        """根据 NL2SQL_ENV 生成 EMBEDDING_CONFIG 默认值。"""
+        is_dev = NL2SQL_ENV == "dev"
+        return {
+            "model": DENSE_MODEL,
+            "dim": DENSE_DIM,
+            "dtype": "float16",
+            "batch_size": 8 if is_dev else 64,
+            "max_length": 512,
+            "mrl_renormalize": is_dev,
+            "instructions": {
+                "table": "Given a user question, retrieve relevant database tables.",
+                "column": "Given a user question, retrieve relevant database columns.",
+                "enum": "Given a user question, retrieve relevant enum values.",
+                "fewshot": "Given a user question, retrieve similar SQL question examples.",
+                "glossary": "Given a user question, retrieve relevant business term definitions.",
+            },
+        }
+
+    def _default_index_build_config(self) -> dict:
+        """根据 NL2SQL_ENV 生成 INDEX_BUILD_CONFIG 默认值。"""
+        is_dev = NL2SQL_ENV == "dev"
+        return {
+            "hnsw": {
+                "M": 16 if is_dev else 32,
+                "efConstruction": 200 if is_dev else 400,
+                "ef_search": 64 if is_dev else 128,
+            },
+            "bm25": {
+                "k1": 1.5,
+                "b": 0.75,
+                "analyzer": "jieba",
+            },
+            "reranker": {
+                "model": RERANKER_MODEL,
+                "score_threshold": 0.3,
+            },
+        }
+
+    def _default_collection_search_config(self) -> dict:
+        """生成 COLLECTION_SEARCH_CONFIG 默认值。"""
+        is_dev = NL2SQL_ENV == "dev"
+        return {
+            "table": {
+                "ranker_type": "weighted",
+                "dense_weight": 0.4,
+                "sparse_weight": 0.6,
+                "recall_limit": 30 if is_dev else 100,
+                "rerank": True,
+                "rerank_top_n": 8,
+                "final_top_n": 5,
+            },
+            "column": {
+                "ranker_type": "weighted",
+                "dense_weight": 0.4,
+                "sparse_weight": 0.6,
+                "recall_limit": 50 if is_dev else 200,
+                "rerank": True,
+                "rerank_top_n": 15,
+                "final_top_n": 10,
+            },
+            "enum": {
+                "ranker_type": "weighted",
+                "dense_weight": 0.2,
+                "sparse_weight": 0.8,
+                "recall_limit": 20,
+                "rerank": False,
+                "rerank_top_n": 10,
+                "final_top_n": 20,
+            },
+            "value": {
+                "ranker_type": "bm25_only",
+                "dense_weight": 0,
+                "sparse_weight": 1,
+                "recall_limit": 20,
+                "rerank": False,
+                "rerank_top_n": 10,
+                "final_top_n": 20,
+            },
+            "fewshot": {
+                "ranker_type": "weighted",
+                "dense_weight": 0.8,
+                "sparse_weight": 0.2,
+                "recall_limit": 10,
+                "rerank": True,
+                "rerank_top_n": 3,
+                "final_top_n": 3,
+            },
+            "glossary": {
+                "ranker_type": "rrf",
+                "dense_weight": 0.5,
+                "sparse_weight": 0.5,
+                "rrf_k": 20,
+                "recall_limit": 10,
+                "rerank": False,
+                "rerank_top_n": 10,
+                "final_top_n": 10,
+            },
+        }
+
     def print_config(self, config: AgentRuntimeConfig):
         """打印 Agent 运行时配置。"""
         lines = [
@@ -384,7 +539,48 @@ class AgentConfigLoader:
             "  [校验]",
             f"    ENABLE_EXPLAIN:      {config.enable_explain}",
             f"    MAX_FIX_RETRIES:     {config.max_fix_retries}",
+        ]
+
+        # Embedding 配置
+        emb = config.embedding_config
+        if emb:
+            lines += [
+                "",
+                "  [Embedding]",
+                f"    Model:      {emb.get('model', '?')}",
+                f"    Dim:        {emb.get('dim', '?')}",
+                f"    Dtype:      {emb.get('dtype', '?')}",
+                f"    Batch Size: {emb.get('batch_size', '?')}",
+                f"    MRL Renorm: {emb.get('mrl_renormalize', False)}",
+            ]
+
+        # Index Build 配置
+        idx = config.index_build_config
+        if idx:
+            hnsw = idx.get("hnsw", {})
+            bm25 = idx.get("bm25", {})
+            rr = idx.get("reranker", {})
+            lines += [
+                "",
+                "  [Index Build]",
+                f"    HNSW:     M={hnsw.get('M', '?')} efC={hnsw.get('efConstruction', '?')} ef={hnsw.get('ef_search', '?')}",
+                f"    BM25:     k1={bm25.get('k1', '?')} b={bm25.get('b', '?')} analyzer={bm25.get('analyzer', '?')}",
+                f"    Reranker: {rr.get('model', '?')} (threshold={rr.get('score_threshold', '?')})",
+            ]
+
+        # Collection 检索策略摘要
+        csc = config.collection_search_config
+        if csc:
+            lines += ["", "  [Collection 检索策略]"]
+            for col_name, col_cfg in csc.items():
+                ranker = col_cfg.get("ranker_type", "?")
+                rerank = "✓" if col_cfg.get("rerank") else "✗"
+                final = col_cfg.get("final_top_n", "?")
+                lines.append(f"    {col_name:10s}  ranker={ranker:10s}  rerank={rerank}  top_n={final}")
+
+        lines += [
             "",
+            f"  环境: {NL2SQL_ENV}",
             f"  配置来源: {config.config_source}",
             "=" * 60,
         ]

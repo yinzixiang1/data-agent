@@ -1,0 +1,194 @@
+table:
+  name: "issuing_finance_prepaid_transactions"
+  database: "dwd_banking"
+  display_name: "ISSUING Card账户流水表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的ISSUING Card账户流水。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "交易", "资金", "预付", "issuing_finance_prepaid_transactions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "ISSUING Card账户流水表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "ISSUING Card账户流水表字段 account_id。"
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "交易号"
+    description: "交易号"
+
+  - name: "transaction_type"
+    type: "int"
+    display_name: "交易类型"
+    description: "4000=issuing purchase, 4001=issuing reversal, 4002=issuing refund, 4008=card recharge, 4009=card withdraw, 8000=fee, 8001=refund, 9000=adjustment"
+    enum_values:
+      - {value: 4000, label: "issuing purchase"}
+      - {value: 4001, label: "issuing reversal"}
+      - {value: 4002, label: "issuing refund"}
+      - {value: 4008, label: "card recharge"}
+      - {value: 4009, label: "card withdraw"}
+      - {value: 8000, label: "fee"}
+      - {value: 8001, label: "refund"}
+      - {value: 9000, label: "adjustment"}
+    skip_index: true
+
+  - name: "balance_id"
+    type: "varchar(36)"
+    display_name: "余额id"
+    description: "ISSUING Card账户流水表字段 balance_id。"
+
+  - name: "account_balance_type"
+    type: "int"
+    display_name: "1000=available balance"
+    description: "1000=available balance, 1001=pending balance, 1002=reserved balance, 1003=margin balance, 4001=prepaid balance, 9000=frozen balance"
+    enum_values:
+      - {value: 1000, label: "available balance"}
+      - {value: 1001, label: "pending balance"}
+      - {value: 1002, label: "reserved balance"}
+      - {value: 1003, label: "margin balance"}
+      - {value: 4001, label: "prepaid balance"}
+      - {value: 9000, label: "frozen balance"}
+
+  - name: "beging_balance_amount"
+    type: "decimal(16,4)"
+    display_name: "账户起初余额"
+    description: "账户起初余额"
+
+  - name: "ending_balance_amount"
+    type: "decimal(16,4)"
+    display_name: "账户期末余额"
+    description: "账户期末余额"
+
+  - name: "transaction_currency"
+    type: "varchar(6)"
+    display_name: "交易币种"
+    description: "交易币种"
+
+  - name: "transaction_amount"
+    type: "decimal(16,4)"
+    display_name: "交易金额"
+    description: "交易金额"
+
+  - name: "account_currency"
+    type: "varchar(6)"
+    display_name: "账户币种"
+    description: "账户币种, 账户实际扣款币种"
+
+  - name: "account_amount"
+    type: "decimal(16,4)"
+    display_name: "账户金额"
+    description: "账户金额, 账户实际发生金额"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "reference_id"
+    type: "varchar(36)"
+    display_name: "关联原始订单 长单号"
+    description: "关联原始订单 长单号"
+
+  - name: "short_reference_id"
+    type: "varchar(36)"
+    display_name: "关联原始订单 短单号"
+    description: "关联原始订单 短单号"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "ISSUING Card账户流水表字段 short_account_id。"
+
+  - name: "transaction_status"
+    type: "tinyint(1)"
+    display_name: "Transaction status"
+    description: "Transaction status:  -2= deleted -1= failed 1= completed 0=pending "
+    enum_values:
+      - {value: -2, label: "deleted"}
+      - {value: -1, label: "failed"}
+      - {value: 1, label: "completed"}
+      - {value: 0, label: "pending"}
+
+  - name: "credit_debit_type"
+    type: "varchar(2)"
+    display_name: "借贷方向"
+    description: "借贷方向: C=贷 credit; D=借 debit"
+
+relations: []
+
+common_queries:
+  - question: "ISSUING Card账户流水表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_finance_prepaid_transactions`;
+    tables: ["issuing_finance_prepaid_transactions"]
+    difficulty: "easy"
+  - question: "最近30天ISSUING Card账户流水表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_finance_prepaid_transactions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_finance_prepaid_transactions"]
+    difficulty: "easy"
+  - question: "ISSUING Card账户流水表按状态分布"
+    sql: |
+      SELECT
+          CASE transaction_status
+            WHEN -2 THEN 'deleted'
+            WHEN -1 THEN 'failed'
+            WHEN 1 THEN 'completed'
+            WHEN 0 THEN 'pending'
+            ELSE CONCAT('其他:', CAST(transaction_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_finance_prepaid_transactions`
+      GROUP BY transaction_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_finance_prepaid_transactions"]
+    difficulty: "medium"
+  - question: "ISSUING Card账户流水表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`issuing_finance_prepaid_transactions`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["issuing_finance_prepaid_transactions"]
+    difficulty: "medium"
+  - question: "ISSUING Card账户流水表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_finance_prepaid_transactions`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_finance_prepaid_transactions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_finance_prepaid_transactions.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_finance_prepaid_transactions_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_finance_prepaid_transactions_service.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/issuing_finance_prepaid_transaction.go"
+  - "uqpay-issuing-message/internal/entity/issuing_finance_prepaid_transactions.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_3ds_fees.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_acc.go"

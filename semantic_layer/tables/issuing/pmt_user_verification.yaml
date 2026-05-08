@@ -1,0 +1,76 @@
+table:
+  name: "pmt_user_verification"
+  database: "dwd_banking"
+  display_name: "商户-用户验证表"
+  description: |
+    这张表记录支付/银行账户业务中的商户-用户验证。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "用户", "认证", "pmt_user_verification"]
+  query_tips: "时间范围优先使用 created_time 字段。"
+
+columns:
+  - name: "user_id"
+    type: "varchar(36)"
+    display_name: "用户id"
+    description: "商户-用户验证表字段 user_id。"
+
+  - name: "token"
+    type: "varchar(128)"
+    display_name: "用户邮箱验证表"
+    description: "用户邮箱验证表"
+    sensitive: true
+
+  - name: "verify_type"
+    type: "varchar(15)"
+    display_name: "验证type"
+    description: "商户-用户验证表字段 verify_type。"
+
+  - name: "status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "商户-用户验证表字段 status。"
+
+relations: []
+
+common_queries:
+  - question: "商户-用户验证表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_verification`;
+    tables: ["pmt_user_verification"]
+    difficulty: "easy"
+  - question: "最近30天商户-用户验证表每天新增多少"
+    sql: |
+      SELECT DATE(created_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_verification`
+      WHERE created_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(created_time)
+      ORDER BY DATE(created_time) DESC;
+    tables: ["pmt_user_verification"]
+    difficulty: "easy"
+  - question: "商户-用户验证表按状态分布"
+    sql: |
+      SELECT
+          status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_user_verification`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_user_verification"]
+    difficulty: "easy"
+  - question: "商户-用户验证表按user_id分布最多的是哪些"
+    sql: |
+      SELECT user_id AS "user_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_verification`
+      WHERE user_id IS NOT NULL AND user_id != ''
+      GROUP BY user_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_user_verification"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

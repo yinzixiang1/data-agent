@@ -1,0 +1,190 @@
+table:
+  name: "issuing_card_settlements"
+  database: "dwd_banking"
+  display_name: "发卡卡片清算表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡卡片清算。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "清算", "issuing_card_settlements"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "settlement_id"
+    type: "varchar(36)"
+    display_name: "清算id"
+    description: "发卡卡片清算表字段 settlement_id。"
+
+  - name: "account_id"
+    type: "varchar(50)"
+    display_name: "账户ID"
+    description: "客户账户ID"
+
+  - name: "parent_account_id"
+    type: "varchar(36)"
+    display_name: "parent账户id"
+    description: "发卡卡片清算表字段 parent_account_id。"
+
+  - name: "card_id"
+    type: "varchar(50)"
+    display_name: "卡片ID"
+    description: "卡片ID"
+
+  - name: "transaction_id"
+    type: "varchar(50)"
+    display_name: "交易ID"
+    description: "交易ID"
+
+  - name: "transaction_type"
+    type: "varchar(20)"
+    display_name: "交易类型"
+    description: "交易类型(如: purchase, refund)"
+
+  - name: "transaction_amount"
+    type: "decimal(15,2)"
+    display_name: "交易金额"
+    description: "交易金额"
+
+  - name: "transaction_currency"
+    type: "varchar(4)"
+    display_name: "交易币种"
+    description: "交易币种"
+
+  - name: "settlement_amount"
+    type: "decimal(15,2)"
+    display_name: "结算金额"
+    description: "结算金额"
+
+  - name: "settlement_currency"
+    type: "varchar(4)"
+    display_name: "结算币种"
+    description: "结算币种"
+
+  - name: "billing_currency"
+    type: "varchar(4)"
+    display_name: "账单币种"
+    description: "账单币种"
+
+  - name: "billing_amount"
+    type: "decimal(15,4)"
+    display_name: "账单金额"
+    description: "账单金额"
+
+  - name: "merchant_id"
+    type: "varchar(50)"
+    display_name: "商户ID"
+    description: "商户ID"
+
+  - name: "network_transaction_id"
+    type: "varchar(96)"
+    display_name: "卡组织交易id"
+    description: "发卡卡片清算表字段 network_transaction_id。"
+
+  - name: "masked_card_number"
+    type: "varchar(20)"
+    display_name: "掩码卡号"
+    description: "掩码卡号"
+    sensitive: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "发卡卡片清算表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "发卡卡片清算表字段 update_time。"
+
+  - name: "settlement_status"
+    type: "tinyint"
+    display_name: "1=settled 0=pending -1=f"
+    description: "1=settled 0=pending -1=failed)"
+    enum_values:
+      - {value: 1, label: "settled"}
+      - {value: 0, label: "pending"}
+      - {value: -1, label: "failed)"}
+
+  - name: "channel_settlement_status"
+    type: "tinyint"
+    display_name: "渠道结算状态"
+    description: "渠道结算状态"
+
+  - name: "channel_settlement_amount"
+    type: "decimal(15,2)"
+    display_name: "渠道结算金额"
+    description: "渠道结算金额"
+
+  - name: "channel_settlement_currency"
+    type: "varchar(4)"
+    display_name: "渠道结算币种"
+    description: "渠道结算币种"
+
+relations:
+  - column: "transaction_id"
+    target_table: "issuing_card_transactions"
+    target_column: "transaction_id"
+    join_type: "LEFT JOIN"
+    description: "卡清算记录按 transaction_id 关联卡交易，来源 uqpay-task/internal/repository/store/issuing_card_settlements.go"
+
+common_queries:
+  - question: "发卡卡片清算表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_settlements`;
+    tables: ["issuing_card_settlements"]
+    difficulty: "easy"
+  - question: "最近30天发卡卡片清算表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_settlements`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_card_settlements"]
+    difficulty: "easy"
+  - question: "发卡卡片清算表按状态分布"
+    sql: |
+      SELECT
+          CASE settlement_status
+            WHEN 1 THEN 'settled'
+            WHEN 0 THEN 'pending'
+            WHEN -1 THEN 'failed)'
+            ELSE CONCAT('其他:', CAST(settlement_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_card_settlements`
+      GROUP BY settlement_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_card_settlements"]
+    difficulty: "medium"
+  - question: "发卡卡片清算表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`issuing_card_settlements`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["issuing_card_settlements"]
+    difficulty: "medium"
+  - question: "发卡卡片清算表按account_id分布最多的是哪些"
+    sql: |
+      SELECT account_id AS "account_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_settlements`
+      WHERE account_id IS NOT NULL AND account_id != ''
+      GROUP BY account_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_card_settlements"]
+    difficulty: "easy"
+
+review_required: []
+
+code_sources:
+  - "uqpay-task/internal/repository/store/issuing_card_settlements.go"
+  - "uqpay-task/internal/repository/store/repo.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/issuing_card_settlements.go"
+  - "uqpay-issuing-message/internal/entity/issuing_card_settlements.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_3ds_fees.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_acc.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_report.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_straitsx.go"

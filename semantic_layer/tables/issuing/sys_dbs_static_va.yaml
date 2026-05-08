@@ -1,0 +1,106 @@
+table:
+  name: "sys_dbs_static_va"
+  database: "dwd_banking"
+  display_name: "DBS VA预备号表"
+  description: |
+    这张表记录系统侧的DBS VA预备号。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "dbs", "static", "虚拟账户", "sys_dbs_static_va"]
+  query_tips: "时间范围优先使用 update_time 字段。"
+
+columns:
+  - name: "va_type"
+    type: "varchar(2)"
+    display_name: "01=个人，02=企业"
+    description: "01=个人，02=企业"
+    enum_values:
+      - {value: 01, label: "个人"}
+      - {value: 02, label: "企业"}
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "DBS VA预备号表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "DBS VA预备号表字段 account_id。"
+
+  - name: "short_account_id"
+    type: "varchar(36)"
+    display_name: "账户短号"
+    description: "DBS VA预备号表字段 short_account_id。"
+
+  - name: "status"
+    type: "tinyint"
+    display_name: "状态"
+    description: "0: default; 2:pending; 1:actived."
+    enum_values:
+      - {value: 0, label: "default"}
+      - {value: 2, label: "pending"}
+      - {value: 1, label: "actived"}
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "DBS VA预备号表字段 update_time。"
+
+relations: []
+
+common_queries:
+  - question: "DBS VA预备号表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_dbs_static_va`;
+    tables: ["sys_dbs_static_va"]
+    difficulty: "easy"
+  - question: "最近30天DBS VA预备号表每天新增多少"
+    sql: |
+      SELECT DATE(update_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_dbs_static_va`
+      WHERE update_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(update_time)
+      ORDER BY DATE(update_time) DESC;
+    tables: ["sys_dbs_static_va"]
+    difficulty: "easy"
+  - question: "DBS VA预备号表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN 0 THEN 'default'
+            WHEN 2 THEN 'pending'
+            WHEN 1 THEN 'actived'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`sys_dbs_static_va`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["sys_dbs_static_va"]
+    difficulty: "medium"
+  - question: "DBS VA预备号表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_dbs_static_va`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["sys_dbs_static_va"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_dbs_static_va.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_dbs_static_va_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_dbs_static_va_service.go"
+  - "uqpay-issuing-admincp-api/api/handle/sys_dbs_static_va_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/sys/sys_dbs_static_va_router.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_account_data.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_account_product_data.go"
+  - "uqpay-issuing-admincp-api/internal/data/sys_dbs_static_va_data.go"

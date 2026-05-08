@@ -1,0 +1,77 @@
+table:
+  name: "pmt_user_workflow_setting"
+  database: "dwd_banking"
+  display_name: "支付用户工作流设置表"
+  description: |
+    这张表记录支付/银行账户业务中的支付用户工作流设置。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "用户", "工作流", "设置", "pmt_user_workflow_setting"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "机构ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "关联account_id"
+
+  - name: "role_id"
+    type: "varchar(36)"
+    display_name: "角色ID"
+    description: "角色ID"
+
+  - name: "set_type"
+    type: "int"
+    display_name: "模块类型"
+    description: "模块类型：1000=payin, 1001=deposit, 2000=payout, 2001=transfer, 3000=conversion，4000=card 消费, 4001=card recharge, 4002=card withdraw, 8000=fee, 8001=refund，9000=adjustment"
+    enum_values:
+      - {value: 1000, label: "payin"}
+      - {value: 1001, label: "deposit"}
+      - {value: 2000, label: "payout"}
+      - {value: 2001, label: "transfer"}
+      - {value: 3000, label: "conversion"}
+      - {value: 4000, label: "card 消费"}
+      - {value: 4001, label: "card recharge"}
+      - {value: 4002, label: "card withdraw"}
+      - {value: 8000, label: "fee"}
+      - {value: 8001, label: "refund"}
+      - {value: 9000, label: "adjustment"}
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "支付用户工作流设置表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_workflow_setting`;
+    tables: ["pmt_user_workflow_setting"]
+    difficulty: "easy"
+  - question: "支付用户工作流设置表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_workflow_setting`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_user_workflow_setting"]
+    difficulty: "easy"
+  - question: "支付用户工作流设置表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_user_workflow_setting`
+      ORDER BY wsid DESC
+      LIMIT 100;
+    tables: ["pmt_user_workflow_setting"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

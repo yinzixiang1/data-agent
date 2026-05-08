@@ -1,0 +1,216 @@
+table:
+  name: "issuing_network_transactions"
+  database: "dwd_banking"
+  display_name: "卡组原始交易表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的卡组原始交易。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "交易", "卡组织", "issuing_network_transactions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_id"
+    type: "varchar(36)"
+    display_name: "卡片ID"
+    description: "卡组原始交易表字段 card_id。"
+
+  - name: "account_id"
+    type: "varchar(48)"
+    display_name: "账户ID"
+    description: "卡组原始交易表字段 account_id。"
+
+  - name: "parent_account_id"
+    type: "varchar(48)"
+    display_name: "父级ACID"
+    description: "父级ACID"
+
+  - name: "short_account_id"
+    type: "varchar(36)"
+    display_name: "账户短号"
+    description: "account短号"
+
+  - name: "message_type"
+    type: "varchar(4)"
+    display_name: "MTI"
+    description: "MTI"
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内TXID"
+    description: "系统内TXID"
+
+  - name: "transaction_type"
+    type: "smallint"
+    display_name: "交易类型"
+    description: "参考LARK编码表"
+
+  - name: "sub_transaction_type"
+    type: "int"
+    display_name: "<建议数字编排-1000-9000 这样>"
+    description: "<建议数字编排-1000-9000 这样>"
+    enum_values:
+      - {value: -1000, label: "9000 这样>"}
+
+  - name: "card_number"
+    type: "varchar(36)"
+    display_name: "卡号"
+    description: "蒙遮卡号 4001-35xx-xxxx-1950"
+    sensitive: true
+
+  - name: "pan_hash"
+    type: "varchar(64)"
+    display_name: "PAN哈希"
+    description: "PAN sha256 hash值"
+    sensitive: true
+
+  - name: "mask_card_number"
+    type: "varchar(36)"
+    display_name: "脱敏卡号"
+    description: "脱敏后的card number"
+    sensitive: true
+
+  - name: "billing_amount"
+    type: "decimal(16,2)"
+    display_name: "账单交易金额"
+    description: "账单交易金额	"
+
+  - name: "billing_currency"
+    type: "varchar(4)"
+    display_name: "账单交易币种"
+    description: "账单交易币种	"
+
+  - name: "transaction_amount"
+    type: "decimal(16,2)"
+    display_name: "交易金额"
+    description: "交易金额"
+
+  - name: "transaction_currency"
+    type: "varchar(4)"
+    display_name: "交易币种"
+    description: "交易币种"
+
+  - name: "merchant_id"
+    type: "varchar(32)"
+    display_name: "The merchant identifier."
+    description: "The merchant identifier."
+
+  - name: "merchant_terminal_id"
+    type: "varchar(10)"
+    display_name: "Card acceptor or termina"
+    description: "Card acceptor or terminal identification number."
+    sensitive: true
+
+  - name: "network_transaction_id"
+    type: "varchar(255)"
+    display_name: "卡组交易ID"
+    description: "卡组交易ID"
+
+  - name: "acquiring_institution_id"
+    type: "varchar(12)"
+    display_name: "acquiringinstitutionid"
+    description: "卡组原始交易表字段 acquiring_institution_id。"
+
+  - name: "related_card_transaction_id"
+    type: "varchar(48)"
+    display_name: "关联card_transaction 交易记录"
+    description: "关联card_transaction 交易记录"
+
+  - name: "network_response_code"
+    type: "varchar(36)"
+    display_name: "返回码"
+    description: "返回码"
+    skip_index: true
+
+  - name: "network_response_body"
+    type: "text"
+    display_name: "解析后的报文，敏感信息 cvv2 卡号 有效期脱"
+    description: "解析后的报文，敏感信息 cvv2 卡号 有效期脱敏处理"
+    sensitive: true
+    skip_index: true
+
+  - name: "transaction_status"
+    type: "smallint"
+    display_name: "1000 - Authorized"
+    description: "1000 - Authorized (授权成功) \\n1001 - Declined (授权拒绝) \\n1002 - Partial Authorized (部分授权) \\n2000 - Completed (交易完成) \\n3000 - Refunded (已退款) \\n3001 - Partial Refunded (部分退款) \\n4000 - Reversed (已冲正) \\n9000 - Error (错误) \\n9001 - Expired (过期) \\n9999 - Unknown (未知状态)"
+    enum_values:
+      - {value: -2, label: "已删除"}
+      - {value: -1, label: "失败"}
+      - {value: 0, label: "处理中/待处理"}
+      - {value: 1, label: "完成/成功"}
+
+  - name: "create_time"
+    type: "datetime(3)"
+    display_name: "创建时间"
+    description: "卡组原始交易表字段 create_time。"
+
+  - name: "is_clearing_type"
+    type: "tinyint"
+    display_name: "是否清算类型 0否 1是"
+    description: "是否清算类型 0否 1是"
+
+relations: []
+
+common_queries:
+  - question: "卡组原始交易表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_transactions`;
+    tables: ["issuing_network_transactions"]
+    difficulty: "easy"
+  - question: "最近30天卡组原始交易表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_transactions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_network_transactions"]
+    difficulty: "easy"
+  - question: "卡组原始交易表按状态分布"
+    sql: |
+      SELECT
+          CASE transaction_status
+            WHEN -2 THEN '已删除'
+            WHEN -1 THEN '失败'
+            WHEN 0 THEN '处理中/待处理'
+            WHEN 1 THEN '完成/成功'
+            ELSE CONCAT('其他:', CAST(transaction_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_network_transactions`
+      GROUP BY transaction_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_network_transactions"]
+    difficulty: "medium"
+  - question: "卡组原始交易表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`issuing_network_transactions`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["issuing_network_transactions"]
+    difficulty: "medium"
+  - question: "卡组原始交易表按card_id分布最多的是哪些"
+    sql: |
+      SELECT card_id AS "card_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_transactions`
+      WHERE card_id IS NOT NULL AND card_id != ''
+      GROUP BY card_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_network_transactions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/issuing_channel_transactions.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_network_transactions.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/issuing_network_transaction.go"
+  - "uqpay-issuing-message/internal/entity/issuing_network_transactions.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_acc.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_auth.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_nium_webhook.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_straitsx.go"

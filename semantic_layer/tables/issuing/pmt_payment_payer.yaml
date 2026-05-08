@@ -1,0 +1,198 @@
+table:
+  name: "pmt_payment_payer"
+  database: "dwd_banking"
+  display_name: "支付支付付款方表"
+  description: |
+    这张表记录支付/银行账户业务中的支付支付付款方。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "付款方", "pmt_payment_payer"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "支付支付付款方表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "支付支付付款方表字段 account_id。"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "支付支付付款方表字段 short_account_id。"
+
+  - name: "payer_id"
+    type: "varchar(36)"
+    display_name: "付款方id"
+    description: "支付支付付款方表字段 payer_id。"
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "短号"
+    description: "短号"
+
+  - name: "entity_type"
+    type: "int"
+    display_name: "主体类型"
+    description: "1000=personal, 2000=business"
+    enum_values:
+      - {value: 1000, label: "personal"}
+      - {value: 2000, label: "business"}
+
+  - name: "first_name"
+    type: "varchar(50)"
+    display_name: "firstname"
+    description: "支付支付付款方表字段 first_name。"
+    sensitive: true
+
+  - name: "last_name"
+    type: "varchar(50)"
+    display_name: "lastname"
+    description: "支付支付付款方表字段 last_name。"
+    sensitive: true
+
+  - name: "address"
+    type: "varchar(500)"
+    display_name: "address"
+    description: "支付支付付款方表字段 address。"
+    sensitive: true
+
+  - name: "date_of_birth"
+    type: "date"
+    display_name: "dateofbirth"
+    description: "支付支付付款方表字段 date_of_birth。"
+    sensitive: true
+
+  - name: "identification_type"
+    type: "int"
+    display_name: "证件类型"
+    description: "1000-passport, 1001-Drivers License，1002-National Id, 1003 NRIC; 2000-Incorporation number"
+    sensitive: true
+
+  - name: "identification_value"
+    type: "varchar(50)"
+    display_name: "identificationvalue"
+    description: "支付支付付款方表字段 identification_value。"
+    sensitive: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "支付支付付款方表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "支付支付付款方表字段 update_time。"
+
+  - name: "verification_status"
+    type: "tinyint(1)"
+    display_name: "KYC/KYB认证状态"
+    description: "KYC/KYB验证状态：-1=验证失败 0=待验证，1=验证成功"
+    enum_values:
+      - {value: -1, label: "拒绝"}
+      - {value: 0, label: "默认/未认证"}
+      - {value: 1, label: "已通过"}
+      - {value: 2, label: "审核中"}
+
+  - name: "ref_cc_payer_id"
+    type: "varchar(36)"
+    display_name: "refcc付款方id"
+    description: "支付支付付款方表字段 ref_cc_payer_id。"
+
+  - name: "execute_reason"
+    type: "text"
+    display_name: "对应失败原因"
+    description: "对应失败原因"
+    skip_index: true
+
+  - name: "review_status"
+    type: "tinyint"
+    display_name: "审查状态"
+    description: "审查状态：1=passed, 0=in_review, -1=rejected"
+    enum_values:
+      - {value: 1, label: "passed"}
+      - {value: 0, label: "in_review"}
+      - {value: -1, label: "rejected"}
+
+  - name: "payer_status"
+    type: "tinyint(1)"
+    display_name: "付款方status"
+    description: "支付支付付款方表字段 payer_status。"
+
+  - name: "risk_flag"
+    type: "tinyint(1)"
+    display_name: "风险标记"
+    description: "风险标记：0=无，1=白名单，2=黑名单"
+    enum_values:
+      - {value: 0, label: "无"}
+      - {value: 1, label: "白名单"}
+      - {value: 2, label: "黑名单"}
+
+  - name: "ext_applicant_id"
+    type: "varchar(36)"
+    display_name: "extapplicantid"
+    description: "支付支付付款方表字段 ext_applicant_id。"
+
+relations: []
+
+common_queries:
+  - question: "支付支付付款方表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_payer`;
+    tables: ["pmt_payment_payer"]
+    difficulty: "easy"
+  - question: "最近30天支付支付付款方表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_payer`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_payment_payer"]
+    difficulty: "easy"
+  - question: "支付支付付款方表按状态分布"
+    sql: |
+      SELECT
+          CASE verification_status
+            WHEN -1 THEN '拒绝'
+            WHEN 0 THEN '默认/未认证'
+            WHEN 1 THEN '已通过'
+            WHEN 2 THEN '审核中'
+            ELSE CONCAT('其他:', CAST(verification_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_payment_payer`
+      GROUP BY verification_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_payment_payer"]
+    difficulty: "medium"
+  - question: "支付支付付款方表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_payer`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_payment_payer"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/finance_payout_store.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_payment_payer.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_document_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/payment_payer_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_documents_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_finance_payout_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_payment_payer_service.go"
+  - "uqpay-issuing-webhook/internal/entity/pmt_payment_payer.go"

@@ -58,7 +58,10 @@ class QueryLogger:
         scenario: str = "",
         business: str = "",
         caller: str = "",
+        user_id: str = "",
+        user_name: str = "",
         trace_id: str = "",
+        matched_fewshot: list[dict] | None = None,
     ) -> int | None:
         """
         写入一条查询日志。
@@ -69,6 +72,7 @@ class QueryLogger:
         try:
             matched_tables_json = json.dumps(matched_tables or [], ensure_ascii=False)
             matched_terms_json = json.dumps(matched_terms or [], ensure_ascii=False)
+            matched_fewshot_json = json.dumps(matched_fewshot or [], ensure_ascii=False)
             if isinstance(execution_result, dict):
                 execution_result = json.dumps(execution_result, ensure_ascii=False)
 
@@ -78,11 +82,11 @@ class QueryLogger:
                     "(session_id, user_query, intent, matched_tables, matched_terms, "
                     "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
                     "user_feedback, feedback_score, feedback_comment, "
-                    "agent_id, scenario, business, caller, trace_id) "
+                    "agent_id, scenario, business, caller, user_id, user_name, trace_id, matched_fewshot) "
                     "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
                     ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
                     "'', 0, '', "
-                    ":agent_id, :scenario, :business, :caller, :trace_id)"
+                    ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, :matched_fewshot)"
                 ), {
                     "session_id": session_id,
                     "user_query": user_query,
@@ -98,7 +102,10 @@ class QueryLogger:
                     "scenario": scenario,
                     "business": business,
                     "caller": caller,
+                    "user_id": user_id,
+                    "user_name": user_name,
                     "trace_id": trace_id,
+                    "matched_fewshot": matched_fewshot_json,
                 })
                 conn.commit()
                 log_id = result.lastrowid

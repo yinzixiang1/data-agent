@@ -1,0 +1,79 @@
+table:
+  name: "pmt_channel_order_rfi_deal_log"
+  database: "dwd_banking"
+  display_name: "渠道rfi操作记录表"
+  description: |
+    这张表记录支付/银行账户业务中的渠道rfi操作记录。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "渠道", "订单", "补件", "deal", "日志", "pmt_channel_order_rfi_deal_log"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "rfi_id"
+    type: "varchar(36)"
+    display_name: "ID"
+    description: "ID"
+
+  - name: "rfi_details"
+    type: "text"
+    display_name: "rfi详情"
+    description: "rfi详情"
+    skip_index: true
+
+  - name: "rfi_answer_info"
+    type: "text"
+    display_name: "rfi提交内容"
+    description: "rfi提交内容"
+    skip_index: true
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "creatorid"
+    description: "渠道rfi操作记录表字段 creator_id。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "渠道rfi操作记录表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "渠道rfi操作记录表字段 update_time。"
+
+relations: []
+
+common_queries:
+  - question: "渠道rfi操作记录表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_order_rfi_deal_log`;
+    tables: ["pmt_channel_order_rfi_deal_log"]
+    difficulty: "easy"
+  - question: "最近30天渠道rfi操作记录表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_order_rfi_deal_log`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_channel_order_rfi_deal_log"]
+    difficulty: "easy"
+  - question: "渠道rfi操作记录表最近创建的记录有哪些"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`pmt_channel_order_rfi_deal_log`
+      ORDER BY create_time DESC
+      LIMIT 100;
+    tables: ["pmt_channel_order_rfi_deal_log"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_channel_order_rfi_deal_log.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_channel_order_rfi_service.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_channel_order_rfi_data.go"

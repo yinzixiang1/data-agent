@@ -1,0 +1,327 @@
+table:
+  name: "issuing_card"
+  database: "dwd_banking"
+  display_name: "发卡卡片表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡卡片。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "issuing_card"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_id"
+    type: "varchar(36)"
+    display_name: "卡片ID"
+    description: "发卡卡片表字段 card_id。"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "发卡卡片表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "发卡卡片表字段 account_id。"
+
+  - name: "card_holder_id"
+    type: "varchar(36)"
+    display_name: "持卡人ID"
+    description: "发卡卡片表字段 card_holder_id。"
+
+  - name: "card_type"
+    type: "smallint"
+    display_name: "卡类型"
+    description: "Card type - 1000=PREPAID 2000=DEBIT"
+    enum_values:
+      - {value: 1000, label: "PREPAID"}
+      - {value: 2000, label: "DEBIT"}
+
+  - name: "card_owner_type"
+    type: "smallint"
+    display_name: "卡归属类型"
+    description: "1000=Company, 2000=Employee"
+    enum_values:
+      - {value: 1000, label: "Company"}
+      - {value: 2000, label: "Employee"}
+
+  - name: "card_mode"
+    type: "smallint"
+    display_name: "卡模式"
+    description: "SINGLE MODE - 1000;SHARE MODE - 2000"
+    enum_values:
+      - {value: 1000, label: "SINGLE/单卡模式"}
+      - {value: 2000, label: "SHARE/共享模式"}
+
+  - name: "card_scheme"
+    type: "smallint"
+    display_name: "卡组织"
+    description: "卡品牌 1000=VISA  2000=MASTER"
+    enum_values:
+      - {value: 1000, label: "VISA"}
+      - {value: 2000, label: "MASTER"}
+
+  - name: "card_product_id"
+    type: "varchar(36)"
+    display_name: "卡片产品id"
+    description: "发卡卡片表字段 card_product_id。"
+
+  - name: "form_factor"
+    type: "smallint"
+    display_name: "卡介质类型"
+    description: "1000=VIRTUAL, 2000=PHYSICAL"
+    enum_values:
+      - {value: 1000, label: "VIRTUAL"}
+      - {value: 2000, label: "PHYSICAL"}
+
+  - name: "card_number"
+    type: "varchar(24)"
+    display_name: "卡号"
+    description: "发卡卡片表字段 card_number。"
+    sensitive: true
+
+  - name: "pan_encrypted"
+    type: "varchar(128)"
+    display_name: "加密PAN"
+    description: "加密的PAN number"
+    sensitive: true
+
+  - name: "pan_hash"
+    type: "varchar(64)"
+    display_name: "PAN哈希"
+    description: "PAN sha256 hash值"
+    sensitive: true
+
+  - name: "mask_card_number"
+    type: "varchar(36)"
+    display_name: "脱敏卡号"
+    description: "脱敏后的card number"
+    sensitive: true
+
+  - name: "card_cvv2"
+    type: "varchar(4)"
+    display_name: "卡CVV2"
+    description: "发卡卡片表字段 card_cvv2。"
+    sensitive: true
+
+  - name: "card_cvv2_encrypted"
+    type: "varchar(128)"
+    display_name: "加密CVV2"
+    description: "加密cvv2"
+    sensitive: true
+
+  - name: "card_currency"
+    type: "varchar(4)"
+    display_name: "default SGD"
+    description: "default SGD"
+
+  - name: "settle_currency"
+    type: "varchar(4)"
+    display_name: "结算币种"
+    description: "结算币种, 默认SGD"
+
+  - name: "card_expire_date"
+    type: "varchar(10)"
+    display_name: "卡有效期"
+    description: "MM/YY format"
+    sensitive: true
+
+  - name: "card_expire_date_encrypted"
+    type: "varchar(128)"
+    display_name: "加密卡有效期"
+    description: "加密的卡面有效期"
+    sensitive: true
+
+  - name: "meta_data"
+    type: "varchar(1000)"
+    display_name: "元数据"
+    description: "发卡卡片表字段 meta_data。"
+    skip_index: true
+
+  - name: "spending_controls"
+    type: "text"
+    display_name: "卡控制规则\"limits\""
+    description: "卡控制规则\"limits\": {\"currency\": \"SGD\",\"spendingLimits\": [{\"interval\": \"MONTHLY\",\"amount\": 1000,},{\"interval\": \"PER_TRANSACTION\",\"amount\": 75000,}],},"
+    skip_index: true
+
+  - name: "vip_limit_controls"
+    type: "varchar(1000)"
+    display_name: "VIP限额控制"
+    description: "VIP限额控制"
+    skip_index: true
+
+  - name: "password_free_controls"
+    type: "varchar(1000)"
+    display_name: "小额免密控制"
+    description: "小额免密控制"
+    sensitive: true
+    skip_index: true
+
+  - name: "risk_controls"
+    type: "varchar(1000)"
+    display_name: "风控规则控制"
+    description: "风控规则控制"
+    skip_index: true
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "发卡卡片表字段 update_time。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "发卡卡片表字段 create_time。"
+
+  - name: "channel_card_id"
+    type: "varchar(220)"
+    display_name: "渠道卡ID，全局唯一关联。"
+    description: "渠道卡ID，全局唯一关联。"
+
+  - name: "activation_status"
+    type: "tinyint"
+    display_name: "实体卡激活状态"
+    description: "物理卡激活 -1=FAILED, 0=PENDING, 1=ACTIVATED"
+    enum_values:
+      - {value: -1, label: "FAILED"}
+      - {value: 0, label: "PENDING"}
+      - {value: 1, label: "ACTIVATED"}
+
+  - name: "pin_code"
+    type: "varchar(64)"
+    display_name: "PIN码"
+    description: "pin code"
+    sensitive: true
+
+  - name: "card_status"
+    type: "tinyint"
+    display_name: "卡状态"
+    description: "0=PENDING, 1=ACTIVE，-1=FROZEN，-2=BLOCKED，-3=LOST，-4=STOLEN，-5=CANCELLED, -6=PER_CANCEL,  -9=FAILED"
+    enum_values:
+      - {value: 0, label: "PENDING"}
+      - {value: 1, label: "ACTIVE"}
+      - {value: -1, label: "FROZEN"}
+      - {value: -2, label: "BLOCKED"}
+      - {value: -3, label: "LOST"}
+      - {value: -4, label: "STOLEN"}
+      - {value: -5, label: "CANCELLED"}
+      - {value: -6, label: "PER_CANCEL"}
+      - {value: -9, label: "FAILED"}
+
+  - name: "block_status"
+    type: "tinyint"
+    display_name: "批量冻结状态"
+    description: "批量冻结状态"
+
+  - name: "block_card_status"
+    type: "tinyint"
+    display_name: "批量冻结前卡状态"
+    description: "批量冻结卡的原始状态"
+
+  - name: "processing_status"
+    type: "tinyint"
+    display_name: "处理状态"
+    description: "同 card status"
+    enum_values:
+      - {value: 0, label: "PENDING/待处理"}
+      - {value: 1, label: "ACTIVE/正常"}
+      - {value: -1, label: "FROZEN/冻结"}
+      - {value: -2, label: "BLOCKED/阻断"}
+      - {value: -3, label: "LOST/丢失"}
+      - {value: -4, label: "STOLEN/被盗"}
+      - {value: -5, label: "CANCELLED/已注销"}
+      - {value: -9, label: "FAILED/失败"}
+
+  - name: "usage_type"
+    type: "tinyint"
+    display_name: "卡使用类型"
+    description: "卡片使用类型: 0=多次卡, 1=一次性卡"
+    enum_values:
+      - {value: 0, label: "多次卡"}
+      - {value: 1, label: "一次性卡"}
+
+  - name: "cancel_trigger"
+    type: "tinyint"
+    display_name: "自动注销触发方式"
+    description: "触发自动注销的方式: 0=手动注销, 1=清算后自动注销, 1=授权后自动注销"
+    enum_values:
+      - {value: 0, label: "手动注销"}
+      - {value: 1, label: "清算后自动注销"}
+      - {value: 1, label: "授权后自动注销"}
+
+  - name: "expiry_at"
+    type: "datetime"
+    display_name: "卡片失效自动注销时间  2026-01-01 0"
+    description: "卡片失效自动注销时间  2026-01-01 00:00:00"
+    sensitive: true
+
+  - name: "channel_meta_data"
+    type: "text"
+    display_name: "卡级渠道元数据"
+    description: "卡级渠道元数据"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "发卡卡片表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card`;
+    tables: ["issuing_card"]
+    difficulty: "easy"
+  - question: "最近30天发卡卡片表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_card"]
+    difficulty: "easy"
+  - question: "发卡卡片表按状态分布"
+    sql: |
+      SELECT
+          CASE card_status
+            WHEN 0 THEN 'PENDING'
+            WHEN 1 THEN 'ACTIVE'
+            WHEN -1 THEN 'FROZEN'
+            WHEN -2 THEN 'BLOCKED'
+            WHEN -3 THEN 'LOST'
+            WHEN -4 THEN 'STOLEN'
+            WHEN -5 THEN 'CANCELLED'
+            WHEN -6 THEN 'PER_CANCEL'
+            WHEN -9 THEN 'FAILED'
+            ELSE CONCAT('其他:', CAST(card_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_card`
+      GROUP BY card_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_card"]
+    difficulty: "medium"
+  - question: "发卡卡片表按card_id分布最多的是哪些"
+    sql: |
+      SELECT card_id AS "card_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card`
+      WHERE card_id IS NOT NULL AND card_id != ''
+      GROUP BY card_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_card"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/issuing_card_settlements.go"
+  - "uqpay-task/internal/repository/store/issuing_channel_transactions.go"
+  - "uqpay-task/internal/repository/store/repo.go"
+  - "uqpay-issuing-admincp-api/internal/consts/constants.go"
+  - "uqpay-issuing-admincp-api/internal/consts/issuing_card_trade.go"
+  - "uqpay-issuing-admincp-api/internal/consts/report_type.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_acs_transactions.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_card.go"

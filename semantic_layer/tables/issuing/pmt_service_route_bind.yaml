@@ -1,0 +1,88 @@
+table:
+  name: "pmt_service_route_bind"
+  database: "dwd_banking"
+  display_name: "路由与对象绑定表"
+  description: |
+    这张表记录支付/银行账户业务中的路由与对象绑定。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "服务", "路由", "bind", "pmt_service_route_bind"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "route_id"
+    type: "bigint"
+    display_name: "路由id"
+    description: "路由id"
+
+  - name: "target_id"
+    type: "varchar(48)"
+    display_name: "account_id或者channel_code"
+    description: "account_id或者channel_code等"
+
+  - name: "target_type"
+    type: "int"
+    display_name: "绑定类型，1000-merchant"
+    description: "绑定类型，1000-merchant, 3000-product, 4000-channel"
+    enum_values:
+      - {value: 1000, label: "merchant"}
+      - {value: 3000, label: "product"}
+      - {value: 4000, label: "channel"}
+
+  - name: "bind_status"
+    type: "tinyint(1)"
+    display_name: "是否有效"
+    description: "是否有效"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+relations: []
+
+common_queries:
+  - question: "路由与对象绑定表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_route_bind`;
+    tables: ["pmt_service_route_bind"]
+    difficulty: "easy"
+  - question: "最近30天路由与对象绑定表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_service_route_bind`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_service_route_bind"]
+    difficulty: "easy"
+  - question: "路由与对象绑定表按状态分布"
+    sql: |
+      SELECT
+          bind_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_service_route_bind`
+      GROUP BY bind_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_service_route_bind"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_service_route_bind.go"
+  - "uqpay-issuing-admincp-api/internal/repo/new_card_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/service_route_bind_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service_tool.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_product_template_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_service_route_bind_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/uqpay_customer_service.go"

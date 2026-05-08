@@ -1,0 +1,82 @@
+table:
+  name: "issuing_verify_transactions"
+  database: "dwd_banking"
+  display_name: "验证交易记录表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的验证交易记录。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "交易", "验证", "issuing_verify_transactions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_id"
+    type: "varchar(36)"
+    display_name: "卡片ID"
+    description: "验证交易记录表字段 card_id。"
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内TXID"
+    description: "系统内TXID"
+
+  - name: "merchant_id"
+    type: "varchar(48)"
+    display_name: "商户ID"
+    description: "商户ID	"
+
+  - name: "merchant_mapping_name"
+    type: "varchar(100)"
+    display_name: "商户映射名称"
+    description: "商户映射名称"
+    sensitive: true
+
+  - name: "acquiring_institution_id"
+    type: "varchar(32)"
+    display_name: "acquiringinstitutionid"
+    description: "验证交易记录表字段 acquiring_institution_id。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "验证交易记录表字段 create_time。"
+
+relations: []
+
+common_queries:
+  - question: "验证交易记录表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_verify_transactions`;
+    tables: ["issuing_verify_transactions"]
+    difficulty: "easy"
+  - question: "最近30天验证交易记录表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_verify_transactions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_verify_transactions"]
+    difficulty: "easy"
+  - question: "验证交易记录表按card_id分布最多的是哪些"
+    sql: |
+      SELECT card_id AS "card_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_verify_transactions`
+      WHERE card_id IS NOT NULL AND card_id != ''
+      GROUP BY card_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_verify_transactions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-monitor/entities/issuing_verify_transactions.go"
+  - "uqpay-issuing-monitor/data/transaction.go"
+  - "uqpay-issuing-monitor/decision/databuilder/transactions.go"
+  - "uqpay-issuing-monitor/task/asyncrecord/pusher.go"
+  - "uqpay-issuing-monitor/task/asyncrecord/runner.go"

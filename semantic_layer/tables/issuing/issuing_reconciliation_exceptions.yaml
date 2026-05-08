@@ -1,0 +1,136 @@
+table:
+  name: "issuing_reconciliation_exceptions"
+  database: "dwd_banking"
+  display_name: "发卡对账异常表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡对账异常。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "对账", "异常", "issuing_reconciliation_exceptions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "异常记录ID"
+
+  - name: "record_id"
+    type: "varchar(128)"
+    display_name: "对账记录ID"
+    description: "对账记录ID"
+
+  - name: "transaction_id"
+    type: "varchar(128)"
+    display_name: "系统内交易ID"
+    description: "系统内交易ID"
+
+  - name: "short_transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内 短交易id"
+    description: "系统内 短交易id"
+
+  - name: "channel_unique_id"
+    type: "varchar(255)"
+    display_name: "nium-auth code"
+    description: "nium-auth code"
+
+  - name: "exception_type"
+    type: "varchar(128)"
+    display_name: "异常类型 0-Unknown，1-Mismatc"
+    description: "异常类型 0-Unknown，1-MismatchAmount，2-MismatchCurrency，3-MismatchStatus，4-MissingUQ，5-MissingChannel"
+    enum_values:
+      - {value: 0, label: "Unknown"}
+      - {value: 1, label: "MismatchAmount"}
+      - {value: 2, label: "MismatchCurrency"}
+      - {value: 3, label: "MismatchStatus"}
+      - {value: 4, label: "MissingUQ"}
+      - {value: 5, label: "MissingChannel"}
+
+  - name: "exception_details"
+    type: "text"
+    display_name: "异常详情"
+    description: "异常详情"
+    skip_index: true
+
+  - name: "resolved_status"
+    type: "tinyint"
+    display_name: "解决状态 0-Unresolved"
+    description: "解决状态 0-Unresolved,1-Processing,2-Completed"
+    enum_values:
+      - {value: 0, label: "Unresolved"}
+      - {value: 1, label: "Processing"}
+      - {value: 2, label: "Completed"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "exception_id"
+    type: "varchar(128)"
+    display_name: "异常id"
+    description: "发卡对账异常表字段 exception_id。"
+
+relations: []
+
+common_queries:
+  - question: "发卡对账异常表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_exceptions`;
+    tables: ["issuing_reconciliation_exceptions"]
+    difficulty: "easy"
+  - question: "最近30天发卡对账异常表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_exceptions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_reconciliation_exceptions"]
+    difficulty: "easy"
+  - question: "发卡对账异常表按状态分布"
+    sql: |
+      SELECT
+          CASE resolved_status
+            WHEN 0 THEN 'Unresolved'
+            WHEN 1 THEN 'Processing'
+            WHEN 2 THEN 'Completed'
+            ELSE CONCAT('其他:', CAST(resolved_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_reconciliation_exceptions`
+      GROUP BY resolved_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_reconciliation_exceptions"]
+    difficulty: "medium"
+  - question: "发卡对账异常表按transaction_id分布最多的是哪些"
+    sql: |
+      SELECT transaction_id AS "transaction_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_exceptions`
+      WHERE transaction_id IS NOT NULL AND transaction_id != ''
+      GROUP BY transaction_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_reconciliation_exceptions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/issuing_reconciliation_exceptions.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_reconciliation_exceptions.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_reconciliation_exceptions_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_reconciliation_batches_service.go"
+  - "uqpay-issuing-message/internal/entity/issuing_reconciliation_exceptions.go"
+  - "uqpay-issuing-message/internal/message/reports/issuing_reconciliation_exceptions_report.go"
+  - "uqpay-issuing-task/internal/domain/entity/issuing_reconciliation_exceptions.go"
+  - "uqpay-issuing-task/internal/domain/entity/reconciliation_helpers.go"

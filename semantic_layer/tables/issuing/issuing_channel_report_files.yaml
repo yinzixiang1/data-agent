@@ -1,0 +1,110 @@
+table:
+  name: "issuing_channel_report_files"
+  database: "dwd_banking"
+  display_name: "渠道文件表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的渠道文件。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "渠道", "报表", "文件", "issuing_channel_report_files"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "report_id"
+    type: "varchar(36)"
+    display_name: "报表id"
+    description: "渠道文件表字段 report_id。"
+
+  - name: "report_type"
+    type: "tinyint"
+    display_name: "1"
+    description: "1: \"Client_Settlement_Report\" 2: \"CLIENT_ACCOUNT_FEES_REPORT\" 3: \"CLIENT_TRANSACTION_SUMMARY_REPORT\" 4: \"Client_Transactions_Report\" 5: \"CLIENT_NEGETIVE_WALLET_BALANCE_REPORT\" 6: \"CLIENT_LEDGER_SUMMARY_REPORT\" 7: \"CLIENT_CUSTOMER_ONBOARDING_REPORT\""
+    enum_values:
+      - {value: 1, label: "\"Client_Settlement_Report\""}
+      - {value: 2, label: "\"CLIENT_ACCOUNT_FEES_REPORT\""}
+      - {value: 3, label: "\"CLIENT_TRANSACTION_SUMMARY_REPORT\""}
+      - {value: 4, label: "\"Client_Transactions_Report\""}
+      - {value: 5, label: "\"CLIENT_NEGETIVE_WALLET_BALANCE_REPORT\""}
+      - {value: 6, label: "\"CLIENT_LEDGER_SUMMARY_REPORT\""}
+      - {value: 7, label: "\"CLIENT_CUSTOMER_ONBOARDING_REPORT\""}
+
+  - name: "upload_method"
+    type: "tinyint"
+    display_name: "1"
+    description: "1: sftp方式; 2: 手动上传"
+    enum_values:
+      - {value: 1, label: "sftp方式"}
+      - {value: 2, label: "手动上传"}
+
+  - name: "upload_status"
+    type: "tinyint"
+    display_name: "0 正在上传 1"
+    description: "0 正在上传 1：上传成功 2：上传失败"
+    enum_values:
+      - {value: 1, label: "上传成功"}
+      - {value: 2, label: "上传失败"}
+
+  - name: "parsing_status"
+    type: "tinyint"
+    display_name: "0 正在解析 1"
+    description: "0 正在解析 1：解析成功 2：解析失败"
+    enum_values:
+      - {value: 1, label: "解析成功"}
+      - {value: 2, label: "解析失败"}
+
+  - name: "create_time"
+    type: "timestamp NULL"
+    display_name: "创建时间"
+    description: "渠道文件表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "渠道文件表字段 update_time。"
+
+relations: []
+
+common_queries:
+  - question: "渠道文件表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_channel_report_files`;
+    tables: ["issuing_channel_report_files"]
+    difficulty: "easy"
+  - question: "最近30天渠道文件表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_channel_report_files`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_channel_report_files"]
+    difficulty: "easy"
+  - question: "渠道文件表按状态分布"
+    sql: |
+      SELECT
+          CASE upload_status
+            WHEN 1 THEN '上传成功'
+            WHEN 2 THEN '上传失败'
+            ELSE CONCAT('其他:', CAST(upload_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_channel_report_files`
+      GROUP BY upload_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_channel_report_files"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_channel_report_files.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_channel_report_files_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_channel_report_files_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_channel_transactions_service.go"
+  - "uqpay-issuing-message/internal/entity/issuing_channel_report_files.go"
+  - "uqpay-issuing-task/internal/domain/entity/issuing_channel_report_files.go"
+  - "uqpay-issuing-task/internal/repository/channel_report_file_repo.go"
+  - "uqpay-issuing-task/tasks/report/task_issuing_channel_settlement_report.go"

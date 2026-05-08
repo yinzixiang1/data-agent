@@ -1,0 +1,65 @@
+table:
+  name: "sys_service_product"
+  database: "dwd_banking"
+  display_name: "系统服务产品表"
+  description: |
+    这张表记录系统侧的系统服务产品。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "服务", "产品", "sys_service_product"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "product_type"
+    type: "int"
+    display_name: "类型"
+    description: "类型：1000=VA, 2000=FX, 3000=AC, 4000=IC"
+    enum_values:
+      - {value: 1000, label: "VA"}
+      - {value: 2000, label: "FX"}
+      - {value: 3000, label: "AC"}
+      - {value: 4000, label: "IC"}
+
+  - name: "auth_trade_type"
+    type: "varchar(60)"
+    display_name: "授权代码"
+    description: "授权代码"
+
+relations: []
+
+common_queries:
+  - question: "系统服务产品表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_service_product`;
+    tables: ["sys_service_product"]
+    difficulty: "easy"
+  - question: "系统服务产品表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`sys_service_product`
+      ORDER BY spid DESC
+      LIMIT 100;
+    tables: ["sys_service_product"]
+    difficulty: "easy"
+  - question: "查看系统服务产品表样例记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`sys_service_product`
+      LIMIT 100;
+    tables: ["sys_service_product"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_service_product.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_service_product_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_product_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_service_product_service.go"
+  - "uqpay-issuing-admincp-api/api/handle/pmt_service_rate_scheme_handle.go"
+  - "uqpay-issuing-admincp-api/api/handle/sys_service_product_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/sys/sys_service_product_router.go"
+  - "uqpay-issuing-admincp-api/internal/data/issuing_card_data.go"

@@ -1,0 +1,129 @@
+table:
+  name: "pmt_card_pool"
+  database: "dwd_banking"
+  display_name: "卡池（预备）表"
+  description: |
+    这张表记录支付/银行账户业务中的卡池（预备）。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "卡片", "池", "pmt_card_pool"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_type"
+    type: "smallint"
+    display_name: "卡类型"
+    description: "Card type - 1000=PREPAID 2000=DEBIT"
+    enum_values:
+      - {value: 1000, label: "PREPAID"}
+      - {value: 2000, label: "DEBIT"}
+
+  - name: "card_scheme"
+    type: "smallint"
+    display_name: "卡组织"
+    description: "卡品牌 1000=VISA  2000=MASTER"
+    enum_values:
+      - {value: 1000, label: "VISA"}
+      - {value: 2000, label: "MASTER"}
+
+  - name: "form_factor"
+    type: "smallint"
+    display_name: "卡介质类型"
+    description: "1000=VIRTUAL, 2000=PHYSICAL"
+    enum_values:
+      - {value: 1000, label: "VIRTUAL"}
+      - {value: 2000, label: "PHYSICAL"}
+
+  - name: "card_number"
+    type: "varchar(24)"
+    display_name: "卡号"
+    description: "卡号"
+    sensitive: true
+
+  - name: "card_cvv2"
+    type: "varchar(255)"
+    display_name: "卡CVV2"
+    description: "卡池（预备）表字段 card_cvv2。"
+    sensitive: true
+
+  - name: "card_expire_date"
+    type: "varchar(255)"
+    display_name: "卡有效期"
+    description: "卡池（预备）表字段 card_expire_date。"
+    sensitive: true
+
+  - name: "secret_code"
+    type: "varchar(16)"
+    display_name: "secretcode"
+    description: "卡池（预备）表字段 secret_code。"
+    sensitive: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "卡池（预备）表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "卡池（预备）表字段 update_time。"
+
+  - name: "card_status"
+    type: "tinyint"
+    display_name: "卡状态"
+    description: "0=PENDING， 1=ACTIVE，-1=INACTIVE，-2=BLOCKED，-3=CLOSED"
+    enum_values:
+      - {value: 0, label: "PENDING/待开通"}
+      - {value: 1, label: "ACTIVE/正常"}
+      - {value: -1, label: "FROZEN/冻结"}
+      - {value: -2, label: "BLOCKED/阻断"}
+      - {value: -3, label: "LOST/丢失"}
+      - {value: -4, label: "STOLEN/被盗"}
+      - {value: -5, label: "CANCELLED/已注销"}
+      - {value: -6, label: "PRE_CANCEL/预注销"}
+      - {value: -9, label: "FAILED/失败"}
+
+relations: []
+
+common_queries:
+  - question: "卡池（预备）表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_card_pool`;
+    tables: ["pmt_card_pool"]
+    difficulty: "easy"
+  - question: "最近30天卡池（预备）表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_card_pool`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_card_pool"]
+    difficulty: "easy"
+  - question: "卡池（预备）表按状态分布"
+    sql: |
+      SELECT
+          CASE card_status
+            WHEN 0 THEN 'PENDING/待开通'
+            WHEN 1 THEN 'ACTIVE/正常'
+            WHEN -1 THEN 'FROZEN/冻结'
+            WHEN -2 THEN 'BLOCKED/阻断'
+            WHEN -3 THEN 'LOST/丢失'
+            WHEN -4 THEN 'STOLEN/被盗'
+            WHEN -5 THEN 'CANCELLED/已注销'
+            WHEN -6 THEN 'PRE_CANCEL/预注销'
+            WHEN -9 THEN 'FAILED/失败'
+            ELSE CONCAT('其他:', CAST(card_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_card_pool`
+      GROUP BY card_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_card_pool"]
+    difficulty: "medium"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

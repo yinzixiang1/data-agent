@@ -103,32 +103,60 @@ class SchemaFormatter:
 
         return "\n".join(parts) + "\n"
 
+    def format_values(self, value_hits: list[dict]) -> str:
+        """
+        格式化 Schema Linking 值匹配结果。
+
+        Args:
+            value_hits: ValueIndexer.match_values() 返回的匹配列表，
+                每个 dict 包含 enum_label_cn, table_name, column_name, sql_value
+
+        Returns:
+            str: "## 已识别实体值" 格式文本，空列表时返回空字符串
+        """
+        if not value_hits:
+            return ""
+
+        parts = ["## 已识别实体值\n以下是从问题中识别到的字段取值：\n"]
+        for v in value_hits:
+            parts.append(
+                f"- \"{v['enum_label_cn']}\" -> {v['table_name']}.{v['column_name']} = {v['sql_value']}"
+            )
+
+        return "\n".join(parts) + "\n"
+
     def format_all(
         self,
         tables: list[dict],
         examples: list[dict],
         business_context: str,
         enum_hits: list[dict] | None = None,
+        value_hits: list[dict] | None = None,
     ) -> str:
         """
-        组装完整的 Prompt 文本（DDL + 枚举映射 + 业务上下文 + Few-shot）。
+        组装完整的 Prompt 文本。
 
-        组装顺序: 可用数据表 → 枚举值映射 → 业务上下文 → 参考示例。
+        组装顺序: 可用数据表 -> 已识别实体值 -> 枚举值映射 -> 业务上下文 -> 参考示例。
 
         Args:
             tables: 检索命中的表列表（含 schema）
             examples: Few-shot 示例列表
             business_context: 业务术语展开文本
             enum_hits: 枚举值命中列表，None 视为空
+            value_hits: Schema Linking 值匹配列表，None 视为空
 
         Returns:
-            str: 完整 Prompt 文本，直接拼接到 LLM user message 中
+            str: 完整 Prompt 文本
         """
         sections = []
 
         schema_text = self.format_tables(tables)
         if schema_text:
             sections.append(schema_text)
+
+        value_text = self.format_values(value_hits or [])
+        if value_text:
+            sections.append(value_text)
 
         enum_text = self.format_enums(enum_hits or [])
         if enum_text:
@@ -149,7 +177,7 @@ class SchemaFormatter:
         格式化单张表为 CREATE TABLE DDL 文本。
 
         输出包含: 表描述注释、列定义（含类型、display_name、description、枚举值），
-        JOIN 提示和查询注意事项。敏感列(sensitive=True)会被跳过。
+        JOIN 提示和查询注意事项。敏感列(is_sensitive=True)会被跳过。
 
         Args:
             schema: 单张表的完整 Schema dict
@@ -166,7 +194,7 @@ class SchemaFormatter:
 
         col_lines = []
         for col in schema.get("columns", []):
-            if col.get("sensitive"):
+            if col.get("is_sensitive"):
                 continue
 
             line = f"  `{col['name']}` {col.get('type', '')}"

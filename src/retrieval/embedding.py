@@ -1,117 +1,152 @@
 """
-BGE-M3 Embedding 封装 — 单例模式，一次 encode 同时输出 Dense + Sparse 向量。
+Qwen3-Embedding 编码器 — 仅输出 Dense 向量，Sparse 由 Milvus BM25 Function 处理。
+
+Dense / Sparse 完全解耦:
+    - Dense: 本模块通过 sentence-transformers 编码
+    - Sparse: Milvus BM25 Function 在 insert 时自动生成，search 时自动匹配
+
+支持 MRL (Matryoshka Representation Learning):
+    dev 环境使用 1024 维截断 + L2 重归一化，prod 使用满血 2560 维。
 
 使用示例::
 
     from src.retrieval.embedding import get_embedding
 
-    emb = get_embedding()  # 首次调用会加载模型，后续返回同一实例
+    emb = get_embedding()
 
-    # 批量编码
-    result = emb.encode(["查询活跃商户", "交易总额"])
-    dense = result["dense_vecs"]    # shape (2, 1024)
-    sparse = result["lexical_weights"]  # [dict, dict]
+    # 文档编码 (无 instruction)
+    vecs = emb.encode(["商户账户表", "交易流水表"])  # shape (2, 1024)
 
-    # 单条查询编码
-    q = emb.encode_query("有多少活跃商户")
-    q_dense = q["dense_vecs"]          # shape (1, 1024)
-    q_sparse = q["lexical_weights"][0]  # dict {token_id: weight}
+    # 查询编码 (自动注入 per-collection instruction)
+    q_vec = emb.encode_query("有多少活跃商户", collection_type="table")  # shape (1, 1024)
 """
 
 import logging
-import numpy as np
 from typing import Optional
 
-from src.retrieval.config import EMBEDDING_MODEL, EMBEDDING_USE_FP16
+import numpy as np
+
+from src.retrieval.config import DENSE_MODEL, DENSE_DIM, DENSE_DEVICE, NL2SQL_ENV
 
 logger = logging.getLogger(__name__)
 
-_instance: Optional["BGEEmbedding"] = None
+_instance: Optional["Qwen3Embedding"] = None
 
 
-class BGEEmbedding:
+class Qwen3Embedding:
     """
-    BGE-M3 编码器，支持 Dense + Sparse 混合输出。
+    Qwen3-Embedding 编码器，仅输出 Dense 向量。
 
     Attributes:
-        model: BGEM3FlagModel 实例，负责实际的向量编码
-        dense_dim: Dense 向量维度，BGE-M3 固定为 1024
+        model: SentenceTransformer 实例
+        dim: 输出向量维度 (MRL 截断后)
+        mrl_renormalize: 是否 MRL 截断后 L2 重归一化
+        instructions: per-collection 查询 instruction 映射
+        batch_size: 编码批大小
     """
 
-    def __init__(self, model_name: str = EMBEDDING_MODEL, use_fp16: bool = EMBEDDING_USE_FP16):
+    def __init__(self, embedding_config: dict | None = None):
         """
         Args:
-            model_name: HuggingFace 模型名称或本地路径，如 "BAAI/bge-m3"
-            use_fp16: 是否使用半精度推理，True 可减少显存并加速（推荐 GPU 环境开启）
+            embedding_config: EMBEDDING_CONFIG 字典，为 None 时使用 config.py 默认值
         """
-        from FlagEmbedding import BGEM3FlagModel
-        logger.info(f"加载 BGE-M3 模型: {model_name}, fp16={use_fp16}")
-        self.model = BGEM3FlagModel(model_name, use_fp16=use_fp16)
-        self.dense_dim = 1024
-        logger.info("BGE-M3 模型加载完成")
+        from sentence_transformers import SentenceTransformer
+        import torch
 
-    def encode(
-        self,
-        texts: list[str],
-        return_dense: bool = True,
-        return_sparse: bool = True,
-        batch_size: int = 12,
-        max_length: int = 8192,
-    ) -> dict:
-        """
-        编码文本列表，一次调用同时返回 Dense 和 Sparse 向量。
+        cfg = embedding_config or {}
+        model_name = cfg.get("model", DENSE_MODEL)
+        self.dim = cfg.get("dim", DENSE_DIM)
+        self.mrl_renormalize = cfg.get("mrl_renormalize", NL2SQL_ENV == "dev")
+        self.instructions = cfg.get("instructions", {})
+        self.batch_size = cfg.get("batch_size", 8)
+        self.max_length = cfg.get("max_length", 512)
 
-        Args:
-            texts: 待编码的文本列表，如 ["商户账户表", "交易流水表"]
-            return_dense: 是否返回 Dense 向量（用于语义检索）
-            return_sparse: 是否返回 Sparse 向量（用于关键词检索）
-            batch_size: 编码批大小，显存不足时可调小
-            max_length: 输入文本最大 token 长度，超出会被截断
+        dtype_str = cfg.get("dtype", "float16")
+        dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+        torch_dtype = dtype_map.get(dtype_str, torch.float16)
 
-        Returns:
-            dict，包含以下可选键:
-                - "dense_vecs": np.ndarray, shape (N, 1024), float32 密集向量
-                - "lexical_weights": list[dict], 每个 dict 为 {token_id: weight} 稀疏权重
-        """
-        output = self.model.encode(
-            texts,
-            return_dense=return_dense,
-            return_sparse=return_sparse,
-            return_colbert_vecs=False,
-            batch_size=batch_size,
-            max_length=max_length,
+        logger.info(
+            f"加载 Embedding 模型: {model_name}, dim={self.dim}, "
+            f"device={DENSE_DEVICE}, dtype={dtype_str}, mrl={self.mrl_renormalize}"
         )
-        result = {}
-        if return_dense:
-            dense = output["dense_vecs"]
-            if not isinstance(dense, np.ndarray):
-                dense = np.array(dense)
-            result["dense_vecs"] = dense.astype(np.float32)
-        if return_sparse:
-            result["lexical_weights"] = output["lexical_weights"]
-        return result
+        self.model = SentenceTransformer(
+            model_name,
+            device=DENSE_DEVICE,
+            trust_remote_code=True,
+            model_kwargs={"torch_dtype": torch_dtype},
+        )
+        self.model.max_seq_length = self.max_length
+        logger.info("Embedding 模型加载完成")
 
-    def encode_query(self, query: str) -> dict:
+    def encode(self, texts: list[str], instruction: str = "") -> np.ndarray:
         """
-        编码单条查询文本（encode 的便捷封装）。
+        编码文本列表，返回 Dense 向量。
 
         Args:
-            query: 用户的自然语言查询，如 "目前有多少活跃商户"
+            texts: 待编码文本列表
+            instruction: 查询 instruction (文档编码时留空)。
+                非空时自动格式化为 ``Instruct: {instruction}\\nQuery: `` 前缀。
 
         Returns:
-            dict，同 encode() 返回格式，但 dense_vecs shape 为 (1, 1024)
+            np.ndarray, shape (N, dim), float32
         """
-        return self.encode([query], return_dense=True, return_sparse=True)
+        if not texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+
+        kwargs = {
+            "batch_size": self.batch_size,
+            "normalize_embeddings": False,
+        }
+        if instruction:
+            kwargs["prompt"] = f"Instruct: {instruction}\nQuery: "
+
+        vecs = self.model.encode(texts, **kwargs)
+
+        if not isinstance(vecs, np.ndarray):
+            vecs = np.array(vecs)
+
+        # MRL: 截断到目标维度
+        if vecs.shape[1] > self.dim:
+            vecs = vecs[:, :self.dim]
+
+        # MRL 重归一化: L2 normalize 截断后的向量
+        if self.mrl_renormalize:
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1, norms)
+            vecs = vecs / norms
+
+        return vecs.astype(np.float32)
+
+    def encode_query(self, query: str, collection_type: str = "table") -> np.ndarray:
+        """
+        编码单条查询，自动注入 per-collection instruction。
+
+        Args:
+            query: 用户查询文本
+            collection_type: Collection 类型 (table/column/enum/fewshot/glossary)
+
+        Returns:
+            np.ndarray, shape (1, dim), float32
+        """
+        instruction = self.instructions.get(collection_type, "")
+        return self.encode([query], instruction=instruction)
 
 
-def get_embedding() -> BGEEmbedding:
+# 向后兼容别名 (Phase 3 完成后可移除)
+BGEEmbedding = Qwen3Embedding
+
+
+def get_embedding(embedding_config: dict | None = None) -> Qwen3Embedding:
     """
-    获取全局 BGEEmbedding 单例（懒加载，首次调用时初始化模型）。
+    获取全局 Embedding 单例（懒加载）。
+
+    Args:
+        embedding_config: EMBEDDING_CONFIG 字典，仅首次调用时生效
 
     Returns:
-        BGEEmbedding 实例
+        Qwen3Embedding 实例
     """
     global _instance
     if _instance is None:
-        _instance = BGEEmbedding()
+        _instance = Qwen3Embedding(embedding_config)
     return _instance

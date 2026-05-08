@@ -1,0 +1,84 @@
+table:
+  name: "issuing_network_difference_transactions"
+  database: "dwd_banking"
+  display_name: "差别交易表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的差别交易。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "交易", "卡组织", "差异", "issuing_network_difference_transactions"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "network_transaction_id"
+    type: "varchar(100)"
+    display_name: "卡组交易ID"
+    description: "卡组交易ID"
+
+  - name: "related_network_transaction_id"
+    type: "varchar(100)"
+    display_name: "关联交易id"
+    description: "关联交易id"
+
+  - name: "transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内TXID"
+    description: "系统内TXID"
+
+  - name: "related_transaction_id"
+    type: "varchar(48)"
+    display_name: "关联交易id"
+    description: "关联交易id"
+
+  - name: "create_time"
+    type: "datetime(3)"
+    display_name: "创建时间"
+    description: "差别交易表字段 create_time。"
+
+  - name: "difference_type"
+    type: "int"
+    display_name: "1000 Reject的订单\\r\\n2000 S"
+    description: "1000 Reject的订单\\r\\n2000 STIP重复订单\\r\\n3000 结算金额不一致\\r\\n3001 Reversal金额超出\\r\\n3002 无源Reversal"
+
+relations: []
+
+common_queries:
+  - question: "差别交易表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_difference_transactions`;
+    tables: ["issuing_network_difference_transactions"]
+    difficulty: "easy"
+  - question: "最近30天差别交易表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_difference_transactions`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_network_difference_transactions"]
+    difficulty: "easy"
+  - question: "差别交易表按transaction_id分布最多的是哪些"
+    sql: |
+      SELECT transaction_id AS "transaction_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_network_difference_transactions`
+      WHERE transaction_id IS NOT NULL AND transaction_id != ''
+      GROUP BY transaction_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_network_difference_transactions"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_network_difference_transactions.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_network_difference_transactions_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_network_difference_transactions_service.go"
+  - "uqpay-issuing-message/internal/entity/issuing_network_difference_transactions.go"
+  - "uqpay-issuing-message/internal/message/issuing/issuing_report.go"
+  - "uqpay-issuing-message/internal/message/reports/issuing_difference_transactions_report.go"
+  - "uqpay-issuing-monitor/entities/issuing_network_difference_transactions.go"
+  - "uqpay-issuing-task/internal/domain/entity/issuing_network_difference_transactions.go"

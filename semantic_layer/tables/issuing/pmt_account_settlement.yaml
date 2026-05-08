@@ -1,0 +1,124 @@
+table:
+  name: "pmt_account_settlement"
+  database: "dwd_banking"
+  display_name: "结算账户表"
+  description: |
+    这张表记录支付/银行账户业务中的结算账户。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "账户", "清算", "pmt_account_settlement"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "结算账户表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "结算账户表字段 account_id。"
+
+  - name: "settlement_id"
+    type: "varchar(36)"
+    display_name: "清算id"
+    description: "结算账户表字段 settlement_id。"
+
+  - name: "payment_method"
+    type: "int"
+    display_name: "1000=LOCAL"
+    description: "1000=LOCAL, 2000=SWIFT"
+    enum_values:
+      - {value: 1000, label: "LOCAL"}
+      - {value: 2000, label: "SWIFT"}
+
+  - name: "beneficiary_address"
+    type: "text"
+    display_name: "收款方address"
+    description: "结算账户表字段 beneficiary_address。"
+    sensitive: true
+    skip_index: true
+
+  - name: "bank_address"
+    type: "text"
+    display_name: "银行address"
+    description: "结算账户表字段 bank_address。"
+    sensitive: true
+    skip_index: true
+
+  - name: "currency"
+    type: "varchar(3)"
+    display_name: "币种"
+    description: "预留字段"
+
+  - name: "short_reference_id"
+    type: "varchar(36)"
+    display_name: "shortreferenceid"
+    description: "结算账户表字段 short_reference_id。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "结算账户表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "结算账户表字段 update_time。"
+
+  - name: "approval_status"
+    type: "tinyint(1)"
+    display_name: "审批status"
+    description: "结算账户表字段 approval_status。"
+
+relations: []
+
+common_queries:
+  - question: "结算账户表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_settlement`;
+    tables: ["pmt_account_settlement"]
+    difficulty: "easy"
+  - question: "最近30天结算账户表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_settlement`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_account_settlement"]
+    difficulty: "easy"
+  - question: "结算账户表按状态分布"
+    sql: |
+      SELECT
+          approval_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_account_settlement`
+      GROUP BY approval_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_account_settlement"]
+    difficulty: "easy"
+  - question: "结算账户表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_account_settlement`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_account_settlement"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_account_settlement.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_settlement_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_settlement_service.go"
+  - "uqpay-issuing-admincp-api/api/handle/pmt_account_settlement_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/account/account_settlement_router.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_account_settlement_data.go"

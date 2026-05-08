@@ -39,6 +39,7 @@ services:
   milvus:
     container_name: milvus-standalone
     image: milvusdb/milvus:v2.5.12
+    platform: linux/amd64
     restart: always
     command: ["milvus", "run", "standalone"]
     security_opt:

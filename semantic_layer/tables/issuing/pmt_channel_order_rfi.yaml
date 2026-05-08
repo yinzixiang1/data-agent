@@ -1,0 +1,167 @@
+table:
+  name: "pmt_channel_order_rfi"
+  database: "dwd_banking"
+  display_name: "渠道rfi表"
+  description: |
+    这张表记录支付/银行账户业务中的渠道rfi。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "渠道", "订单", "补件", "pmt_channel_order_rfi"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "rfi_id"
+    type: "varchar(36)"
+    display_name: "ID"
+    description: "ID"
+
+  - name: "transaction_type"
+    type: "int"
+    display_name: "交易类型"
+    description: "记录类型：1000=payin, 1001=deposit, 1002=transfer in,  2000=payout, 2001=transfer out, 3000=conversion，8001=refund"
+    enum_values:
+      - {value: 1000, label: "payin"}
+      - {value: 1001, label: "deposit"}
+      - {value: 1002, label: "transfer in"}
+      - {value: 2000, label: "payout"}
+      - {value: 2001, label: "transfer out"}
+      - {value: 3000, label: "conversion"}
+      - {value: 8001, label: "refund"}
+
+  - name: "channel_rfi_id"
+    type: "varchar(120)"
+    display_name: "渠道RFI ID"
+    description: "渠道RFI ID"
+
+  - name: "channel_reference_id"
+    type: "varchar(36)"
+    display_name: "关联渠道订单 ID"
+    description: "关联渠道订单 ID"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "父ID（常用于机构模式）"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "系统内部账户ID"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "商户短号"
+
+  - name: "rfi_details"
+    type: "text"
+    display_name: "rfi详情"
+    description: "rfi详情"
+    skip_index: true
+
+  - name: "rfi_answer_info"
+    type: "text"
+    display_name: "rfi提交内容"
+    description: "rfi提交内容"
+    skip_index: true
+
+  - name: "rfi_status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "状态：-2-closed，-1-reject，0-pending，1-completed，2-processing，3-return，4-Channel processing"
+    enum_values:
+      - {value: -2, label: "closed"}
+      - {value: -1, label: "reject"}
+      - {value: 0, label: "pending"}
+      - {value: 1, label: "completed"}
+      - {value: 2, label: "processing"}
+      - {value: 3, label: "return"}
+      - {value: 4, label: "Channel processing"}
+
+  - name: "ref_reference_id"
+    type: "varchar(36)"
+    display_name: "关联ID 订单等"
+    description: "关联ID 订单等"
+
+  - name: "ref_short_reference_id"
+    type: "varchar(20)"
+    display_name: "关联短号"
+    description: "关联短号"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "渠道rfi表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "渠道rfi表字段 update_time。"
+
+  - name: "channel_rfi_details"
+    type: "text"
+    display_name: "rfi详情-匹配上传信息"
+    description: "rfi详情-匹配上传信息"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "渠道rfi表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_order_rfi`;
+    tables: ["pmt_channel_order_rfi"]
+    difficulty: "easy"
+  - question: "最近30天渠道rfi表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_order_rfi`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_channel_order_rfi"]
+    difficulty: "easy"
+  - question: "渠道rfi表按状态分布"
+    sql: |
+      SELECT
+          CASE rfi_status
+            WHEN -2 THEN 'closed'
+            WHEN -1 THEN 'reject'
+            WHEN 0 THEN 'pending'
+            WHEN 1 THEN 'completed'
+            WHEN 2 THEN 'processing'
+            WHEN 3 THEN 'return'
+            WHEN 4 THEN 'Channel processing'
+            ELSE CONCAT('其他:', CAST(rfi_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_channel_order_rfi`
+      GROUP BY rfi_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_channel_order_rfi"]
+    difficulty: "medium"
+  - question: "渠道rfi表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_order_rfi`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_channel_order_rfi"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_channel_order_rfi.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_channel_order_rfi_deal_log.go"
+  - "uqpay-issuing-admincp-api/internal/repo/channel_order_rfi_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_channel_order_rfi_service.go"
+  - "uqpay-issuing-admincp-api/api/handle/pmt_channel_order_rfi_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/channel/channel_order_rfi.go"
+  - "uqpay-issuing-admincp-api/api/routers/finance/finance_payout_router.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_channel_order_rfi_data.go"

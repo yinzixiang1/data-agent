@@ -1,7 +1,7 @@
 """
-文档构建 — 将 Schema dict 转换为表级/列级/枚举级检索文档。
+文档构建 — 将 Schema dict 转换为表级/列级/枚举级/值级检索文档。
 
-每类文档包含一个 "text" 字段，用于 BGE-M3 向量化编码。
+每类文档包含一个 "text" 字段，用于向量化编码和 BM25 索引。
 文本内容经过精心设计，包含表名、中文名、描述、关键列等信息，以提升检索召回率。
 
 使用示例::
@@ -57,7 +57,7 @@ class DocumentBuilder:
         # 关键列摘要：只挑有业务含义的列
         col_summaries = []
         for col in schema.get("columns", []):
-            if col.get("skip_index") or col.get("sensitive"):
+            if col.get("is_skip_index") or col.get("is_sensitive"):
                 continue
             display = col.get("display_name") or col.get("comment", "")
             if display:
@@ -92,7 +92,7 @@ class DocumentBuilder:
         """
         构建列级检索文档（一列一条文档）。
 
-        跳过规则: skip_index=True 的列、sensitive=True 的列、无 comment 且无 display_name 的纯技术列。
+        跳过规则: is_skip_index=True 的列、is_sensitive=True 的列、无 comment 且无 display_name 的纯技术列。
 
         Args:
             schema: 合并后的表 Schema dict
@@ -115,9 +115,9 @@ class DocumentBuilder:
 
         for col in schema.get("columns", []):
             # 跳过规则
-            if col.get("skip_index"):
+            if col.get("is_skip_index"):
                 continue
-            if col.get("sensitive"):
+            if col.get("is_sensitive"):
                 continue
             # 无 comment 且无 display_name 的纯技术字段跳过
             if not col.get("comment") and not col.get("display_name") and not col.get("description"):
@@ -249,6 +249,52 @@ class DocumentBuilder:
             f"{len(column_docs)} 个列级, {len(enum_docs)} 个枚举值"
         )
         return table_docs, column_docs, enum_docs
+
+    def build_value_documents(self, enums: list[dict]) -> list[dict]:
+        """
+        构建值级检索文档 (nl2sql_value, BM25-only Schema Linking)。
+
+        每个枚举值独立一条文档，text 字段仅包含标签名（中英文 + 同义词），
+        用于 BM25 精确匹配用户 query 中出现的实体值。
+
+        Args:
+            enums: SchemaLoader.load_enums() 返回的枚举条目列表
+
+        Returns:
+            list[dict]: 每条文档包含 table_name, column_name, enum_code,
+                enum_label_cn, sql_value, text
+        """
+        docs = []
+        for entry in enums:
+            table_name = entry["table_name"]
+            col_name = entry["field_name"]
+            for v in entry.get("values", []):
+                code = str(v.get("code", ""))
+                label = v.get("label", "")
+                label_cn = v.get("label_cn", "")
+
+                text_parts = []
+                if label_cn:
+                    text_parts.append(label_cn)
+                if label and label != label_cn:
+                    text_parts.append(label)
+                synonyms = v.get("synonyms", [])
+                if isinstance(synonyms, list):
+                    text_parts.extend(synonyms)
+                if not text_parts:
+                    continue
+
+                docs.append({
+                    "table_name": table_name,
+                    "column_name": col_name,
+                    "enum_code": code,
+                    "enum_label_cn": label_cn or label,
+                    "sql_value": code,
+                    "text": " ".join(text_parts),
+                })
+
+        logger.info(f"值级文档构建: {len(docs)} 条 (BM25-only)")
+        return docs
 
     def _format_enum_values(self, enum_values) -> str:
         """

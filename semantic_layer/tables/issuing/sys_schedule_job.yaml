@@ -1,0 +1,91 @@
+table:
+  name: "sys_schedule_job"
+  database: "dwd_banking"
+  display_name: "定时任务表"
+  description: |
+    这张表记录系统侧的定时任务。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "调度", "任务", "sys_schedule_job"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "job_id"
+    type: "bigint"
+    display_name: "任务id"
+    description: "任务id"
+
+  - name: "job_type"
+    type: "int"
+    display_name: "1=永久任务"
+    description: "1=永久任务, 0=临时任务"
+    enum_values:
+      - {value: 1, label: "永久任务"}
+      - {value: 0, label: "临时任务"}
+
+  - name: "status"
+    type: "tinyint"
+    display_name: "状态"
+    description: "任务状态  -1：删除；0：暂停；1：正常"
+    enum_values:
+      - {value: -1, label: "删除"}
+      - {value: 0, label: "暂停"}
+      - {value: 1, label: "正常"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+relations: []
+
+common_queries:
+  - question: "定时任务表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_schedule_job`;
+    tables: ["sys_schedule_job"]
+    difficulty: "easy"
+  - question: "最近30天定时任务表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_schedule_job`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["sys_schedule_job"]
+    difficulty: "easy"
+  - question: "定时任务表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN -1 THEN '删除'
+            WHEN 0 THEN '暂停'
+            WHEN 1 THEN '正常'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`sys_schedule_job`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["sys_schedule_job"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_schedule_job.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_schedule_job_log.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_schedule_job_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_acs_transactions_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_limit_ledger_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_order_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_pool_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_service.go"

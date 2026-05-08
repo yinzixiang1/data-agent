@@ -187,6 +187,8 @@ class QueryMetadata(BaseModel):
     scenario: str = Field(default="", description="使用场景: bi/risk/ops/ad-hoc")
     business: str = Field(default="", description="业务线: banking/issuing/acquiring/payment")
     caller: str = Field(default="", description="调用方标识")
+    user_id: str = Field(default="", description="外部用户唯一标识")
+    user_name: str = Field(default="", description="外部用户显示名")
     trace_id: str = Field(default="", description="链路追踪 ID")
 
 
@@ -215,6 +217,7 @@ class QueryResponse(BaseModel):
 
 class IndexRebuildRequest(BaseModel):
     force: bool = Field(default=True, description="是否强制重建")
+    collections: list[str] = Field(default=[], description="要重建的 collection 类型列表: table/glossary/enum/fewshot，为空则全量重建")
 
 
 class IndexRebuildResponse(BaseModel):
@@ -362,6 +365,13 @@ def run_query(
 
     final_sql = SQLValidator.extract_sql(answer) or ""
 
+    # 提取命中的 fewshot 信息（id + question）
+    matched_fewshot = [
+        {"id": ex.get("id"), "question": ex.get("question", "")}
+        for ex in result.relevant_examples
+        if ex.get("id") is not None
+    ]
+
     return {
         "sql": final_sql,
         "raw_answer": answer,
@@ -371,6 +381,7 @@ def run_query(
         "is_success": is_success,
         "retry_count": retry_count,
         "error": error_msg,
+        "matched_fewshot": matched_fewshot,
     }
 
 
@@ -461,7 +472,10 @@ async def query(req: QueryRequest, request: Request):
                 scenario=meta.scenario,
                 business=meta.business,
                 caller=meta.caller,
+                user_id=meta.user_id,
+                user_name=meta.user_name,
                 trace_id=meta.trace_id,
+                matched_fewshot=result.get("matched_fewshot"),
             )
 
         return QueryResponse(
@@ -496,6 +510,8 @@ async def query(req: QueryRequest, request: Request):
                 scenario=meta.scenario,
                 business=meta.business,
                 caller=meta.caller,
+                user_id=meta.user_id,
+                user_name=meta.user_name,
                 trace_id=meta.trace_id,
             )
 
@@ -516,15 +532,25 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
         raise HTTPException(status_code=503, detail="服务未就绪")
 
     try:
-        logger.info("收到索引重建请求，开始重建...")
-        retriever.initialize()
-        table_count = len(retriever.table_schemas)
-        logger.info(f"索引重建完成: {table_count} 张表")
-        return IndexRebuildResponse(
-            status="success",
-            message=f"索引重建完成，共 {table_count} 张表",
-            table_count=table_count,
-        )
+        if req.collections:
+            logger.info(f"收到局部索引重建请求: {req.collections}")
+            table_count = retriever.rebuild_partial(req.collections)
+            rebuilt = ", ".join(req.collections)
+            return IndexRebuildResponse(
+                status="success",
+                message=f"局部索引重建完成 [{rebuilt}]，共 {table_count} 张表",
+                table_count=table_count,
+            )
+        else:
+            logger.info("收到全量索引重建请求，开始重建...")
+            retriever.initialize()
+            table_count = len(retriever.table_schemas)
+            logger.info(f"索引重建完成: {table_count} 张表")
+            return IndexRebuildResponse(
+                status="success",
+                message=f"索引重建完成，共 {table_count} 张表",
+                table_count=table_count,
+            )
     except Exception as e:
         logger.error(f"索引重建失败: {e}", exc_info=True)
         return IndexRebuildResponse(status="error", message=str(e))

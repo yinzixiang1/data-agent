@@ -1,0 +1,98 @@
+table:
+  name: "uqpay_user_invite"
+  database: "dwd_banking"
+  display_name: "User邀请表"
+  description: |
+    这张表记录User邀请相关数据。
+    每行代表一个独立业务对象或处理记录，具体粒度以主键和业务ID字段为准。
+    字段语义主要来自 DDL 注释和 issuing 代码扫描结果。
+  tags: ["客户中心", "UQPAY", "uqpay", "用户", "邀请", "uqpay_user_invite"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "invite_id"
+    type: "varchar(36)"
+    display_name: "邀请ID"
+    description: "邀请ID"
+
+  - name: "user_id"
+    type: "varchar(36)"
+    display_name: "当前登录user"
+    description: "当前登录user"
+
+  - name: "email"
+    type: "varchar(120)"
+    display_name: "邮箱"
+    description: "被邀请邮箱"
+    sensitive: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "status"
+    type: "smallint"
+    display_name: "状态"
+    description: "邀请状态：0=默认邀请中，1=登录成功"
+    enum_values:
+      - {value: 0, label: "默认邀请中"}
+      - {value: 1, label: "登录成功"}
+
+  - name: "invite_user_id"
+    type: "varchar(36)"
+    display_name: "邀请者userid"
+    description: "邀请者userid"
+
+  - name: "last_account_id"
+    type: "varchar(36)"
+    display_name: "最后登录account"
+    description: "最后登录account"
+
+relations: []
+
+common_queries:
+  - question: "User邀请表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_user_invite`;
+    tables: ["uqpay_user_invite"]
+    difficulty: "easy"
+  - question: "最近30天User邀请表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_user_invite`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["uqpay_user_invite"]
+    difficulty: "easy"
+  - question: "User邀请表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN 0 THEN '默认邀请中'
+            WHEN 1 THEN '登录成功'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`uqpay_user_invite`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["uqpay_user_invite"]
+    difficulty: "medium"
+  - question: "User邀请表按user_id分布最多的是哪些"
+    sql: |
+      SELECT user_id AS "user_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_user_invite`
+      WHERE user_id IS NOT NULL AND user_id != ''
+      GROUP BY user_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["uqpay_user_invite"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

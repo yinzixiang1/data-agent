@@ -1,0 +1,150 @@
+table:
+  name: "pmt_conversion_connect"
+  database: "dwd_banking"
+  display_name: "汇兑关联表"
+  description: |
+    这张表记录支付/银行账户业务中的汇兑关联。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "换汇", "connect", "pmt_conversion_connect"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "汇兑关联表字段 id。"
+
+  - name: "conversion_id"
+    type: "varchar(36)"
+    display_name: "换汇id"
+    description: "汇兑关联表字段 conversion_id。"
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "shortreferenceid"
+    description: "汇兑关联表字段 short_reference_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "account_id"
+
+  - name: "buy_amount"
+    type: "varchar(36)"
+    display_name: "buyamount"
+    description: "汇兑关联表字段 buy_amount。"
+
+  - name: "buy_currency"
+    type: "varchar(3)"
+    display_name: "buy币种"
+    description: "汇兑关联表字段 buy_currency。"
+
+  - name: "currency_pair"
+    type: "varchar(6)"
+    display_name: "交易对"
+    description: "交易对"
+
+  - name: "sell_amount"
+    type: "varchar(36)"
+    display_name: "sellamount"
+    description: "汇兑关联表字段 sell_amount。"
+
+  - name: "sell_currency"
+    type: "varchar(3)"
+    display_name: "sell币种"
+    description: "汇兑关联表字段 sell_currency。"
+
+  - name: "conversion_remark"
+    type: "text"
+    display_name: "换汇remark"
+    description: "汇兑关联表字段 conversion_remark。"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "汇兑关联表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "汇兑关联表字段 update_time。"
+
+  - name: "conversion_status"
+    type: "tinyint(1)"
+    display_name: "0=AWAITING_FUNDS"
+    description: "0=AWAITING_FUNDS, -1=CLOSED, 2=FUNDS_ARRIVED, 3=SENT_TO_CHANNEL, 1=TRADE_SETTLED"
+    enum_values:
+      - {value: 0, label: "AWAITING_FUNDS"}
+      - {value: -1, label: "CLOSED"}
+      - {value: 2, label: "FUNDS_ARRIVED"}
+      - {value: 3, label: "SENT_TO_CHANNEL"}
+      - {value: 1, label: "TRADE_SETTLED"}
+
+  - name: "ref_reference_id"
+    type: "varchar(36)"
+    display_name: "关联的conversion_id"
+    description: "关联的conversion_id"
+
+  - name: "ref_short_reference_id"
+    type: "varchar(20)"
+    display_name: "refshortreferenceid"
+    description: "汇兑关联表字段 ref_short_reference_id。"
+
+relations: []
+
+common_queries:
+  - question: "汇兑关联表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion_connect`;
+    tables: ["pmt_conversion_connect"]
+    difficulty: "easy"
+  - question: "最近30天汇兑关联表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion_connect`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_conversion_connect"]
+    difficulty: "easy"
+  - question: "汇兑关联表按状态分布"
+    sql: |
+      SELECT
+          CASE conversion_status
+            WHEN 0 THEN 'AWAITING_FUNDS'
+            WHEN -1 THEN 'CLOSED'
+            WHEN 2 THEN 'FUNDS_ARRIVED'
+            WHEN 3 THEN 'SENT_TO_CHANNEL'
+            WHEN 1 THEN 'TRADE_SETTLED'
+            ELSE CONCAT('其他:', CAST(conversion_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_conversion_connect`
+      GROUP BY conversion_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_conversion_connect"]
+    difficulty: "medium"
+  - question: "汇兑关联表按account_id分布最多的是哪些"
+    sql: |
+      SELECT account_id AS "account_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_conversion_connect`
+      WHERE account_id IS NOT NULL AND account_id != ''
+      GROUP BY account_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_conversion_connect"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_conversion.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_conversion_connect.go"
+  - "uqpay-issuing-admincp-api/internal/repo/conversion_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_conversion_service.go"
+  - "uqpay-issuing-admincp-api/internal/data/pmt_conversion_data.go"

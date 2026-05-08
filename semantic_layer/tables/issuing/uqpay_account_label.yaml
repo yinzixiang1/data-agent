@@ -1,0 +1,166 @@
+table:
+  name: "uqpay_account_label"
+  database: "dwd_banking"
+  display_name: "客户白标配置表"
+  description: |
+    这张表记录客户白标配置相关数据。
+    每行代表一个独立业务对象或处理记录，具体粒度以主键和业务ID字段为准。
+    字段语义主要来自 DDL 注释和 issuing 代码扫描结果。
+  tags: ["客户中心", "UQPAY", "账户", "uqpay", "标签", "uqpay_account_label"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "label_id"
+    type: "varchar(36)"
+    display_name: "laber ID"
+    description: "laber ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "客户ID"
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "客户号"
+
+  - name: "legal_entity_type"
+    type: "int"
+    display_name: "法律实体类型"
+    description: "1000=individual 2000=company"
+    enum_values:
+      - {value: 1000, label: "individual"}
+      - {value: 2000, label: "company"}
+
+  - name: "entity_individual"
+    type: "text"
+    display_name: "KYC信息{\"first_name\""
+    description: "KYC信息{\"first_name\": \"\", \"last_name\": \"\", \"date_of_birth\": \"\"}"
+    sensitive: true
+    skip_index: true
+
+  - name: "entity_company"
+    type: "text"
+    display_name: "当legal_entity_type=compa"
+    description: "当legal_entity_type=company：{\"entity_name\": \"实体英文名\", \"entity_reg_name\": \"实体法定名\", \"entity_status\": \"实体类型\", \"incorporate_date\": \"企业注册时间\", \"entity_deadline\": \"企业到期时间\", \"vat_type\": \"企业税号\"}"
+    skip_index: true
+
+  - name: "registration_address"
+    type: "varchar(2000)"
+    display_name: "注册地址"
+    description: "注册地址：{\"city\": \"\", \"state\": \"\", \"postal_code\": \"\", \"address\": \"\", \"address2\": \"\"}"
+    sensitive: true
+
+  - name: "contact_details"
+    type: "varchar(255)"
+    display_name: "support信息"
+    description: "support信息：{\"email\": \"\", \"telephone\": \"+86100086\"}"
+    sensitive: true
+
+  - name: "terms_policy"
+    type: "text"
+    display_name: "Terms and policy content"
+    description: "Terms and policy content"
+    skip_index: true
+
+  - name: "site_config"
+    type: "text"
+    display_name: "站点配置"
+    description: "站点配置：{\"logo_global_img\": \"logo图片\", \"brand_color\": \"主题色#FFFAFA	\", \"accent_color\": \"强调色\"}"
+    skip_index: true
+
+  - name: "domain_url_list"
+    type: "text"
+    display_name: "历史绑定记录[\"\""
+    description: "历史绑定记录[\"\", \"\"]"
+    skip_index: true
+
+  - name: "domain_config"
+    type: "text"
+    display_name: "domain配置"
+    description: "domain配置（预留）"
+    skip_index: true
+
+  - name: "is_custom_email_sender"
+    type: "tinyint"
+    display_name: "是否自定义发送邮件配置"
+    description: "是否自定义发送邮件配置：0=否，1=是"
+    sensitive: true
+
+  - name: "custom_email_protocol"
+    type: "varchar(255)"
+    display_name: "EMAIL协议配置"
+    description: "EMAIL协议配置：{\"protocol\": \"SMTP/POP3/IMAP\", \"host\": \"\", \"ssl_port\": \"465\", \"from\": \"\", \"passord\": \"\"}"
+    sensitive: true
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "客户白标配置表字段 update_time。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "客户白标配置表字段 create_time。"
+
+  - name: "label_status"
+    type: "int"
+    display_name: "白标状态"
+    description: "白标状态：-1=关闭，0=默认，1=正常开通"
+    enum_values:
+      - {value: -1, label: "关闭"}
+      - {value: 0, label: "默认"}
+      - {value: 1, label: "正常开通"}
+
+relations: []
+
+common_queries:
+  - question: "客户白标配置表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_account_label`;
+    tables: ["uqpay_account_label"]
+    difficulty: "easy"
+  - question: "最近30天客户白标配置表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_account_label`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["uqpay_account_label"]
+    difficulty: "easy"
+  - question: "客户白标配置表按状态分布"
+    sql: |
+      SELECT
+          CASE label_status
+            WHEN -1 THEN '关闭'
+            WHEN 0 THEN '默认'
+            WHEN 1 THEN '正常开通'
+            ELSE CONCAT('其他:', CAST(label_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`uqpay_account_label`
+      GROUP BY label_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["uqpay_account_label"]
+    difficulty: "medium"
+  - question: "客户白标配置表按account_id分布最多的是哪些"
+    sql: |
+      SELECT account_id AS "account_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uqpay_account_label`
+      WHERE account_id IS NOT NULL AND account_id != ''
+      GROUP BY account_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["uqpay_account_label"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-message/internal/entity/uqpay_account_label.go"
+  - "uqpay-issuing-task/internal/domain/entity/uqpay_account_label.go"

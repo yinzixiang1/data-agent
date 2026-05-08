@@ -1,0 +1,86 @@
+table:
+  name: "issuing_param_mapping"
+  database: "dwd_banking"
+  display_name: "issuing系统参数映射表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的issuing系统参数映射。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "参数", "映射", "issuing_param_mapping"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "int"
+    display_name: "主键ID"
+    description: "issuing系统参数映射表字段 id。"
+
+  - name: "mapping_key"
+    type: "varchar(100)"
+    display_name: "映射的键"
+    description: "映射的键"
+    sensitive: true
+
+  - name: "mapping_value"
+    type: "text"
+    display_name: "映射的值"
+    description: "映射的值"
+    sensitive: true
+    skip_index: true
+
+  - name: "description"
+    type: "text"
+    display_name: "描述"
+    description: "描述"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+relations: []
+
+common_queries:
+  - question: "issuing系统参数映射表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_param_mapping`;
+    tables: ["issuing_param_mapping"]
+    difficulty: "easy"
+  - question: "最近30天issuing系统参数映射表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_param_mapping`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_param_mapping"]
+    difficulty: "easy"
+  - question: "issuing系统参数映射表最近创建的记录有哪些"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`issuing_param_mapping`
+      ORDER BY create_time DESC
+      LIMIT 100;
+    tables: ["issuing_param_mapping"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_param_mapping.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_pool_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_card_transactions_service.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/issuing_param_mapping.go"
+  - "uqpay-issuing-gateway/internal/repository/cardholder_repo.go"
+  - "uqpay-issuing-gateway/internal/service/acs_service.go"
+  - "uqpay-issuing-message/internal/entity/issuing_param_mapping.go"

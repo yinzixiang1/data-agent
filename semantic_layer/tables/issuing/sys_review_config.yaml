@@ -1,0 +1,115 @@
+table:
+  name: "sys_review_config"
+  database: "dwd_banking"
+  display_name: "Sys风控审核配置表"
+  description: |
+    这张表记录系统侧的Sys风控审核配置。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "review", "配置", "sys_review_config"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "Sys风控审核配置表字段 id。"
+
+  - name: "config_id"
+    type: "varchar(36)"
+    display_name: "设置UUID"
+    description: "设置UUID"
+
+  - name: "flow_type"
+    type: "int"
+    display_name: "类型"
+    description: "类型：1000=商户account类，1001=customer类，2000=财务类，3000=订单类，9000=配置类，9001=批量邮件类"
+    enum_values:
+      - {value: 1000, label: "商户account类"}
+      - {value: 1001, label: "customer类"}
+      - {value: 2000, label: "财务类"}
+      - {value: 3000, label: "订单类"}
+      - {value: 9000, label: "配置类"}
+      - {value: 9001, label: "批量邮件类"}
+
+  - name: "flow_admin_uids"
+    type: "text"
+    display_name: "审查用户集合[\"uid\"]"
+    description: "审查用户集合[\"uid\"]"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "创建者ID"
+    description: "创建者ID"
+
+  - name: "status"
+    type: "tinyint"
+    display_name: "状态"
+    description: "-1=关闭，0=默认，1=可用"
+    enum_values:
+      - {value: -1, label: "关闭"}
+      - {value: 0, label: "默认"}
+      - {value: 1, label: "可用"}
+
+  - name: "meta_data"
+    type: "text"
+    display_name: "元数据"
+    description: "元数据"
+    skip_index: true
+
+relations: []
+
+common_queries:
+  - question: "Sys风控审核配置表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_review_config`;
+    tables: ["sys_review_config"]
+    difficulty: "easy"
+  - question: "最近30天Sys风控审核配置表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_review_config`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["sys_review_config"]
+    difficulty: "easy"
+  - question: "Sys风控审核配置表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN -1 THEN '关闭'
+            WHEN 0 THEN '默认'
+            WHEN 1 THEN '可用'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`sys_review_config`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["sys_review_config"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_review_config.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_review_config_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_review_config_service.go"
+  - "uqpay-issuing-admincp-api/api/routers/customer/uqpay_customer_router.go"
+  - "uqpay-issuing-admincp-api/api/routers/init.go"
+  - "uqpay-issuing-admincp-api/internal/data/sys_review_config_data.go"

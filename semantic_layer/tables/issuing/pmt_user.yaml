@@ -1,0 +1,158 @@
+table:
+  name: "pmt_user"
+  database: "dwd_banking"
+  display_name: "商户-用户表"
+  description: |
+    这张表记录支付/银行账户业务中的商户-用户。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "用户", "pmt_user"]
+  query_tips: "时间范围优先使用 register_time 字段。"
+
+columns:
+  - name: "user_id"
+    type: "varchar(36)"
+    display_name: "用户id"
+    description: "商户-用户表字段 user_id。"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "机构ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "关联personal_id, business_id"
+
+  - name: "first_name"
+    type: "varchar(60)"
+    display_name: "firstname"
+    description: "商户-用户表字段 first_name。"
+    sensitive: true
+
+  - name: "last_name"
+    type: "varchar(60)"
+    display_name: "lastname"
+    description: "商户-用户表字段 last_name。"
+    sensitive: true
+
+  - name: "email"
+    type: "varchar(120)"
+    display_name: "邮箱"
+    description: "商户-用户表字段 email。"
+    sensitive: true
+
+  - name: "password"
+    type: "varchar(32)"
+    display_name: "password"
+    description: "商户-用户表字段 password。"
+    sensitive: true
+
+  - name: "role_id"
+    type: "varchar(36)"
+    display_name: "角色ID"
+    description: "角色ID"
+
+  - name: "date_of_birth"
+    type: "date"
+    display_name: "dateofbirth"
+    description: "商户-用户表字段 date_of_birth。"
+    sensitive: true
+
+  - name: "security"
+    type: "varchar(200)"
+    display_name: "安全设置 {\"2fa_type\""
+    description: "安全设置 {\"2fa_type\":\"authenticator\", \"2fa_secret\":\"12345678\", \"2fa_status\":0}"
+    sensitive: true
+
+  - name: "is_owner"
+    type: "tinyint(1)"
+    display_name: "0-no"
+    description: "0-no, 1=yes"
+    enum_values:
+      - {value: 0, label: "no"}
+      - {value: 1, label: "yes"}
+
+  - name: "short_account_id"
+    type: "varchar(36)"
+    display_name: "账户短号"
+    description: "商户-用户表字段 short_account_id。"
+
+  - name: "ref_cc_contact_id"
+    type: "varchar(36)"
+    display_name: "关联CC的操作员id"
+    description: "关联CC的操作员id"
+
+  - name: "execute_reason"
+    type: "text"
+    display_name: "对应失败原因"
+    description: "对应失败原因"
+    skip_index: true
+
+  - name: "status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "-1=冻结 0=未验证 1=正常&已验证"
+    enum_values:
+      - {value: -1, label: "冻结"}
+      - {value: 0, label: "未验证"}
+      - {value: 1, label: "正常&已验证"}
+
+relations: []
+
+common_queries:
+  - question: "商户-用户表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user`;
+    tables: ["pmt_user"]
+    difficulty: "easy"
+  - question: "最近30天商户-用户表每天新增多少"
+    sql: |
+      SELECT DATE(register_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user`
+      WHERE register_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(register_time)
+      ORDER BY DATE(register_time) DESC;
+    tables: ["pmt_user"]
+    difficulty: "easy"
+  - question: "商户-用户表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN -1 THEN '冻结'
+            WHEN 0 THEN '未验证'
+            WHEN 1 THEN '正常&已验证'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_user`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_user"]
+    difficulty: "medium"
+  - question: "商户-用户表按user_id分布最多的是哪些"
+    sql: |
+      SELECT user_id AS "user_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user`
+      WHERE user_id IS NOT NULL AND user_id != ''
+      GROUP BY user_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_user"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_user.go"
+  - "uqpay-issuing-admincp-api/internal/repo/account_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/user_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_account_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_user_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/uq_customer_app_service.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/pmt_user.go"
+  - "uqpay-issuing-gateway/internal/repository/account_repo.go"

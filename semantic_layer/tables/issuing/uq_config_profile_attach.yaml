@@ -1,0 +1,100 @@
+table:
+  name: "uq_config_profile_attach"
+  database: "dwd_banking"
+  display_name: "资料主体清单表"
+  description: |
+    这张表记录资料主体清单相关数据。
+    每行代表一个独立业务对象或处理记录，具体粒度以主键和业务ID字段为准。
+    字段语义主要来自 DDL 注释和 issuing 代码扫描结果。
+  tags: ["客户中心", "UQPAY", "uq", "配置", "档案", "附件", "uq_config_profile_attach"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "attach_config_id"
+    type: "varchar(36)"
+    display_name: "资料配置ID"
+    description: "资料配置ID"
+
+  - name: "attach_name"
+    type: "text"
+    display_name: "资料名"
+    description: "资料名"
+    skip_index: true
+
+  - name: "attach_type"
+    type: "int"
+    display_name: "资料类型，VA=1000"
+    description: "资料类型，VA=1000, FX=2000, AC=3000, IC=4000"
+
+  - name: "attach_tags"
+    type: "int"
+    display_name: "资料标记"
+    description: "资料标记：0=默认，1000=基础类资料，2000=主业务类资料，3000=子业务类资料，4000=业务方式类资料"
+    enum_values:
+      - {value: 0, label: "默认"}
+      - {value: 1000, label: "基础类资料"}
+      - {value: 2000, label: "主业务类资料"}
+      - {value: 3000, label: "子业务类资料"}
+      - {value: 4000, label: "业务方式类资料"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "profile_status"
+    type: "int"
+    display_name: "资料状态0=默认，1=可用，-1=关闭"
+    description: "资料状态0=默认，1=可用，-1=关闭"
+    enum_values:
+      - {value: 0, label: "默认"}
+      - {value: 1, label: "可用"}
+      - {value: -1, label: "关闭"}
+
+relations: []
+
+common_queries:
+  - question: "资料主体清单表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_config_profile_attach`;
+    tables: ["uq_config_profile_attach"]
+    difficulty: "easy"
+  - question: "最近30天资料主体清单表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_config_profile_attach`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["uq_config_profile_attach"]
+    difficulty: "easy"
+  - question: "资料主体清单表按状态分布"
+    sql: |
+      SELECT
+          CASE profile_status
+            WHEN 0 THEN '默认'
+            WHEN 1 THEN '可用'
+            WHEN -1 THEN '关闭'
+            ELSE CONCAT('其他:', CAST(profile_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`uq_config_profile_attach`
+      GROUP BY profile_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["uq_config_profile_attach"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/uq_config_profile_attach.go"
+  - "uqpay-issuing-admincp-api/internal/repo/uq_config_profile_attach_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/uq_config_profile_attach_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/uq_customer_attach_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/uqpay_customer_attach_service.go"
+  - "uqpay-issuing-admincp-api/api/handle/uq_config_profile_attach_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/customer/uq_config_profile_attach_router.go"
+  - "uqpay-issuing-admincp-api/api/routers/customer/uq_customer_attach_router.go"

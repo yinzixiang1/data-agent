@@ -1,0 +1,210 @@
+table:
+  name: "issuing_channel_transfer_steps"
+  database: "dwd_banking"
+  display_name: "渠道模式转账步骤流水表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的渠道模式转账步骤流水。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "渠道", "转账", "步骤", "issuing_channel_transfer_steps"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "short_reference_id"
+    type: "varchar(32)"
+    display_name: "步骤展示短ID"
+    description: "步骤展示短ID"
+
+  - name: "order_id"
+    type: "varchar(64)"
+    display_name: "当前订单ID"
+    description: "当前订单ID"
+
+  - name: "ref_order_id"
+    type: "varchar(64)"
+    display_name: "关联订单ID"
+    description: "关联订单ID"
+
+  - name: "order_short_reference_id"
+    type: "varchar(32)"
+    display_name: "订单短流水"
+    description: "订单短流水"
+
+  - name: "direct_id"
+    type: "varchar(64)"
+    display_name: "直属账户ID"
+    description: "house/direct id"
+
+  - name: "account_id"
+    type: "varchar(64)"
+    display_name: "账户ID"
+    description: "业务账户ID"
+
+  - name: "card_id"
+    type: "varchar(64)"
+    display_name: "卡片ID"
+    description: "订单关联卡ID"
+
+  - name: "card_holder_id"
+    type: "varchar(64)"
+    display_name: "持卡人ID"
+    description: "持卡人ID"
+
+  - name: "channel_card_id"
+    type: "varchar(64)"
+    display_name: "渠道卡ID"
+    description: "渠道卡ID"
+
+  - name: "from_acct_id"
+    type: "varchar(64)"
+    display_name: "源支付账户acctId"
+    description: "源支付账户acctId"
+
+  - name: "to_acct_id"
+    type: "varchar(64)"
+    display_name: "目标支付账户acctId"
+    description: "目标支付账户acctId"
+
+  - name: "from_card_id"
+    type: "varchar(64)"
+    display_name: "源卡ID"
+    description: "源卡ID"
+
+  - name: "to_card_id"
+    type: "varchar(64)"
+    display_name: "目标卡ID"
+    description: "目标卡ID"
+
+  - name: "order_type"
+    type: "int"
+    display_name: "1000开卡 2000充值 3000提现 800"
+    description: "1000开卡 2000充值 3000提现 8001退款"
+
+  - name: "source_type"
+    type: "varchar(32)"
+    display_name: "sync"
+    description: "sync,webhook,query_job,retry,manual"
+
+  - name: "pay_id"
+    type: "varchar(64)"
+    display_name: "payment transfer payId"
+    description: "payment transfer payId"
+
+  - name: "out_biz_id"
+    type: "varchar(64)"
+    display_name: "payment transfer outBizI"
+    description: "payment transfer outBizId"
+
+  - name: "tio_jnl_id"
+    type: "varchar(64)"
+    display_name: "card transfer tioJnlId"
+    description: "card transfer tioJnlId"
+
+  - name: "transfer_amount"
+    type: "decimal(20,8)"
+    display_name: "本步骤金额"
+    description: "本步骤金额"
+
+  - name: "transfer_currency"
+    type: "varchar(16)"
+    display_name: "本步骤币种"
+    description: "本步骤币种"
+
+  - name: "fee_amount"
+    type: "decimal(20,8)"
+    display_name: "手续费"
+    description: "手续费"
+
+  - name: "step_status"
+    type: "int"
+    display_name: "0处理中 1成功 -1失败 -2跳过"
+    description: "0处理中 1成功 -1失败 -2跳过"
+
+  - name: "request_body"
+    type: "json"
+    display_name: "请求报文"
+    description: "请求报文"
+    skip_index: true
+
+  - name: "response_body"
+    type: "json"
+    display_name: "响应报文"
+    description: "同步响应报文"
+    skip_index: true
+
+  - name: "notify_body"
+    type: "json"
+    display_name: "异步通知/补偿查询报文"
+    description: "异步通知/补偿查询报文"
+    skip_index: true
+
+  - name: "extra"
+    type: "json"
+    display_name: "扩展字段"
+    description: "扩展字段"
+    skip_index: true
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "渠道模式转账步骤流水表字段 update_time。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "渠道模式转账步骤流水表字段 create_time。"
+
+relations: []
+
+common_queries:
+  - question: "渠道模式转账步骤流水表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_channel_transfer_steps`;
+    tables: ["issuing_channel_transfer_steps"]
+    difficulty: "easy"
+  - question: "最近30天渠道模式转账步骤流水表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_channel_transfer_steps`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_channel_transfer_steps"]
+    difficulty: "easy"
+  - question: "渠道模式转账步骤流水表按状态分布"
+    sql: |
+      SELECT
+          step_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_channel_transfer_steps`
+      GROUP BY step_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_channel_transfer_steps"]
+    difficulty: "easy"
+  - question: "渠道模式转账步骤流水表按币种汇总金额"
+    sql: |
+      SELECT transfer_currency AS "币种", COUNT(*) AS "笔数", SUM(fee_amount) AS "金额"
+      FROM dwd_banking.`issuing_channel_transfer_steps`
+      GROUP BY transfer_currency
+      ORDER BY SUM(fee_amount) DESC;
+    tables: ["issuing_channel_transfer_steps"]
+    difficulty: "medium"
+  - question: "渠道模式转账步骤流水表按order_id分布最多的是哪些"
+    sql: |
+      SELECT order_id AS "order_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_channel_transfer_steps`
+      WHERE order_id IS NOT NULL AND order_id != ''
+      GROUP BY order_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_channel_transfer_steps"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-issuing-message/internal/entity/issuing_channel_transfer_steps.go"
+  - "uqpay-issuing-message/internal/message/issuing/sunrate_channel_runtime.go"
+  - "uqpay-issuing-message/internal/message/issuing/sunrate_channel_steps.go"

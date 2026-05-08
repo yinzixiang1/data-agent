@@ -18,7 +18,6 @@ Few-shot 示例检索 — Dense 检索 + 表重叠度加权 + MMR 多样性选�
         tables=["pmt_account"],
         top_k=3,
     )
-    # examples: [{"question": "活跃商户数", "sql": "SELECT COUNT(*) ..."}, ...]
 """
 
 import json
@@ -29,7 +28,7 @@ from pymilvus import DataType
 
 from src.retrieval.config import FEWSHOT_TOP_K, MMR_LAMBDA
 from src.retrieval.milvus_store import MilvusIndex
-from src.retrieval.embedding import BGEEmbedding
+from src.retrieval.embedding import Qwen3Embedding
 
 logger = logging.getLogger(__name__)
 
@@ -47,35 +46,27 @@ class FewShotSelector:
     动态 Few-shot 示例选择器（Dense + 表重叠 + MMR）。
 
     Attributes:
-        embedding: BGEEmbedding 实例
-        milvus_index: Milvus Collection（可选，用于持久化检索）
+        embedding: Qwen3Embedding 实例
+        milvus_index: Milvus Collection
         examples: 所有 Few-shot 示例列表
-        embeddings: 所有示例的 Dense 向量矩阵，shape (N, 1024)
+        embeddings: 所有示例的 Dense 向量矩阵
         example_table_sets: 每个示例涉及的表名集合列表
     """
 
-    def __init__(self, embedding: BGEEmbedding, milvus_index: MilvusIndex | None = None):
-        """
-        Args:
-            embedding: BGEEmbedding 实例，用于编码查询和示例
-            milvus_index: Milvus Collection 实例，为 None 时仅使用内存检索
-        """
+    def __init__(self, embedding: Qwen3Embedding, milvus_index: MilvusIndex | None = None):
         self.embedding = embedding
         self.milvus_index = milvus_index
         self.examples: list[dict] = []
         self.embeddings: np.ndarray | None = None
         self.example_table_sets: list[set[str]] = []
 
-    def build_index(self, examples: list[dict]):
+    def build_index(self, examples: list[dict], index_config: dict | None = None):
         """
         构建 Few-shot 示例索引（编码 + 写入 Milvus）。
 
         Args:
-            examples: 示例列表，每个 dict 包含:
-                - "question" (str): 问题文本，如 "目前有多少活跃商户"
-                - "sql" (str): 对应的正确 SQL
-                - "tables" (list[str]): 涉及的表名列表，如 ["pmt_account"]
-                - "difficulty" (str): 难度等级，如 "easy", "medium"
+            examples: 示例列表，每个 dict 包含 question, sql, tables, difficulty
+            index_config: INDEX_BUILD_CONFIG 字典，传给 MilvusIndex.create()
         """
         if not examples:
             logger.info("无 Few-shot 示例，跳过索引构建")
@@ -84,13 +75,12 @@ class FewShotSelector:
         self.examples = examples
         texts = [ex["question"] for ex in examples]
 
-        # Dense + Sparse 编码
-        output = self.embedding.encode(texts, return_dense=True, return_sparse=True)
-        self.embeddings = output["dense_vecs"]
+        # Dense 编码（无 instruction，文档模式）
+        self.embeddings = self.embedding.encode(texts)
 
         # 写入 Milvus
         if self.milvus_index:
-            self.milvus_index.create(FEWSHOT_FIELDS)
+            self.milvus_index.create(FEWSHOT_FIELDS, index_config=index_config)
             rows = [
                 {
                     "question": ex["question"],
@@ -100,7 +90,7 @@ class FewShotSelector:
                 }
                 for ex in examples
             ]
-            self.milvus_index.insert(output["dense_vecs"], output["lexical_weights"], rows)
+            self.milvus_index.insert(self.embeddings, texts, rows)
 
         self.example_table_sets = [set(ex.get("tables", [])) for ex in examples]
         logger.info(f"Few-shot 索引构建完成: {len(examples)} 条示例")
@@ -115,20 +105,18 @@ class FewShotSelector:
         选择最相关且多样化的 Few-shot 示例。
 
         Args:
-            query: 用户原始查询，如 "目前有多少活跃商户"
-            tables: 当前检索命中的表名列表，用于表重叠度加权。
-                示例的涉及表和 tables 有交集时，每个重叠表 +0.1 分
+            query: 用户原始查询
+            tables: 当前检索命中的表名列表，用于表重叠度加权
             top_k: 最终返回的示例数量
 
         Returns:
-            list[dict]: 选中的示例列表，每个包含 question, sql, tables, difficulty
+            list[dict]: 选中的示例列表
         """
         if not self.examples:
             return []
 
         # Dense 检索候选池
-        q_output = self.embedding.encode([query], return_dense=True, return_sparse=False)
-        q_dense = q_output["dense_vecs"]
+        q_dense = self.embedding.encode_query(query, collection_type="fewshot")
 
         candidate_k = min(len(self.examples), top_k * 3)
 
@@ -153,7 +141,12 @@ class FewShotSelector:
 
         # MMR 多样性选择
         selected = self._mmr_select(candidate_indices, similarities, top_k)
-        result = [self.examples[i] for i in selected]
+        result = []
+        for i in selected:
+            ex = self.examples[i].copy()
+            if "id" not in ex:
+                ex["id"] = None
+            result.append(ex)
 
         logger.info(
             f"Few-shot 选择完成: {len(result)} 条, "
@@ -171,16 +164,7 @@ class FewShotSelector:
         """
         Maximal Marginal Relevance (MMR) 多样性选择。
 
-        MMR 公式: score = λ * relevance - (1-λ) * max_similarity_to_selected
-
-        Args:
-            candidate_indices: 候选示例的索引列表（指向 self.examples）
-            scores: 全量分数数组，scores[i] 为第 i 个示例的综合得分
-            top_k: 选择数量
-            lambda_param: 相关性权重（0→纯多样性，1→纯相关性），默认 0.7
-
-        Returns:
-            list[int]: 选中的示例索引列表
+        MMR: score = lambda * relevance - (1-lambda) * max_similarity_to_selected
         """
         if self.embeddings is None or not candidate_indices:
             return candidate_indices[:top_k]

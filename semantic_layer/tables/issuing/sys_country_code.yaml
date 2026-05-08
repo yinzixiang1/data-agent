@@ -1,0 +1,81 @@
+table:
+  name: "sys_country_code"
+  database: "dwd_banking"
+  display_name: "系统国家ISO表"
+  description: |
+    这张表记录系统侧的系统国家ISO。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "国家", "code", "sys_country_code"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "country_id"
+    type: "int"
+    display_name: "国家id"
+    description: "系统国家ISO表字段 country_id。"
+
+  - name: "country_status"
+    type: "tinyint(1)"
+    display_name: "国家status"
+    description: "系统国家ISO表字段 country_status。"
+
+  - name: "state_alpha_two_code_all"
+    type: "text"
+    display_name: "statealphatwocodeall"
+    description: "系统国家ISO表字段 state_alpha_two_code_all。"
+    skip_index: true
+
+  - name: "phone_area_code"
+    type: "varchar(8)"
+    display_name: "手机区号"
+    description: "手机区号"
+    sensitive: true
+
+  - name: "phone_length"
+    type: "varchar(10)"
+    display_name: "手机长度限制"
+    description: "手机长度限制"
+    sensitive: true
+
+relations: []
+
+common_queries:
+  - question: "系统国家ISO表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_country_code`;
+    tables: ["sys_country_code"]
+    difficulty: "easy"
+  - question: "系统国家ISO表按状态分布"
+    sql: |
+      SELECT
+          country_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`sys_country_code`
+      GROUP BY country_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["sys_country_code"]
+    difficulty: "easy"
+  - question: "系统国家ISO表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`sys_country_code`
+      ORDER BY country_id DESC
+      LIMIT 100;
+    tables: ["sys_country_code"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_country_code.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_country_code_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_country_code_service.go"
+  - "uqpay-issuing-gateway/internal/domain/entity/sys_country_code.go"
+  - "uqpay-issuing-gateway/internal/service/acs_service.go"
+  - "uqpay-issuing-gateway/internal/service/cardholder_service.go"
+  - "uqpay-issuing-gateway/internal/service/manager/cardholder_manager.go"
+  - "uqpay-issuing-admincp-api/api/handle/sys_country_code_handle.go"

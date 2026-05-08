@@ -7,7 +7,7 @@
 
 使用示例::
 
-    resolver = GlossaryResolver(embedding, glossary_index)
+    resolver = GlossaryResolver(embedding, glossary_index, glossary_params, ef_search=64)
 
     result = resolver.resolve("目前有多少活跃商户")
     # result["enriched_query"]   = "目前有多少活跃商户 account_status pmt_account"
@@ -19,24 +19,35 @@ import json
 import logging
 
 from src.retrieval.config import GLOSSARY_SCORE_THRESHOLD
-from src.retrieval.embedding import BGEEmbedding
+from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.ranker_strategy import CollectionSearchParams
 
 logger = logging.getLogger(__name__)
 
 
 class GlossaryResolver:
     """
-    业务术语解析器（基于向量语义匹配）。
+    业务术语解析器（基于混合检索语义匹配）。
 
     Attributes:
-        embedding: BGEEmbedding 实例
+        embedding: Qwen3Embedding 实例
         glossary_index: 术语 MilvusIndex
+        search_params: glossary Collection 的检索参数
+        ef_search: HNSW 搜索参数 ef
     """
 
-    def __init__(self, embedding: BGEEmbedding, glossary_index: MilvusIndex):
+    def __init__(
+        self,
+        embedding: Qwen3Embedding,
+        glossary_index: MilvusIndex,
+        search_params: CollectionSearchParams,
+        ef_search: int = 64,
+    ):
         self.embedding = embedding
         self.glossary_index = glossary_index
+        self.search_params = search_params
+        self.ef_search = ef_search
 
     def resolve(
         self,
@@ -45,18 +56,15 @@ class GlossaryResolver:
         score_threshold: float = GLOSSARY_SCORE_THRESHOLD,
     ) -> dict:
         """
-        通过向量语义匹配解析用户提问中的业务术语。
+        通过混合检索匹配用户提问中的业务术语。
 
         Args:
-            query: 用户原始查询，如 "目前有多少活跃商户"
+            query: 用户原始查询
             top_k: 最多返回的术语数量
-            score_threshold: 余弦相似度阈值，低于此分数的匹配会被过滤
+            score_threshold: 分数阈值比例，低于 max_score * threshold 的匹配被过滤
 
         Returns:
-            dict，包含:
-                - "enriched_query" (str): 原始问题 + 展开关键词（用于检索增强）
-                - "business_context" (str): 术语定义和 SQL 提示（注入 Prompt）
-                - "matched_terms" (list[str]): 命中的术语名列表
+            dict: enriched_query, business_context, matched_terms
         """
         matched_terms = []
         context_parts = []
@@ -69,19 +77,20 @@ class GlossaryResolver:
                 "matched_terms": [],
             }
 
-        q_output = self.embedding.encode_query(query)
-        q_dense = q_output["dense_vecs"]
-        q_sparse = q_output["lexical_weights"][0]
+        # 编码查询（glossary instruction）
+        q_dense = self.embedding.encode_query(query, collection_type="glossary")
 
+        # 混合检索
         results = self.glossary_index.hybrid_search(
             q_dense,
-            q_sparse,
-            top_k=top_k,
-            recall_k=top_k,
+            query,
+            ranker=self.search_params.ranker,
+            recall_k=self.search_params.recall_limit,
             output_fields=["term", "definition", "sql_hint", "related_tables", "related_columns"],
+            ef_search=self.ef_search,
         )
 
-        # RRF 分数是相对值，用最高分 × threshold 比例作为过滤线
+        # RRF 分数是相对值，用最高分 x threshold 比例作为过滤线
         max_score = results[0][1] if results else 0
         min_score = max_score * score_threshold
 

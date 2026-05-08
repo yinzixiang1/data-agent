@@ -1,0 +1,84 @@
+table:
+  name: "uq_user_permission"
+  database: "dwd_banking"
+  display_name: "客户-用户权限表"
+  description: |
+    这张表记录客户-用户权限相关数据。
+    每行代表一个独立业务对象或处理记录，具体粒度以主键和业务ID字段为准。
+    字段语义主要来自 DDL 注释和 issuing 代码扫描结果。
+  tags: ["客户中心", "UQPAY", "uq", "用户", "权限", "uq_user_permission"]
+  query_tips: "时间范围优先使用 update_time 字段。"
+
+columns:
+  - name: "master_id"
+    type: "varchar(36)"
+    display_name: "主客户ID"
+    description: "主客户ID"
+
+  - name: "customer_id"
+    type: "varchar(36)"
+    display_name: "客户ID"
+    description: "客户ID"
+
+  - name: "role_id"
+    type: "varchar(36)"
+    display_name: "角色ID"
+    description: "角色ID"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "客户-用户权限表字段 update_time。"
+
+  - name: "permission_status"
+    type: "tinyint(1)"
+    display_name: "权限status"
+    description: "客户-用户权限表字段 permission_status。"
+
+relations: []
+
+common_queries:
+  - question: "客户-用户权限表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_user_permission`;
+    tables: ["uq_user_permission"]
+    difficulty: "easy"
+  - question: "最近30天客户-用户权限表每天新增多少"
+    sql: |
+      SELECT DATE(update_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_user_permission`
+      WHERE update_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(update_time)
+      ORDER BY DATE(update_time) DESC;
+    tables: ["uq_user_permission"]
+    difficulty: "easy"
+  - question: "客户-用户权限表按状态分布"
+    sql: |
+      SELECT
+          permission_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`uq_user_permission`
+      GROUP BY permission_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["uq_user_permission"]
+    difficulty: "easy"
+  - question: "客户-用户权限表按customer_id分布最多的是哪些"
+    sql: |
+      SELECT customer_id AS "customer_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_user_permission`
+      WHERE customer_id IS NOT NULL AND customer_id != ''
+      GROUP BY customer_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["uq_user_permission"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-portal-api/internal/domain/entity/uq_user_permission.go"
+  - "uqpay-issuing-portal-api/middleware/customer_verification.go"
+  - "uqpay-issuing-portal-api/middleware/verification.go"

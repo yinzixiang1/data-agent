@@ -1,0 +1,66 @@
+table:
+  name: "issuing_card_generate_opertate_log"
+  database: "dwd_banking"
+  display_name: "发卡卡片生成操作日志"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡卡片生成操作日志。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "生成", "操作", "日志", "issuing_card_generate_opertate_log"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "task_id"
+    type: "varchar(36)"
+    display_name: "任务ID"
+    description: "任务ID"
+
+  - name: "type"
+    type: "varchar(60)"
+    display_name: "动作类型"
+    description: "动作类型：Create，DataTransfer"
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "创建人id"
+    description: "创建人id"
+
+  - name: "create_time"
+    type: "datetime(3)"
+    display_name: "创建时间"
+    description: "创建时间"
+
+relations: []
+
+common_queries:
+  - question: "发卡卡片生成操作日志有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_generate_opertate_log`;
+    tables: ["issuing_card_generate_opertate_log"]
+    difficulty: "easy"
+  - question: "最近30天发卡卡片生成操作日志每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_generate_opertate_log`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_card_generate_opertate_log"]
+    difficulty: "easy"
+  - question: "发卡卡片生成操作日志最近创建的记录有哪些"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`issuing_card_generate_opertate_log`
+      ORDER BY create_time DESC
+      LIMIT 100;
+    tables: ["issuing_card_generate_opertate_log"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_card_generate_operate_log.go"
+  - "uqpay-issuing-message/internal/entity/issuing_card_generate_operate_log.go"

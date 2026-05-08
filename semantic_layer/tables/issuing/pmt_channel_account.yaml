@@ -1,0 +1,70 @@
+table:
+  name: "pmt_channel_account"
+  database: "dwd_banking"
+  display_name: "上游渠道帐户关联表"
+  description: |
+    这张表记录支付/银行账户业务中的上游渠道帐户关联。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "渠道", "账户", "pmt_channel_account"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "机构ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "系统内部账户ID"
+
+  - name: "customer_id"
+    type: "varchar(36)"
+    display_name: "客户id"
+    description: "上游渠道帐户关联表字段 customer_id。"
+
+  - name: "wallet_id"
+    type: "varchar(36)"
+    display_name: "walletid"
+    description: "上游渠道帐户关联表字段 wallet_id。"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "上游渠道帐户关联表字段 create_time。"
+
+relations: []
+
+common_queries:
+  - question: "上游渠道帐户关联表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_account`;
+    tables: ["pmt_channel_account"]
+    difficulty: "easy"
+  - question: "最近30天上游渠道帐户关联表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_account`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_channel_account"]
+    difficulty: "easy"
+  - question: "上游渠道帐户关联表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_channel_account`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_channel_account"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

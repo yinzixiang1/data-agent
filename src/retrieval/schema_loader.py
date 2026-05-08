@@ -108,7 +108,7 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
                 "SELECT name, database_name, display_name, description, tags, query_tips "
-                "FROM da_table WHERE status = 1"
+                "FROM da_table WHERE status = 1 AND available = 1"
             )).fetchall()
 
         result = {}
@@ -135,10 +135,10 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
                 "SELECT t.name, c.name, c.display_name, c.description, "
-                "c.enum_values, c.business_logic, c.sensitive, c.skip_index "
+                "c.enum_values, c.business_logic, c.is_sensitive, c.is_skip_index "
                 "FROM da_table_column c "
                 "JOIN da_table t ON c.table_id = t.id "
-                "WHERE t.status = 1 "
+                "WHERE t.status = 1 AND t.available = 1 "
                 "ORDER BY t.name, c.sort_order"
             )).fetchall()
 
@@ -159,8 +159,8 @@ class SchemaLoader:
                 "description": row[3] or "",
                 "enum_values": enum_values,
                 "business_logic": row[5] or "",
-                "sensitive": bool(row[6]),
-                "skip_index": bool(row[7]),
+                "is_sensitive": bool(row[6]),
+                "is_skip_index": bool(row[7]),
             }
             result.setdefault(row[0], []).append(col)
 
@@ -174,7 +174,7 @@ class SchemaLoader:
                 "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type "
                 "FROM da_table_relation r "
                 "JOIN da_table t ON r.table_id = t.id "
-                "WHERE t.status = 1"
+                "WHERE t.status = 1 AND t.available = 1"
             )).fetchall()
 
         result: dict[str, list[dict]] = {}
@@ -271,17 +271,18 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             # 全局 Few-shot
             rows = conn.execute(text(
-                "SELECT question, `sql`, tables, difficulty "
+                "SELECT id, question, `sql`, tables, difficulty "
                 "FROM da_fewshot WHERE status = 1"
             )).fetchall()
 
             for row in rows:
-                tables = self._parse_json_list(row[2])
+                tables = self._parse_json_list(row[3])
                 examples.append({
-                    "question": row[0],
-                    "sql": row[1],
+                    "id": row[0],
+                    "question": row[1],
+                    "sql": row[2],
                     "tables": tables,
-                    "difficulty": row[3] or "",
+                    "difficulty": row[4] or "",
                 })
 
             # 表级常见问题（也作为 Few-shot）
@@ -289,7 +290,7 @@ class SchemaLoader:
                 "SELECT q.question, q.`sql`, q.tables, q.difficulty "
                 "FROM da_table_query q "
                 "JOIN da_table t ON q.table_id = t.id "
-                "WHERE t.status = 1"
+                "WHERE t.status = 1 AND t.available = 1"
             )).fetchall()
 
             for row in query_rows:
@@ -340,10 +341,10 @@ class SchemaLoader:
                         col["enum_values"] = sem_col["enum_values"]
                     if sem_col.get("business_logic"):
                         col["business_logic"] = sem_col["business_logic"]
-                    if sem_col.get("sensitive"):
-                        col["sensitive"] = True
-                    if sem_col.get("skip_index"):
-                        col["skip_index"] = True
+                    if sem_col.get("is_sensitive"):
+                        col["is_sensitive"] = True
+                    if sem_col.get("is_skip_index"):
+                        col["is_skip_index"] = True
 
         return schema
 
@@ -356,7 +357,7 @@ class SchemaLoader:
         Returns:
             tuple: (schemas, glossary, enums, fewshot)
         """
-        # 从 MySQL 加载语义层
+        # 从 MySQL 加载语义层（只加载 status=1 AND available=1）
         table_semantics = self._load_table_semantics()
         column_semantics = self._load_column_semantics()
         relations = self._load_relations()
@@ -364,25 +365,30 @@ class SchemaLoader:
         enums = self.load_enums()
         fewshot = self.load_fewshot()
 
-        # 从 Doris 加载 DDL
-        table_names = self.get_all_tables()
-        logger.info(f"从 Doris 加载到 {len(table_names)} 张表")
+        logger.info(f"MySQL 可用表: {len(table_semantics)} 张 (status=1, available=1)")
 
+        # 以 MySQL 为基准，逐表从 Doris 获取 DDL 补充列类型
         schemas = []
-        for table_name in table_names:
-            doris_schema = self.get_table_schema(table_name)
+        skipped = []
+        for table_name, sem in table_semantics.items():
+            try:
+                doris_schema = self.get_table_schema(table_name)
+            except Exception as e:
+                logger.warning(f"Doris DDL 获取失败，跳过: {table_name} ({e})")
+                skipped.append(table_name)
+                continue
+
             merged = self.merge_schema(
                 doris_schema,
-                table_sem=table_semantics.get(table_name),
+                table_sem=sem,
                 col_sems=column_semantics.get(table_name),
                 relations=relations.get(table_name),
             )
             schemas.append(merged)
 
-        logger.info(
-            f"Schema 合并完成: {len(schemas)} 张表, "
-            f"其中 {len(table_semantics)} 张有语义层补充"
-        )
+        if skipped:
+            logger.warning(f"跳过 {len(skipped)} 张表 (Doris 不可达): {skipped}")
+        logger.info(f"Schema 合并完成: {len(schemas)} 张表进入索引")
         return schemas, glossary, enums, fewshot
 
     # ── 工具方法 ──

@@ -1,0 +1,184 @@
+table:
+  name: "issuing_reconciliation_records"
+  database: "dwd_banking"
+  display_name: "发卡对账记录表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡对账记录。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "对账", "记录", "issuing_reconciliation_records"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint"
+    display_name: "主键ID"
+    description: "对账记录ID"
+
+  - name: "record_id"
+    type: "varchar(128)"
+    display_name: "记录id"
+    description: "发卡对账记录表字段 record_id。"
+
+  - name: "transaction_id"
+    type: "varchar(128)"
+    display_name: "系统内交易ID"
+    description: "系统内交易ID"
+
+  - name: "short_transaction_id"
+    type: "varchar(36)"
+    display_name: "系统内 短交易id"
+    description: "系统内 短交易id"
+
+  - name: "channel_transaction_id"
+    type: "bigint"
+    display_name: "渠道交易id"
+    description: "发卡对账记录表字段 channel_transaction_id。"
+
+  - name: "channel_unique_id"
+    type: "varchar(255)"
+    display_name: "nium-auth code"
+    description: "nium-auth code"
+
+  - name: "channel_card_id"
+    type: "varchar(128)"
+    display_name: "卡片标识"
+    description: "卡片标识"
+
+  - name: "card_number"
+    type: "varchar(19)"
+    display_name: "卡号"
+    description: "卡号"
+    sensitive: true
+
+  - name: "pan_hash"
+    type: "varchar(64)"
+    display_name: "PAN哈希"
+    description: "PAN sha256 hash值"
+    sensitive: true
+
+  - name: "mask_card_number"
+    type: "varchar(36)"
+    display_name: "脱敏卡号"
+    description: "脱敏后的card number"
+    sensitive: true
+
+  - name: "transaction_amount"
+    type: "decimal(14,2)"
+    display_name: "交易金额"
+    description: "交易金额"
+
+  - name: "transaction_currency"
+    type: "varchar(10)"
+    display_name: "交易货币"
+    description: "交易货币"
+
+  - name: "transaction_type"
+    type: "varchar(50)"
+    display_name: "交易类型"
+    description: "交易类型"
+
+  - name: "transaction_status"
+    type: "tinyint"
+    display_name: "交易状态"
+    description: "交易状态"
+    enum_values:
+      - {value: -2, label: "已删除"}
+      - {value: -1, label: "失败"}
+      - {value: 0, label: "处理中/待处理"}
+      - {value: 1, label: "完成/成功"}
+
+  - name: "merchant_id"
+    type: "varchar(128)"
+    display_name: "商户ID"
+    description: "商户ID"
+
+  - name: "reconciliation_status"
+    type: "tinyint"
+    display_name: "对账状态 0-Unreconciled，1-Co"
+    description: "对账状态 0-Unreconciled，1-Completed，2-Failed"
+    enum_values:
+      - {value: 0, label: "Unreconciled"}
+      - {value: 1, label: "Completed"}
+      - {value: 2, label: "Failed"}
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "settlement_reconciliation_status"
+    type: "tinyint"
+    display_name: "清算对账status"
+    description: "发卡对账记录表字段 settlement_reconciliation_status。"
+
+relations: []
+
+common_queries:
+  - question: "发卡对账记录表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_records`;
+    tables: ["issuing_reconciliation_records"]
+    difficulty: "easy"
+  - question: "最近30天发卡对账记录表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_records`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_reconciliation_records"]
+    difficulty: "easy"
+  - question: "发卡对账记录表按状态分布"
+    sql: |
+      SELECT
+          CASE transaction_status
+            WHEN -2 THEN '已删除'
+            WHEN -1 THEN '失败'
+            WHEN 0 THEN '处理中/待处理'
+            WHEN 1 THEN '完成/成功'
+            ELSE CONCAT('其他:', CAST(transaction_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_reconciliation_records`
+      GROUP BY transaction_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_reconciliation_records"]
+    difficulty: "medium"
+  - question: "发卡对账记录表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`issuing_reconciliation_records`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["issuing_reconciliation_records"]
+    difficulty: "medium"
+  - question: "发卡对账记录表按transaction_id分布最多的是哪些"
+    sql: |
+      SELECT transaction_id AS "transaction_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_reconciliation_records`
+      WHERE transaction_id IS NOT NULL AND transaction_id != ''
+      GROUP BY transaction_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_reconciliation_records"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+
+code_sources:
+  - "uqpay-task/internal/repository/store/issuing_reconciliation_exceptions.go"
+  - "uqpay-task/internal/repository/store/issuing_reconciliation_records.go"
+  - "uqpay-task/internal/repository/store/repo.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_reconciliation_records.go"
+  - "uqpay-issuing-admincp-api/internal/repo/issuing_reconciliation_records_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_reconciliation_batches_service.go"
+  - "uqpay-issuing-message/internal/message/reports/issuing_reconciliation_exceptions_report.go"
+  - "uqpay-issuing-task/internal/domain/entity/issuing_reconciliation_record.go"

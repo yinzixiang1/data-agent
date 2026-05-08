@@ -1,0 +1,90 @@
+table:
+  name: "pmt_user_role"
+  database: "dwd_banking"
+  display_name: "支付用户角色表"
+  description: |
+    这张表记录支付/银行账户业务中的支付用户角色。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "用户", "角色", "pmt_user_role"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "机构ID"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "关联account_id"
+
+  - name: "role_id"
+    type: "varchar(36)"
+    display_name: "角色ID"
+    description: "角色ID"
+
+  - name: "role_type"
+    type: "int"
+    display_name: "角色类型"
+    description: "角色类型：0默认，1自定义"
+
+  - name: "role_status"
+    type: "int"
+    display_name: "角色状态"
+    description: "角色状态：0默认，1正常， -1禁用"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+relations: []
+
+common_queries:
+  - question: "支付用户角色表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_role`;
+    tables: ["pmt_user_role"]
+    difficulty: "easy"
+  - question: "最近30天支付用户角色表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_role`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_user_role"]
+    difficulty: "easy"
+  - question: "支付用户角色表按状态分布"
+    sql: |
+      SELECT
+          role_status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_user_role`
+      GROUP BY role_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_user_role"]
+    difficulty: "easy"
+  - question: "支付用户角色表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_user_role`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_user_role"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

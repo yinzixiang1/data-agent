@@ -6,7 +6,7 @@
 # 交付流程: 参照此模板填写 Excel/CSV → 管理员通过 admin API 导入。
 #
 # 数据消费链路:
-#   MySQL (语义层) + Doris (DDL) → 合并 Schema → BGE-M3 编码 → Milvus 索引
+#   MySQL (语义层) + MySQL (业务库 DDL) → 合并 Schema → BGE-M3 编码 → Milvus 索引
 #
 # 对应 MySQL 表:
 #   da_table            — 表语义
@@ -22,8 +22,8 @@
 
 # ── 1. 表语义 (da_table) ──
 table:
-  name: pmt_example                      # 必填，Doris 表名
-  database_name: dwd_banking             # 必填，Doris 库名
+  name: pmt_example                      # 必填，MySQL 表名
+  database_name: dwd_banking             # 必填，MySQL 库名
   display_name: 示例表                    # 中文名，出现在检索文本和 DDL 注释
   description: |                         # 表描述，越具体越好，直接影响语义召回
     这张表的业务含义、每行代表什么、核心用途。
@@ -32,10 +32,10 @@ table:
   query_tips: 已完成用 status=1           # 查询注意事项，DDL 底部输出 "-- 注意: xxx"
 
 # ── 2. 列语义 (da_table_column) ──
-# 只需填写需要补充语义的列，Doris DDL 中已有的列名/类型会自动获取
+# 只需填写需要补充语义的列，MySQL DDL 中已有的列名/类型会自动获取
 columns:
   # --- 普通列 ---
-  - name: column_a                       # 必填，列名（与 Doris 一致）
+  - name: column_a                       # 必填，列名（与 MySQL 一致）
     type: BIGINT                         # 数据类型
     display_name: 列A中文名               # 短名，DDL 注释第一段
     description: 详细说明，如取值格式       # 长描述，DDL 注释第二段

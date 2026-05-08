@@ -1,0 +1,121 @@
+table:
+  name: "uq_workflow"
+  database: "dwd_banking"
+  display_name: "UQ-工作流主表"
+  description: |
+    这张表记录UQ-工作流主相关数据。
+    每行代表一个独立业务对象或处理记录，具体粒度以主键和业务ID字段为准。
+    字段语义主要来自 DDL 注释和 issuing 代码扫描结果。
+  tags: ["客户中心", "UQPAY", "uq", "工作流", "uq_workflow"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "flow_id"
+    type: "varchar(64)"
+    display_name: "流ID"
+    description: "流ID"
+
+  - name: "flow_type"
+    type: "int"
+    display_name: "流类型，1=customer类，2=KYC/KY"
+    description: "流类型，1=customer类，2=KYC/KYB类，1000=商户类，2000=财务类，9000=配置类，9001=批量邮件类"
+    enum_values:
+      - {value: 1, label: "customer类"}
+      - {value: 2, label: "KYC/KYB类"}
+      - {value: 1000, label: "商户类"}
+      - {value: 2000, label: "财务类"}
+      - {value: 9000, label: "配置类"}
+      - {value: 9001, label: "批量邮件类"}
+
+  - name: "wf_config_id"
+    type: "varchar(36)"
+    display_name: "设置UUID"
+    description: "设置UUID"
+
+  - name: "reference_id"
+    type: "varchar(48)"
+    display_name: "关联ID，唯一与creator_id"
+    description: "关联ID，唯一与creator_id"
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "关联ID短号"
+    description: "关联ID短号"
+
+  - name: "reference_params"
+    type: "text"
+    display_name: "参数"
+    description: "参数"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "创建时间"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "更新时间"
+
+  - name: "creator_id"
+    type: "varchar(36)"
+    display_name: "创建者ID"
+    description: "创建者ID"
+
+  - name: "review_status"
+    type: "tinyint(1)"
+    display_name: "最后审查状态"
+    description: "最后审查状态：1=passed, 0=in_review, -1=rejected"
+    enum_values:
+      - {value: 1, label: "passed"}
+      - {value: 0, label: "in_review"}
+      - {value: -1, label: "rejected"}
+
+relations: []
+
+common_queries:
+  - question: "UQ-工作流主表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_workflow`;
+    tables: ["uq_workflow"]
+    difficulty: "easy"
+  - question: "最近30天UQ-工作流主表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`uq_workflow`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["uq_workflow"]
+    difficulty: "easy"
+  - question: "UQ-工作流主表按状态分布"
+    sql: |
+      SELECT
+          CASE review_status
+            WHEN 1 THEN 'passed'
+            WHEN 0 THEN 'in_review'
+            WHEN -1 THEN 'rejected'
+            ELSE CONCAT('其他:', CAST(review_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`uq_workflow`
+      GROUP BY review_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["uq_workflow"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/uq_workflow.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/uq_workflow_approval.go"
+  - "uqpay-issuing-admincp-api/internal/domain/entity/uq_workflow_config.go"
+  - "uqpay-issuing-admincp-api/internal/repo/uq_workflow_approval_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/uq_workflow_config_repo.go"
+  - "uqpay-issuing-admincp-api/internal/repo/uq_workflow_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/uq_customer_attach_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/uq_customer_info_log_service.go"

@@ -1,0 +1,112 @@
+table:
+  name: "issuing_card_limit_activity"
+  database: "dwd_banking"
+  display_name: "卡余额变动表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的卡余额变动。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "额度", "流水", "issuing_card_limit_activity"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "card_id"
+    type: "varchar(36)"
+    display_name: "卡片ID"
+    description: "卡ID"
+
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "卡余额变动表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "卡余额变动表字段 account_id。"
+
+  - name: "card_number"
+    type: "varchar(24)"
+    display_name: "卡号"
+    description: "卡余额变动表字段 card_number。"
+    sensitive: true
+
+  - name: "transaction_type"
+    type: "int"
+    display_name: "交易类型"
+    description: "交易类型"
+
+  - name: "card_type"
+    type: "smallint"
+    display_name: "卡类型"
+    description: "1000=预付费卡账户，2000=借记卡账户"
+    enum_values:
+      - {value: 1000, label: "预付费卡账户"}
+      - {value: 2000, label: "借记卡账户"}
+
+  - name: "transaction_amount"
+    type: "decimal(16,4)"
+    display_name: "交易金额"
+    description: "交易金额"
+
+  - name: "transaction_currency"
+    type: "varchar(4)"
+    display_name: "交易币种"
+    description: "交易币种"
+
+  - name: "ref_transaction_id"
+    type: "varchar(36)"
+    display_name: "关联原始交易订单ID"
+    description: "关联原始交易订单ID"
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "卡余额变动表字段 create_time。"
+
+relations: []
+
+common_queries:
+  - question: "卡余额变动表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_limit_activity`;
+    tables: ["issuing_card_limit_activity"]
+    difficulty: "easy"
+  - question: "最近30天卡余额变动表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_limit_activity`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_card_limit_activity"]
+    difficulty: "easy"
+  - question: "卡余额变动表按币种汇总金额"
+    sql: |
+      SELECT transaction_currency AS "币种", COUNT(*) AS "笔数", SUM(transaction_amount) AS "金额"
+      FROM dwd_banking.`issuing_card_limit_activity`
+      GROUP BY transaction_currency
+      ORDER BY SUM(transaction_amount) DESC;
+    tables: ["issuing_card_limit_activity"]
+    difficulty: "medium"
+  - question: "卡余额变动表按card_id分布最多的是哪些"
+    sql: |
+      SELECT card_id AS "card_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_card_limit_activity`
+      WHERE card_id IS NOT NULL AND card_id != ''
+      GROUP BY card_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["issuing_card_limit_activity"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_card_limit_activity.go"
+  - "uqpay-issuing-admincp-api/internal/data/issuing_card_limit_activity_data.go"
+  - "uqpay-issuing-gateway/internal/infra/transdecision/niumdecision.go"
+  - "uqpay-issuing-gateway/internal/infra/transdecision/straitsxdecision.go"

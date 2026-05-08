@@ -1,0 +1,60 @@
+table:
+  name: "issuing_silent_card"
+  database: "dwd_banking"
+  display_name: "发卡沉默卡片表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的发卡沉默卡片。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "卡片", "沉默", "issuing_silent_card"]
+  query_tips: "按业务主键、状态字段和创建时间过滤可减少扫描范围。"
+
+columns:
+  - name: "id"
+    type: "int"
+    display_name: "主键ID"
+    description: "发卡沉默卡片表字段 id。"
+
+  - name: "card_number"
+    type: "varchar(19)"
+    display_name: "卡号"
+    description: "发卡沉默卡片表字段 card_number。"
+    sensitive: true
+
+  - name: "status"
+    type: "int"
+    display_name: "状态"
+    description: "发卡沉默卡片表字段 status。"
+
+relations: []
+
+common_queries:
+  - question: "发卡沉默卡片表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_silent_card`;
+    tables: ["issuing_silent_card"]
+    difficulty: "easy"
+  - question: "发卡沉默卡片表按状态分布"
+    sql: |
+      SELECT
+          status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_silent_card`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_silent_card"]
+    difficulty: "easy"
+  - question: "发卡沉默卡片表按主键倒序查看最新记录"
+    sql: |
+      SELECT *
+      FROM dwd_banking.`issuing_silent_card`
+      ORDER BY id DESC
+      LIMIT 100;
+    tables: ["issuing_silent_card"]
+    difficulty: "easy"
+
+review_required:
+  - "未在 Go 代码中找到明确表名或实体引用，字段含义主要来自 DDL COMMENT，需要业务确认。"
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"

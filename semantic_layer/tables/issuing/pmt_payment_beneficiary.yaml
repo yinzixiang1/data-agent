@@ -1,0 +1,264 @@
+table:
+  name: "pmt_payment_beneficiary"
+  database: "dwd_banking"
+  display_name: "收款受益人表"
+  description: |
+    这张表记录支付/银行账户业务中的收款受益人。
+    每行代表一个账户、订单、资金交易、配置或关联对象，具体粒度以业务ID字段为准。
+    常用于账户、资金、付款、收款、换汇、产品配置和运营报表查询。
+  tags: ["支付", "pmt", "收款方", "pmt_payment_beneficiary"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "direct_id"
+    type: "varchar(36)"
+    display_name: "直属账户ID"
+    description: "收款受益人表字段 direct_id。"
+
+  - name: "account_id"
+    type: "varchar(36)"
+    display_name: "账户ID"
+    description: "收款受益人表字段 account_id。"
+
+  - name: "entity_type"
+    type: "int"
+    display_name: "主体类型"
+    description: "1000=PERSONAL, 2000=COMPANY"
+    enum_values:
+      - {value: 1000, label: "PERSONAL"}
+      - {value: 2000, label: "COMPANY"}
+
+  - name: "beneficiary_id"
+    type: "varchar(36)"
+    display_name: "收款方id"
+    description: "收款受益人表字段 beneficiary_id。"
+
+  - name: "payment_method"
+    type: "int"
+    display_name: "1000=local"
+    description: "1000=local, 2000=swift, "
+    enum_values:
+      - {value: 1000, label: "local"}
+      - {value: 2000, label: "swift"}
+
+  - name: "beneficiary_email"
+    type: "varchar(120)"
+    display_name: "收款方email"
+    description: "收款受益人表字段 beneficiary_email。"
+    sensitive: true
+
+  - name: "beneficiary_first_name"
+    type: "varchar(45)"
+    display_name: "entity_type=1000"
+    description: "entity_type=1000,必填"
+    sensitive: true
+
+  - name: "beneficiary_last_name"
+    type: "varchar(45)"
+    display_name: "entity_type=1000"
+    description: "entity_type=1000,必填"
+    sensitive: true
+
+  - name: "id_number"
+    type: "varchar(30)"
+    display_name: "身份证号码"
+    description: "身份证号码"
+    sensitive: true
+
+  - name: "legal_representative_first_name"
+    type: "varchar(45)"
+    display_name: "企业法人名字"
+    description: "企业法人名字"
+    sensitive: true
+
+  - name: "legal_representative_last_name"
+    type: "varchar(45)"
+    display_name: "企业法人姓氏"
+    description: "企业法人姓氏"
+    sensitive: true
+
+  - name: "account_currency_code"
+    type: "varchar(8)"
+    display_name: "银行账户币种"
+    description: "银行账户币种"
+
+  - name: "beneficiary_bank_details"
+    type: "text"
+    display_name: "银行信息"
+    description: "银行信息, {\"account_currency_code\": \"USD\",  \"account_holder: \"John Walker\",\"account_number\": \"1707625311\", \"bank_country_code\": \"SG\",\"bank_name\": \"National Australia Bank\",\"local_clearing_system\": \"RTGS\", \"swift_code\": \"DBSSSGSG\"},"
+    skip_index: true
+
+  - name: "beneficiary_address"
+    type: "text"
+    display_name: "接受者 地址信息"
+    description: "接受者 地址信息,{\"city\": \"Melbourne\",\"country_code\": \"AU\",\"postal_code\":\"3000\",\"state\":\"VIC\",\"street_address\": \"15 William Street\"}"
+    sensitive: true
+    skip_index: true
+
+  - name: "short_account_id"
+    type: "varchar(20)"
+    display_name: "账户短号"
+    description: "收款受益人表字段 short_account_id。"
+
+  - name: "ref_cc_beneficiary_id"
+    type: "varchar(36)"
+    display_name: "refcc收款方id"
+    description: "收款受益人表字段 ref_cc_beneficiary_id。"
+
+  - name: "ref_cc_main_beneficiary_id"
+    type: "varchar(36)"
+    display_name: "同步在house account 建立收益人。"
+    description: "同步在house account 建立收益人。"
+
+  - name: "ref_cc_mango_beneficiary_id"
+    type: "varchar(36)"
+    display_name: "refccmango收款方id"
+    description: "收款受益人表字段 ref_cc_mango_beneficiary_id。"
+
+  - name: "ref_cc_mango_main_beneficiary_id"
+    type: "varchar(36)"
+    display_name: "同步在cc mango house accoun"
+    description: "同步在cc mango house account 建立收益人。"
+
+  - name: "ref_cc_channel_data"
+    type: "text"
+    display_name: "渠道信息"
+    description: "渠道信息"
+    skip_index: true
+
+  - name: "ref_beneficiary_ids"
+    type: "text"
+    display_name: "渠道IDS"
+    description: "渠道IDS：{\"cc_beneficiary_id\": \"\", \"cc_main_beneficiary_id\": \"\"}"
+    skip_index: true
+
+  - name: "short_reference_id"
+    type: "varchar(20)"
+    display_name: "短号"
+    description: "短号"
+
+  - name: "execute_reason"
+    type: "text"
+    display_name: "对应失败原因"
+    description: "对应失败原因"
+    skip_index: true
+
+  - name: "create_time"
+    type: "datetime"
+    display_name: "创建时间"
+    description: "收款受益人表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime"
+    display_name: "更新时间"
+    description: "收款受益人表字段 update_time。"
+
+  - name: "verification_status"
+    type: "tinyint(1)"
+    display_name: "KYC/KYB认证状态"
+    description: "KYC/KYB验证状态：-1=验证失败 0=待验证，1=验证成功"
+    enum_values:
+      - {value: -1, label: "拒绝"}
+      - {value: 0, label: "默认/未认证"}
+      - {value: 1, label: "已通过"}
+      - {value: 2, label: "审核中"}
+
+  - name: "beneficiary_status"
+    type: "tinyint(1)"
+    display_name: "-1=软删除， 0 - 默认不可用 1 - 可用"
+    description: "-1=软删除， 0 - 默认不可用 1 - 可用"
+    enum_values:
+      - {value: -1, label: "软删除"}
+      - {value: 0, label: "默认不可用"}
+      - {value: 1, label: "可用"}
+
+  - name: "risk_flag"
+    type: "tinyint"
+    display_name: "风险标记"
+    description: "风险标记：0=无，1=白名单，2=黑名单"
+    enum_values:
+      - {value: 0, label: "无"}
+      - {value: 1, label: "白名单"}
+      - {value: 2, label: "黑名单"}
+
+  - name: "ext_applicant_id"
+    type: "varchar(36)"
+    display_name: "extapplicantid"
+    description: "收款受益人表字段 ext_applicant_id。"
+
+  - name: "additional_info"
+    type: "text"
+    display_name: "additional信息"
+    description: "收款受益人表字段 additional_info。"
+    skip_index: true
+
+  - name: "id_type"
+    type: "int"
+    display_name: "1000-passport"
+    description: "1000-passport, 1001-Drivers License; 1002=National ID"
+    sensitive: true
+
+  - name: "id_expiry_date"
+    type: "varchar(10)"
+    display_name: "证件有效期"
+    description: "证件有效期"
+    sensitive: true
+
+relations: []
+
+common_queries:
+  - question: "收款受益人表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_beneficiary`;
+    tables: ["pmt_payment_beneficiary"]
+    difficulty: "easy"
+  - question: "最近30天收款受益人表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_beneficiary`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["pmt_payment_beneficiary"]
+    difficulty: "easy"
+  - question: "收款受益人表按状态分布"
+    sql: |
+      SELECT
+          CASE verification_status
+            WHEN -1 THEN '拒绝'
+            WHEN 0 THEN '默认/未认证'
+            WHEN 1 THEN '已通过'
+            WHEN 2 THEN '审核中'
+            ELSE CONCAT('其他:', CAST(verification_status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`pmt_payment_beneficiary`
+      GROUP BY verification_status
+      ORDER BY COUNT(*) DESC;
+    tables: ["pmt_payment_beneficiary"]
+    difficulty: "medium"
+  - question: "收款受益人表按direct_id分布最多的是哪些"
+    sql: |
+      SELECT direct_id AS "direct_id", COUNT(*) AS "记录数"
+      FROM dwd_banking.`pmt_payment_beneficiary`
+      WHERE direct_id IS NOT NULL AND direct_id != ''
+      GROUP BY direct_id
+      ORDER BY COUNT(*) DESC
+      LIMIT 100;
+    tables: ["pmt_payment_beneficiary"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/pmt_payment_beneficiary.go"
+  - "uqpay-issuing-admincp-api/internal/repo/payment_beneficiary_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_finance_payout_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_payment_beneficiary_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_aml_check_service.go"
+  - "uqpay-issuing-webhook/internal/entity/pmt_payment_beneficiary.go"
+  - "uqpay-issuing-admincp-api/api/handle/pmt_payment_beneficiary_handle.go"
+  - "uqpay-issuing-admincp-api/api/routers/finance/finance_payout_router.go"

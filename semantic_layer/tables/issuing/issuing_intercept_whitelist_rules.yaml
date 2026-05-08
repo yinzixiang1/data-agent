@@ -1,0 +1,112 @@
+table:
+  name: "issuing_intercept_whitelist_rules"
+  database: "dwd_banking"
+  display_name: "拦截交易白名单规则表"
+  description: |
+    这张表记录 UQPAY 发卡业务中的拦截交易白名单规则。
+    每行代表一个独立业务对象、交易事件、配置项或处理流水，具体粒度以主键和业务ID字段为准。
+    常用于发卡账户、卡片、交易、清算、对账、报表或渠道处理场景的查询分析。
+  tags: ["发卡", "issuing", "拦截", "白名单", "规则", "issuing_intercept_whitelist_rules"]
+  query_tips: "时间范围优先使用 create_time 字段。"
+
+columns:
+  - name: "id"
+    type: "bigint unsigned"
+    display_name: "主键ID"
+    description: "拦截交易白名单规则表字段 id。"
+
+  - name: "rule_id"
+    type: "varchar(64)"
+    display_name: "规则唯一ID"
+    description: "规则唯一ID（雪花ID）"
+
+  - name: "subject_type"
+    type: "smallint"
+    display_name: "主体类型"
+    description: "主体类型：1=Master，2=Account，3=Card"
+    enum_values:
+      - {value: 1, label: "Master"}
+      - {value: 2, label: "Account"}
+      - {value: 3, label: "Card"}
+
+  - name: "subject_id"
+    type: "varchar(64)"
+    display_name: "主体ID"
+    description: "主体ID（Master ID / Account ID / Card ID）"
+
+  - name: "merchant_id"
+    type: "varchar(128)"
+    display_name: "Merchant ID"
+    description: "Merchant ID（选填，精确匹配）"
+
+  - name: "intercept_reason_codes"
+    type: "text"
+    display_name: "拦截原因码JSON数组，如 [1005"
+    description: "拦截原因码JSON数组，如 [1005,1014]"
+    skip_index: true
+
+  - name: "status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "0=禁用，1=启用"
+    enum_values:
+      - {value: 0, label: "禁用"}
+      - {value: 1, label: "启用"}
+
+  - name: "creator_id"
+    type: "varchar(64)"
+    display_name: "创建人ID"
+    description: "创建人ID"
+
+  - name: "create_time"
+    type: "datetime(3)"
+    display_name: "创建时间"
+    description: "拦截交易白名单规则表字段 create_time。"
+
+  - name: "update_time"
+    type: "datetime(3)"
+    display_name: "更新时间"
+    description: "拦截交易白名单规则表字段 update_time。"
+
+relations: []
+
+common_queries:
+  - question: "拦截交易白名单规则表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_intercept_whitelist_rules`;
+    tables: ["issuing_intercept_whitelist_rules"]
+    difficulty: "easy"
+  - question: "最近30天拦截交易白名单规则表每天新增多少"
+    sql: |
+      SELECT DATE(create_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`issuing_intercept_whitelist_rules`
+      WHERE create_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(create_time)
+      ORDER BY DATE(create_time) DESC;
+    tables: ["issuing_intercept_whitelist_rules"]
+    difficulty: "easy"
+  - question: "拦截交易白名单规则表按状态分布"
+    sql: |
+      SELECT
+          CASE status
+            WHEN 0 THEN '禁用'
+            WHEN 1 THEN '启用'
+            ELSE CONCAT('其他:', CAST(status AS STRING))
+          END AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`issuing_intercept_whitelist_rules`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["issuing_intercept_whitelist_rules"]
+    difficulty: "medium"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/issuing_intercept_whitelist_rule.go"
+  - "uqpay-issuing-message/internal/entity/issuing_intercept_whitelist_rule.go"
+  - "uqpay-issuing-monitor/entities/issuing_intercept_whitelist_rules.go"
+  - "uqpay-issuing-monitor/data/intercept.go"

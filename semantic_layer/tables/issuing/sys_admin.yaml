@@ -1,0 +1,87 @@
+table:
+  name: "sys_admin"
+  database: "dwd_banking"
+  display_name: "系统管理员表"
+  description: |
+    这张表记录系统侧的系统管理员。
+    每行代表一个系统配置、字典、任务、权限或操作记录。
+    查询时应区分业务事实表和系统配置表，避免将配置记录误当作交易流水。
+  tags: ["系统配置", "sys", "系统", "管理员", "sys_admin"]
+  query_tips: "时间范围优先使用 password_last_time 字段。"
+
+columns:
+  - name: "id"
+    type: "int"
+    display_name: "主键ID"
+    description: "系统管理员表字段 id。"
+
+  - name: "email"
+    type: "varchar(120)"
+    display_name: "邮箱"
+    description: "系统管理员表字段 email。"
+    sensitive: true
+
+  - name: "password"
+    type: "varchar(32)"
+    display_name: "password"
+    description: "系统管理员表字段 password。"
+    sensitive: true
+
+  - name: "password_last_time"
+    type: "datetime"
+    display_name: "passwordlasttime"
+    description: "系统管理员表字段 password_last_time。"
+    sensitive: true
+
+  - name: "status"
+    type: "tinyint(1)"
+    display_name: "状态"
+    description: "系统管理员表字段 status。"
+
+  - name: "permission_type"
+    type: "int"
+    display_name: "权限组分类"
+    description: "权限组分类"
+
+relations: []
+
+common_queries:
+  - question: "系统管理员表有多少条记录"
+    sql: |
+      SELECT COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_admin`;
+    tables: ["sys_admin"]
+    difficulty: "easy"
+  - question: "最近30天系统管理员表每天新增多少"
+    sql: |
+      SELECT DATE(password_last_time) AS "日期", COUNT(*) AS "记录数"
+      FROM dwd_banking.`sys_admin`
+      WHERE password_last_time >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(password_last_time)
+      ORDER BY DATE(password_last_time) DESC;
+    tables: ["sys_admin"]
+    difficulty: "easy"
+  - question: "系统管理员表按状态分布"
+    sql: |
+      SELECT
+          status AS "状态",
+          COUNT(*) AS "数量"
+      FROM dwd_banking.`sys_admin`
+      GROUP BY status
+      ORDER BY COUNT(*) DESC;
+    tables: ["sys_admin"]
+    difficulty: "easy"
+
+review_required:
+  - "未发现可确认的真实代码 JOIN，relations 暂不配置，避免猜测关联。"
+  - "通用问题由字段结构自动生成，建议数仓补充真实高频问法和标准 SQL。"
+
+code_sources:
+  - "uqpay-issuing-admincp-api/internal/domain/entity/sys_admin.go"
+  - "uqpay-issuing-admincp-api/internal/repo/sys_admin_repo.go"
+  - "uqpay-issuing-admincp-api/internal/service/issuing_intercept_transactions_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/pmt_finance_payout_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_admin_service.go"
+  - "uqpay-issuing-admincp-api/internal/service/sys_service_product_service.go"
+  - "uqpay-issuing-message/internal/message/reports/issuing_supplement_report.go"
+  - "uqpay-issuing-admincp-api/internal/data/issuing_intercept_transactions_data.go"
