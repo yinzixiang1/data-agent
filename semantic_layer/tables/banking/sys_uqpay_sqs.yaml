@@ -1,0 +1,77 @@
+table:
+  name: sys_uqpay_sqs
+  database: dwd_banking
+  display_name: SQS消息队列表
+  description: 'AWS SQS消息处理记录。
+
+    每行代表一条SQS消息处理结果。'
+  tags:
+  - SQS
+  - AWS
+  - 消息处理
+  - message queue
+  - sys_uqpay_sqs
+  query_tips: ''
+columns:
+- name: sid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: sqs_topic
+  display_name: 消息topic
+  type: VARCHAR(120)
+  description: 消息topic
+- name: sqs_msg_id
+  display_name: 消息ID
+  type: VARCHAR(120)
+  description: 消息id
+- name: sqs_payload
+  display_name: 消息payload
+  type: TEXT
+  skip_index: true
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: sqs_status
+  display_name: 处理状态
+  type: INT
+  description: -1处理失败 1:处理成功
+  enum_values:
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 处理成功
+  - value: -1
+    label: 处理失败
+- name: sqs_reason
+  display_name: 失败原因
+  type: TEXT
+  description: 执行错误说明原因
+  skip_index: true
+common_queries:
+- question: SQS失败消息原因
+  sql: "SELECT sqs_topic AS 'topic',\n       COUNT(*) AS '失败数'\nFROM dwd_banking.`sys_uqpay_sqs`\n\
+    WHERE sqs_status = -1\n  AND create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)\n\
+    GROUP BY sqs_topic\nORDER BY `失败数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_uqpay_sqs
+  difficulty: easy
+- question: 各topic处理量
+  sql: "SELECT sqs_topic AS 'topic',\n       COUNT(*) AS '总数',\n       SUM(CASE WHEN\
+    \ sqs_status = 1 THEN 1 ELSE 0 END) AS '成功',\n       SUM(CASE WHEN sqs_status\
+    \ = -1 THEN 1 ELSE 0 END) AS '失败'\nFROM dwd_banking.`sys_uqpay_sqs`\nWHERE create_time\
+    \ >= DATE_SUB(NOW(), INTERVAL 1 DAY)\nGROUP BY sqs_topic\nORDER BY `总数` DESC\n\
+    LIMIT 100\n"
+  tables:
+  - sys_uqpay_sqs
+  difficulty: medium
+- question: 消息处理成功率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN sqs_status = 1 THEN 1 ELSE 0 END) * 100.0 /\
+    \ COUNT(*), 2) AS '成功率%'\nFROM dwd_banking.`sys_uqpay_sqs`\nWHERE create_time\
+    \ >= DATE_SUB(NOW(), INTERVAL 1 DAY)\nLIMIT 100\n"
+  tables:
+  - sys_uqpay_sqs
+  difficulty: medium

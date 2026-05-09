@@ -109,16 +109,27 @@ class SchemaRetriever:
         # 加载 Schema + 语义层 + 枚举 + Fewshot
         schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all()
 
-        # 全量构建索引
-        logger.info("开始全量构建索引...")
-        indices = self.index_manager.build(
-            schemas,
-            embedding,
-            enums,
-            fewshot_examples,
-            glossary,
-            index_build_config=config.index_build_config,
-        )
+        from src.retrieval.config import REBUILD_INDEX_ON_STARTUP
+
+        if REBUILD_INDEX_ON_STARTUP:
+            # 全量构建索引
+            logger.info("开始全量构建索引 (REBUILD_INDEX_ON_STARTUP=true)...")
+            indices = self.index_manager.build(
+                schemas,
+                embedding,
+                enums,
+                fewshot_examples,
+                glossary,
+                index_build_config=config.index_build_config,
+            )
+        else:
+            # 复用已有 Collection
+            logger.info("连接已有索引 (REBUILD_INDEX_ON_STARTUP=false)...")
+            indices = self.index_manager.connect(
+                schemas,
+                embedding,
+                fewshot_examples,
+            )
 
         # 初始化术语解析器
         glossary_params = get_search_params(config.collection_search_config, "glossary")

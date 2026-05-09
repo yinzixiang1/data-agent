@@ -1,0 +1,120 @@
+table:
+  name: pmt_service_product
+  database: dwd_banking
+  display_name: 服务产品表
+  description: '平台所有产品的主数据。
+
+    每行代表一个产品(产品代码/名称/约束/费率方案/授权交易类型)。'
+  tags:
+  - 产品主数据
+  - 产品中心
+  - service product
+  - pmt_service_product
+  query_tips: ''
+columns:
+- name: product_id
+  display_name: 产品ID
+  type: INT
+  skip_index: true
+- name: product_code
+  display_name: 产品代码
+  type: VARCHAR(60)
+  description: 产品编码（唯一）
+- name: product_name
+  display_name: 产品名称
+  type: VARCHAR(60)
+  description: 产品名称
+- name: product_name_outside
+  display_name: 对外产品名
+  type: VARCHAR(60)
+  description: 产品名称-对外
+- name: restrict_id
+  display_name: 关联约束ID
+  type: INT
+  description: 关联约束ID
+  skip_index: true
+- name: restrict_name
+  display_name: 关联约束名
+  type: VARCHAR(60)
+  description: 关联约束名字
+- name: rate_scheme_id
+  display_name: 费率方案ID
+  type: VARCHAR(36)
+  description: 费率ID
+- name: rate_scheme_name
+  display_name: 费率方案名
+  type: VARCHAR(45)
+  description: 关联费率方案名
+- name: auth_trade_type
+  display_name: 授权交易类型JSON
+  type: TEXT
+  description: 授权交易类型JSON
+  skip_index: true
+- name: meta_data
+  display_name: 元数据
+  type: TEXT
+  description: 元数据
+  skip_index: true
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: product_status
+  display_name: 产品状态
+  type: TINYINT(1)
+  description: 产品状态：0=关闭 1=开通
+  enum_values:
+  - value: 0
+    label: 关闭
+  - value: 1
+    label: 开通
+- name: review_status
+  display_name: 审查状态
+  type: TINYINT(1)
+  description: 审查状态：1=passed, 0=in_review, -1=rejected
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: 0
+    label: 审核中
+  - value: -1
+    label: 拒绝
+relations:
+- column: restrict_id
+  target_table: pmt_service_restrict
+  target_column: restrict_id
+  join_type: LEFT JOIN
+- column: rate_scheme_id
+  target_table: pmt_service_rate_scheme
+  target_column: rate_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 启用中的产品数
+  sql: 'SELECT COUNT(*) AS ''启用产品数''
+
+    FROM dwd_banking.`pmt_service_product`
+
+    WHERE product_status = 1
+
+    LIMIT 100
+
+    '
+  tables:
+  - pmt_service_product
+  difficulty: easy
+- question: 各产品的费率方案
+  sql: "SELECT product_code AS '产品代码',\n       product_name AS '产品名',\n       rate_scheme_name\
+    \ AS '费率方案'\nFROM dwd_banking.`pmt_service_product`\nWHERE product_status = 1\n\
+    ORDER BY product_code\nLIMIT 100\n"
+  tables:
+  - pmt_service_product
+  difficulty: easy
+- question: 待审核产品
+  sql: "SELECT product_code AS '产品代码',\n       product_name AS '产品名',\n       create_time\
+    \ AS '创建时间'\nFROM dwd_banking.`pmt_service_product`\nWHERE review_status = 0\n\
+    LIMIT 100\n"
+  tables:
+  - pmt_service_product
+  difficulty: easy

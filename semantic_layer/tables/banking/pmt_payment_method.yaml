@@ -1,0 +1,103 @@
+table:
+  name: pmt_payment_method
+  database: dwd_banking
+  display_name: VAFX支付方式表
+  description: '各国家/币种支持的支付方式配置(LOCAL/SWIFT)。
+
+    每行代表一个 (country_code, currency_code, payment_method, clearing_systems) 配置，含速度、限额、手续费、验证字段。'
+  tags:
+  - 支付方式
+  - payment method
+  - 清算系统
+  - LOCAL
+  - SWIFT
+  - 国家币种配置
+  - pmt_payment_method
+  query_tips: ''
+columns:
+- name: pmid
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: country_code
+  display_name: 国家代码
+  type: VARCHAR(2)
+- name: currency_code
+  display_name: 币种代码
+  type: VARCHAR(3)
+- name: payment_method
+  display_name: 支付方式
+  type: INT
+  description: 1000=local, 2000=swift
+  enum_values:
+  - value: 1000
+    label: LOCAL
+  - value: 2000
+    label: SWIFT
+- name: clearing_systems
+  display_name: 清算系统
+  type: VARCHAR(30)
+- name: speed_min_days
+  display_name: 最快天数
+  type: INT
+- name: speed_max_days
+  display_name: 最慢天数
+  type: INT
+- name: transfer_limit
+  display_name: 转账限额
+  type: DECIMAL(16,2)
+  description: 转账限额
+- name: transfer_fee
+  display_name: 转账手续费
+  type: DECIMAL(16,2)
+- name: remark
+  display_name: 备注
+  type: VARCHAR(200)
+  description: 备注信息
+- name: status
+  display_name: 状态
+  type: TINYINT(1)
+  enum_values:
+  - value: 0
+    label: 禁用
+  - value: 1
+    label: 启用
+- name: validation_field
+  display_name: 验证字段
+  type: TEXT
+  description: 验证字段
+  skip_index: true
+relations:
+- column: country_code
+  target_table: sys_country_code
+  target_column: alpha_two_code
+  join_type: LEFT JOIN
+- column: currency_code
+  target_table: sys_currency_code
+  target_column: currency_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 各国家支持的支付方式
+  sql: "SELECT country_code AS '国家',\n       currency_code AS '币种',\n       CASE payment_method\
+    \ WHEN 1000 THEN 'LOCAL' WHEN 2000 THEN 'SWIFT' END AS '支付方式',\n       clearing_systems\
+    \ AS '清算系统'\nFROM dwd_banking.`pmt_payment_method`\nWHERE status = 1\nORDER BY\
+    \ country_code, currency_code\nLIMIT 100\n"
+  tables:
+  - pmt_payment_method
+  difficulty: easy
+- question: SWIFT vs LOCAL速度对比
+  sql: "SELECT\n  CASE payment_method WHEN 1000 THEN 'LOCAL' WHEN 2000 THEN 'SWIFT'\
+    \ END AS '支付方式',\n  AVG(speed_min_days) AS '平均最快天数',\n  AVG(speed_max_days) AS\
+    \ '平均最慢天数'\nFROM dwd_banking.`pmt_payment_method`\nWHERE status = 1\nGROUP BY\
+    \ payment_method\nLIMIT 100\n"
+  tables:
+  - pmt_payment_method
+  difficulty: medium
+- question: 各国转账限额
+  sql: "SELECT country_code AS '国家',\n       currency_code AS '币种',\n       payment_method\
+    \ AS '方式',\n       transfer_limit AS '限额',\n       transfer_fee AS '手续费'\nFROM\
+    \ dwd_banking.`pmt_payment_method`\nWHERE status = 1\n  AND transfer_limit > 0\n\
+    ORDER BY country_code, currency_code\nLIMIT 100\n"
+  tables:
+  - pmt_payment_method
+  difficulty: easy

@@ -1,0 +1,87 @@
+table:
+  name: pmt_account_channel_relation
+  database: dwd_banking
+  display_name: 账户渠道关联表
+  description: '商户在各渠道的多种账户关系映射(DEPOSIT/PAYMENT)，用于跨渠道路由查找渠道账户ID。
+
+    每行代表一个 (account_id, currency, channel_account_type, channel_code) 的关系。'
+  tags:
+  - 渠道映射
+  - 路由
+  - 账户关联
+  - channel relation
+  - pmt_account_channel_relation
+  query_tips: ''
+columns:
+- name: id
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+- name: account_id
+  display_name: 系统内部账户ID
+  type: VARCHAR(36)
+  description: 系统内部账户ID
+- name: currency
+  display_name: 币种
+  type: VARCHAR(6)
+- name: channel_customer_id
+  display_name: 渠道客户ID
+  type: VARCHAR(36)
+  description: 渠道唯一ID
+- name: channel_account_id
+  display_name: 渠道账户ID
+  type: VARCHAR(40)
+- name: channel_account_type
+  display_name: 渠道账户类型
+  type: VARCHAR(36)
+  description: rail类型
+  enum_values:
+  - DEPOSIT
+  - PAYMENT
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(60)
+  description: 渠道编码
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 某商户在哪些渠道有DEPOSIT账户？
+  sql: "SELECT channel_code AS '渠道',\n       currency AS '币种',\n       channel_account_id\
+    \ AS '渠道账户ID'\nFROM dwd_banking.`pmt_account_channel_relation`\nWHERE account_id\
+    \ = ?\n  AND channel_account_type = 'DEPOSIT'\nLIMIT 100\n"
+  tables:
+  - pmt_account_channel_relation
+  difficulty: easy
+- question: 各渠道的DEPOSIT/PAYMENT账户数量
+  sql: "SELECT channel_code AS '渠道',\n       channel_account_type AS '账户类型',\n   \
+    \    COUNT(*) AS '数量'\nFROM dwd_banking.`pmt_account_channel_relation`\nGROUP\
+    \ BY channel_code, channel_account_type\nORDER BY channel_code, channel_account_type\n\
+    LIMIT 100\n"
+  tables:
+  - pmt_account_channel_relation
+  difficulty: easy
+- question: 同时拥有DEPOSIT和PAYMENT能力的商户
+  sql: "SELECT account_id AS '账户ID',\n       channel_code AS '渠道',\n       COUNT(DISTINCT\
+    \ channel_account_type) AS '能力数'\nFROM dwd_banking.`pmt_account_channel_relation`\n\
+    WHERE channel_account_type IN ('DEPOSIT', 'PAYMENT')\nGROUP BY account_id, channel_code\n\
+    HAVING COUNT(DISTINCT channel_account_type) = 2\nLIMIT 100\n"
+  tables:
+  - pmt_account_channel_relation
+  difficulty: medium
+- question: 各币种的渠道账户分布
+  sql: "SELECT currency AS '币种',\n       channel_code AS '渠道',\n       COUNT(*) AS\
+    \ '账户数'\nFROM dwd_banking.`pmt_account_channel_relation`\nGROUP BY currency, channel_code\n\
+    ORDER BY currency, `账户数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_channel_relation
+  difficulty: easy

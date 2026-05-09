@@ -1,0 +1,138 @@
+table:
+  name: pmt_service_invoice_scheme
+  database: dwd_banking
+  display_name: Invoice配置表
+  description: '计费方案配置，被Invoice生成时引用。
+
+    每行代表一个计费方案，含费率类型、税率、优惠规则等。'
+  tags:
+  - 计费规则
+  - invoice配置
+  - 税率
+  - fee scheme
+  - pmt_service_invoice_scheme
+  query_tips: ''
+columns:
+- name: ivid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: scheme_id
+  display_name: 方案ID
+  type: VARCHAR(36)
+  description: 唯一ID
+- name: scheme_type
+  display_name: 方案类型
+  type: INT
+  description: 类型 1000=VA 2000=FX(预留), 3000=AC, 4000=IC
+  enum_values:
+  - value: 1000
+    label: VA
+  - value: 2000
+    label: FX
+  - value: 3000
+    label: AC
+  - value: 4000
+    label: IC
+- name: scheme_name
+  display_name: 方案名
+  type: VARCHAR(120)
+  description: 名
+- name: currency
+  display_name: 币种
+  type: VARCHAR(3)
+  description: 币种
+- name: accounting_type
+  display_name: 账务类型
+  type: VARCHAR(255)
+  description: 账务类型
+- name: fee_type
+  display_name: 费用类型
+  type: VARCHAR(30)
+  description: 收取的费用类型：FIXED_FEE=按每笔收取固定费用，RATE_FEE=百分比费用；OTHER=除按每笔固定收取费用的
+  enum_values:
+  - FIXED_FEE
+  - RATE_FEE
+  - OTHER
+- name: fee_rate
+  display_name: 费率值
+  type: DOUBLE(10,4)
+  description: fee值
+- name: tax_is_control
+  display_name: 税收可操作
+  type: SMALLINT
+  description: 税收值控制：0=不可操作，1=可操作
+  enum_values:
+  - value: 0
+    label: 不可操作
+  - value: 1
+    label: 可操作
+- name: tax_name
+  display_name: 税收名称
+  type: VARCHAR(255)
+  description: 税收名称
+- name: tax_rate
+  display_name: 税率
+  type: DOUBLE(10,4)
+  description: 税率值，固定百分比
+- name: is_discount
+  display_name: 优惠可操作
+  type: SMALLINT
+  description: 优惠值控制：0=不可操作，1=可操作
+  enum_values:
+  - value: 0
+    label: 不可操作
+  - value: 1
+    label: 可操作
+- name: discount_type
+  display_name: 优惠类型
+  type: VARCHAR(255)
+  description: 优惠类型：RATE=百分比优惠，FIXED=固定金额优惠
+  enum_values:
+  - RATE
+  - FIXED
+- name: discount_amount
+  display_name: 优惠值
+  type: DOUBLE(10,4)
+  description: 优惠值
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: scheme_status
+  display_name: 状态
+  type: INT
+  description: 状态：-1=废弃，0=关闭，1=可用
+  enum_values:
+  - value: -1
+    label: 废弃
+  - value: 0
+    label: 关闭
+  - value: 1
+    label: 可用
+common_queries:
+- question: 启用中的计费方案
+  sql: "SELECT scheme_name AS '方案名',\n       scheme_type AS '类型',\n       currency\
+    \ AS '币种',\n       fee_type AS '费用类型',\n       fee_rate AS '费率'\nFROM dwd_banking.`pmt_service_invoice_scheme`\n\
+    WHERE scheme_status = 1\nORDER BY scheme_type\nLIMIT 100\n"
+  tables:
+  - pmt_service_invoice_scheme
+  difficulty: easy
+- question: 各产品类型的费率配置
+  sql: "SELECT\n  CASE scheme_type\n    WHEN 1000 THEN 'VA'\n    WHEN 2000 THEN 'FX'\n\
+    \    WHEN 3000 THEN 'AC'\n    WHEN 4000 THEN 'IC'\n  END AS '产品类型',\n  fee_type\
+    \ AS '费用类型',\n  AVG(fee_rate) AS '平均费率'\nFROM dwd_banking.`pmt_service_invoice_scheme`\n\
+    WHERE scheme_status = 1\nGROUP BY scheme_type, fee_type\nLIMIT 100\n"
+  tables:
+  - pmt_service_invoice_scheme
+  difficulty: medium
+- question: 有优惠的方案
+  sql: "SELECT scheme_name AS '方案名',\n       discount_type AS '优惠类型',\n       discount_amount\
+    \ AS '优惠值'\nFROM dwd_banking.`pmt_service_invoice_scheme`\nWHERE is_discount =\
+    \ 1\n  AND scheme_status = 1\nLIMIT 100\n"
+  tables:
+  - pmt_service_invoice_scheme
+  difficulty: easy

@@ -47,6 +47,7 @@ class AgentRuntimeConfig:
 
     # Prompt 配置（来自 agent_config.prompt 分区）
     system_prompt: str = ""
+    compress_prompt: str = ""
 
     # 检索参数（来自 agent_config.retrieval 分区，fallback 到 sys_config / .env）
     table_search_top_k: int = TABLE_SEARCH_TOP_K
@@ -277,23 +278,18 @@ class AgentConfigLoader:
             else:
                 config.llm_model = value
 
-        # 结构化 JSON 配置（优先读 {env}.KEY，fallback 到 KEY）
-        env = NL2SQL_ENV
+        # 结构化 JSON 配置
         json_keys = {
             "COLLECTION_SEARCH_CONFIG": "collection_search_config",
             "EMBEDDING_CONFIG": "embedding_config",
             "INDEX_BUILD_CONFIG": "index_build_config",
         }
         for key, attr in json_keys.items():
-            env_key = f"{env}.{key}"
-            actual_key = env_key if env_key in sys_configs else key
-            if actual_key in sys_configs:
+            if key in sys_configs:
                 try:
-                    setattr(config, attr, json.loads(sys_configs[actual_key]))
-                    if actual_key == env_key:
-                        logger.info(f"使用环境配置: {env_key}")
+                    setattr(config, attr, json.loads(sys_configs[key]))
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"sys_config {actual_key} JSON 解析失败，使用默认值")
+                    logger.warning(f"sys_config {key} JSON 解析失败，使用默认值")
 
         # 如果 sys_config 未配置结构化 JSON，使用环境感知默认值
         if not config.embedding_config:
@@ -330,6 +326,18 @@ class AgentConfigLoader:
                 except (ValueError, TypeError):
                     pass
 
+            # Agent 级 Embedding 配置覆盖（deep merge 到 sys_config 值）
+            if "embedding_config" in model_cfg and model_cfg["embedding_config"]:
+                config.embedding_config.update(model_cfg["embedding_config"])
+                logger.info(f"Agent 覆盖 embedding_config: model={model_cfg['embedding_config'].get('model')}")
+
+            # Agent 级 Reranker 配置覆盖（deep merge 到 index_build_config.reranker）
+            if "reranker_config" in model_cfg and model_cfg["reranker_config"]:
+                if "reranker" not in config.index_build_config:
+                    config.index_build_config["reranker"] = {}
+                config.index_build_config["reranker"].update(model_cfg["reranker_config"])
+                logger.info(f"Agent 覆盖 reranker_config: model={model_cfg['reranker_config'].get('model')}")
+
         # 从 agent_ref 的 provider 引用解析 base_url
         provider_refs = agent_refs.get("provider", [])
         if provider_refs and not config.llm_base_url:
@@ -345,6 +353,8 @@ class AgentConfigLoader:
         if prompt_cfg:
             if "system_prompt" in prompt_cfg:
                 config.system_prompt = prompt_cfg["system_prompt"]
+            if "compress_prompt" in prompt_cfg:
+                config.compress_prompt = prompt_cfg["compress_prompt"]
 
         # retrieval 分区
         retrieval_cfg = agent_configs.get("retrieval", {})
@@ -425,7 +435,7 @@ class AgentConfigLoader:
             "bm25": {
                 "k1": 1.5,
                 "b": 0.75,
-                "analyzer": "jieba",
+                "analyzer": "chinese",
             },
             "reranker": {
                 "model": RERANKER_MODEL,

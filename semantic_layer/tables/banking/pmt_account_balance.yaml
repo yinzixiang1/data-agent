@@ -1,0 +1,159 @@
+table:
+  name: pmt_account_balance
+  database: dwd_banking
+  display_name: 法币账户余额表
+  description: '记录每个商户账户在不同币种、不同账户类型(VA/AC/IC/FX)下的多维度余额。
+
+    每行代表一个 (account_id, balance_currency, balance_type) 组合，是平台资金状况的实时快照。'
+  tags:
+  - 余额
+  - balance
+  - 资金
+  - VA
+  - AC
+  - IC
+  - FX
+  - 多币种
+  - 可用余额
+  - 储备余额
+  - pmt_account_balance
+  query_tips: 查询活跃余额需带 balance_status=1；多币种汇总需关联 sys_exchange_rate 换算到USD
+columns:
+- name: paid
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+  description: 机构ID
+- name: account_id
+  display_name: 系统内部账户ID
+  type: VARCHAR(36)
+  description: 系统内部账户ID
+- name: balance_id
+  display_name: 余额账户ID
+  type: VARCHAR(36)
+  description: 余额唯一标识
+- name: balance_type
+  display_name: 账户余额类型
+  type: INT
+  description: 账户余额类型 1000=VA 2000=FX(预留), 3000=AC, 4000=IC
+  enum_values:
+  - value: 1000
+    label: VA-虚拟账户
+  - value: 2000
+    label: FX-外汇(预留)
+  - value: 3000
+    label: AC-收单
+  - value: 4000
+    label: IC-发卡
+- name: balance_name
+  display_name: 余额名称
+  type: VARCHAR(60)
+  description: 名称
+- name: balance_currency
+  display_name: 账户币种
+  type: VARCHAR(6)
+  description: 3位ISO 4217币种代码
+- name: available_balance
+  display_name: 可用余额
+  type: DECIMAL(16,4)
+  description: 已完成清分清算的资金，可用于结算
+- name: pending_balance
+  display_name: 处理中余额
+  type: DECIMAL(16,4)
+  description: 主要是AC待结算资金或PAYOUT/CONVERT中
+- name: reserved_balance
+  display_name: 储备余额
+  type: DECIMAL(16,4)
+  description: 用于退款、拒付和其他运营费用支出
+- name: prepaid_balance
+  display_name: 预付余额
+  type: DECIMAL(16,4)
+  description: 预付费卡专用
+- name: margin_balance
+  display_name: 保证金余额
+  type: DECIMAL(16,4)
+  description: 用于VM循环保证金或发卡固定保证金
+- name: frozen_balance
+  display_name: 冻结资金
+  type: DECIMAL(16,4)
+  description: 主要在处理争议和其他风险冻结时使用
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME(3)
+- name: last_trade_time
+  display_name: 最后交易时间
+  type: DATETIME(3)
+- name: balance_status
+  display_name: 余额状态
+  type: TINYINT(1)
+  description: 0:default, 1:active, closed:2, processing:3
+  enum_values:
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 激活
+  - value: 2
+    label: 关闭
+  - value: 3
+    label: 处理中
+- name: processing_amount
+  display_name: 扣款处理中金额
+  type: DECIMAL(16,4)
+  description: 扣款处理中金额
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: balance_currency
+  target_table: sys_currency_code
+  target_column: currency_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 各币种的总可用余额
+  sql: "SELECT balance_currency AS '币种',\n       SUM(available_balance) AS '总可用余额',\n\
+    \       COUNT(DISTINCT account_id) AS '账户数'\nFROM dwd_banking.`pmt_account_balance`\n\
+    WHERE balance_status = 1\nGROUP BY balance_currency\nORDER BY `总可用余额` DESC\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_account_balance
+  difficulty: easy
+- question: 哪些商户有冻结资金？
+  sql: "SELECT b.account_id AS '账户ID',\n       a.short_account_id AS '商户短号',\n   \
+    \    a.account_name AS '商户名',\n       b.balance_currency AS '币种',\n       b.frozen_balance\
+    \ AS '冻结金额'\nFROM dwd_banking.`pmt_account_balance` b\nLEFT JOIN dwd_banking.`pmt_account`\
+    \ a ON b.account_id = a.account_id\nWHERE b.frozen_balance > 0\nORDER BY b.frozen_balance\
+    \ DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_balance
+  - pmt_account
+  difficulty: hard
+- question: 储备余额排名前10的商户
+  sql: "SELECT a.short_account_id AS '商户短号',\n       a.account_name AS '商户名',\n  \
+    \     b.balance_currency AS '币种',\n       b.reserved_balance AS '储备余额'\nFROM dwd_banking.`pmt_account_balance`\
+    \ b\nLEFT JOIN dwd_banking.`pmt_account` a ON b.account_id = a.account_id\nWHERE\
+    \ b.reserved_balance > 0\nORDER BY b.reserved_balance DESC\nLIMIT 10\n"
+  tables:
+  - pmt_account_balance
+  - pmt_account
+  difficulty: hard
+- question: 各账户类型(VA/AC/IC)的余额分布
+  sql: "SELECT\n  CASE balance_type\n    WHEN 1000 THEN 'VA'\n    WHEN 2000 THEN 'FX'\n\
+    \    WHEN 3000 THEN 'AC'\n    WHEN 4000 THEN 'IC'\n  END AS '账户类型',\n  balance_currency\
+    \ AS '币种',\n  SUM(available_balance) AS '可用余额',\n  SUM(pending_balance) AS '处理中余额',\n\
+    \  SUM(reserved_balance) AS '储备余额'\nFROM dwd_banking.`pmt_account_balance`\nWHERE\
+    \ balance_status = 1\nGROUP BY balance_type, balance_currency\nORDER BY balance_type,\
+    \ `可用余额` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_balance
+  difficulty: medium
+- question: 全平台处理中的资金总量(各币种)
+  sql: "SELECT balance_currency AS '币种',\n       SUM(pending_balance + processing_amount)\
+    \ AS '处理中总量'\nFROM dwd_banking.`pmt_account_balance`\nWHERE balance_status = 1\n\
+    GROUP BY balance_currency\nORDER BY `处理中总量` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_balance
+  difficulty: easy

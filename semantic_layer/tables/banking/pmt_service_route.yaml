@@ -1,0 +1,99 @@
+table:
+  name: pmt_service_route
+  database: dwd_banking
+  display_name: 路由表
+  description: '业务路由配置，定义不同业务条件下使用哪个渠道。
+
+    每行代表一个路由规则(Banking/Foreign/Acquiring/Issuing/Ramp)。'
+  tags:
+  - 路由
+  - route
+  - 渠道选择
+  - 业务分流
+  - pmt_service_route
+  query_tips: ''
+columns:
+- name: route_id
+  display_name: 路由ID
+  type: INT
+  skip_index: true
+- name: route_name
+  display_name: 路由名称
+  type: VARCHAR(60)
+  description: 路由名称
+- name: route_params
+  display_name: 路由参数
+  type: TEXT
+  description: 路由参数
+  skip_index: true
+- name: remark
+  display_name: 备注
+  type: VARCHAR(100)
+  description: 备注
+- name: source_route_rules
+  display_name: 源路由规则
+  type: TEXT
+  description: 源路由规则
+  skip_index: true
+- name: route_rules
+  display_name: 路由规则
+  type: TEXT
+  description: 路由规则
+  skip_index: true
+- name: business_code
+  display_name: 业务代码
+  type: SMALLINT
+  description: 1000=Banking，2000=Foreign，3000=Acquiring，4000=Issuing，5000=Ramp
+  enum_values:
+  - value: 1000
+    label: Banking
+  - value: 2000
+    label: Foreign
+  - value: 3000
+    label: Acquiring
+  - value: 4000
+    label: Issuing
+  - value: 5000
+    label: Ramp
+- name: route_status
+  display_name: 状态
+  type: INT
+  description: 状态：0=无效 1=有效
+  enum_values:
+  - value: 0
+    label: 无效
+  - value: 1
+    label: 有效
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+relations:
+- column: route_id
+  target_table: pmt_service_route_bind
+  target_column: route_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 各业务的路由规则
+  sql: "SELECT\n  CASE business_code\n    WHEN 1000 THEN 'Banking'\n    WHEN 2000\
+    \ THEN 'Foreign'\n    WHEN 3000 THEN 'Acquiring'\n    WHEN 4000 THEN 'Issuing'\n\
+    \    WHEN 5000 THEN 'Ramp'\n  END AS '业务',\n  COUNT(*) AS '路由数'\nFROM dwd_banking.`pmt_service_route`\n\
+    WHERE route_status = 1\nGROUP BY business_code\nLIMIT 100\n"
+  tables:
+  - pmt_service_route
+  difficulty: medium
+- question: 启用中的路由数
+  sql: 'SELECT COUNT(*) AS ''启用路由数''
+
+    FROM dwd_banking.`pmt_service_route`
+
+    WHERE route_status = 1
+
+    LIMIT 100
+
+    '
+  tables:
+  - pmt_service_route
+  difficulty: easy

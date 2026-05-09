@@ -1,0 +1,102 @@
+table:
+  name: sys_review_config
+  database: dwd_banking
+  display_name: 风控审核配置表
+  description: '各业务流(商户/客户/财务/订单/配置/批量邮件)的审核员配置和审核次数要求。
+
+    每行代表一个审核流配置。'
+  tags:
+  - 审核配置
+  - 风控
+  - review config
+  - 多级审核
+  - sys_review_config
+  query_tips: ''
+columns:
+- name: id
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: config_id
+  display_name: 配置UUID
+  type: VARCHAR(36)
+  description: 设置UUID
+- name: config_name
+  display_name: 配置名
+  type: VARCHAR(100)
+  description: 设置名
+- name: flow_type
+  display_name: 流类型
+  type: INT
+  description: 类型：1000=商户account类，1001=customer类，2000=财务类，3000=订单类，9000=配置类，9001=批量邮件类
+  enum_values:
+  - value: 1000
+    label: 商户account类
+  - value: 1001
+    label: customer类
+  - value: 2000
+    label: 财务类
+  - value: 3000
+    label: 订单类
+  - value: 9000
+    label: 配置类
+  - value: 9001
+    label: 批量邮件类
+- name: flow_admin_uids
+  display_name: 审查用户集合
+  type: TEXT
+  description: 审查用户集合["uid"]
+  skip_index: true
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 更新时间
+- name: creator_id
+  display_name: 创建者ID
+  type: VARCHAR(36)
+  description: 创建者ID
+- name: creator_name
+  display_name: 创建者名
+  type: VARCHAR(240)
+  description: 创建者名
+- name: status
+  display_name: 状态
+  type: TINYINT
+  description: -1=关闭，0=默认，1=可用
+  enum_values:
+  - value: -1
+    label: 关闭
+  - value: 0
+    label: 默认
+  - value: 1
+    label: 可用
+- name: review_count
+  display_name: 审核次数
+  type: INT
+  description: 审核次数
+- name: meta_data
+  display_name: 元数据
+  type: TEXT
+  description: 元数据
+  skip_index: true
+common_queries:
+- question: 启用中的审核流
+  sql: "SELECT config_name AS '配置名',\n       flow_type AS '流类型',\n       review_count\
+    \ AS '审核次数'\nFROM dwd_banking.`sys_review_config`\nWHERE status = 1\nORDER BY\
+    \ flow_type\nLIMIT 100\n"
+  tables:
+  - sys_review_config
+  difficulty: easy
+- question: 各业务的审核流数
+  sql: "SELECT\n  CASE flow_type\n    WHEN 1000 THEN '商户account'\n    WHEN 1001 THEN\
+    \ 'customer'\n    WHEN 2000 THEN '财务'\n    WHEN 3000 THEN '订单'\n    WHEN 9000\
+    \ THEN '配置'\n    WHEN 9001 THEN '批量邮件'\n  END AS '流类型',\n  COUNT(*) AS '配置数'\n\
+    FROM dwd_banking.`sys_review_config`\nWHERE status = 1\nGROUP BY flow_type\nLIMIT\
+    \ 100\n"
+  tables:
+  - sys_review_config
+  difficulty: medium

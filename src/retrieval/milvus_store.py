@@ -133,7 +133,7 @@ class MilvusIndex:
         idx_cfg = index_config or {}
         hnsw_cfg = idx_cfg.get("hnsw", {})
         bm25_cfg = bm25_config or idx_cfg.get("bm25", {})
-        analyzer = bm25_cfg.get("analyzer", "jieba")
+        analyzer = bm25_cfg.get("analyzer", "chinese")
 
         schema = self.client.create_schema(auto_id=False)
         schema.add_field("id", DataType.INT64, is_primary=True)

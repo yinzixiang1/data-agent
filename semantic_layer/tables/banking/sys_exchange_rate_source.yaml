@@ -1,0 +1,124 @@
+table:
+  name: sys_exchange_rate_source
+  database: dwd_banking
+  display_name: 法币/数字货币汇率源表(源数据报价)
+  description: '源数据汇率历史(每次同步保留)，比sys_exchange_rate精度更高(decimal 32,16)。
+
+    每行代表一次汇率同步快照，含中间价(mid_price)。'
+  tags:
+  - 汇率历史
+  - 源数据
+  - exchange rate source
+  - 报价历史
+  - sys_exchange_rate_source
+  query_tips: ''
+columns:
+- name: crid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: currency_type
+  display_name: 币种类型
+  type: INT
+  description: 1000=fiat 2000=crypto
+  enum_values:
+  - value: 1000
+    label: fiat
+  - value: 2000
+    label: crypto
+- name: currency_network
+  display_name: 币种网络
+  type: VARCHAR(24)
+  description: 币种网络
+- name: currency_pair
+  display_name: 币种对
+  type: VARCHAR(20)
+  description: 'eg.: USDEUR'
+- name: sell_currency
+  display_name: 卖出币种
+  type: VARCHAR(12)
+  description: 原始币种
+- name: sell_price_original
+  display_name: 源卖出汇率
+  type: DECIMAL(16,10)
+  description: 源卖出汇率（未加成）
+- name: sell_price
+  display_name: 卖出汇率
+  type: DECIMAL(32,16)
+  description: 卖出汇率
+- name: sell_mark_up
+  display_name: 卖出加点
+  type: DECIMAL(32,16)
+  description: 卖出渠道加点
+- name: mid_price
+  display_name: 中间价
+  type: DECIMAL(32,16)
+  description: 中间价
+- name: buy_currency
+  display_name: 买入币种
+  type: VARCHAR(12)
+  description: 目标币种
+- name: buy_price_original
+  display_name: 源买入汇率
+  type: DECIMAL(26,10)
+  description: 源买入汇率（未加成）
+- name: buy_price
+  display_name: 买入汇率
+  type: DECIMAL(32,16)
+  description: 买入汇率
+- name: buy_mark_up
+  display_name: 买入加点
+  type: DECIMAL(32,16)
+  description: 买入渠道加点
+- name: add_point_ratio
+  display_name: 加点比例
+  type: DOUBLE(10,4)
+  description: 加点值比例
+- name: channel_code
+  display_name: 渠道代码
+  type: VARCHAR(30)
+  description: 渠道代码
+- name: rate_source
+  display_name: 汇率源
+  type: VARCHAR(60)
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: sync_time
+  display_name: 同步时间(timestamp)
+  type: BIGINT
+  description: 汇率同步时间
+- name: rate_status
+  display_name: 状态
+  type: TINYINT(1)
+  description: 1:可用；-1:不可用
+  enum_values:
+  - value: 1
+    label: 可用
+  - value: -1
+    label: 不可用
+common_queries:
+- question: 历史汇率走势(USDEUR)
+  sql: "SELECT DATE(create_time) AS '日期',\n       AVG(mid_price) AS '中间价'\nFROM dwd_banking.`sys_exchange_rate_source`\n\
+    WHERE currency_pair = 'USDEUR'\n  AND create_time >= DATE_SUB(NOW(), INTERVAL\
+    \ 30 DAY)\nGROUP BY DATE(create_time)\nORDER BY `日期`\nLIMIT 100\n"
+  tables:
+  - sys_exchange_rate_source
+  difficulty: medium
+- question: 中间价波动(过去24h)
+  sql: "SELECT currency_pair AS '币种对',\n       MAX(mid_price) - MIN(mid_price) AS\
+    \ '波动',\n       ROUND((MAX(mid_price) - MIN(mid_price)) / AVG(mid_price) * 100,\
+    \ 4) AS '波动率%'\nFROM dwd_banking.`sys_exchange_rate_source`\nWHERE create_time\
+    \ >= DATE_SUB(NOW(), INTERVAL 24 HOUR)\nGROUP BY currency_pair\nORDER BY `波动率%`\
+    \ DESC\nLIMIT 20\n"
+  tables:
+  - sys_exchange_rate_source
+  difficulty: hard
+- question: 各源采样频率
+  sql: "SELECT rate_source AS '汇率源',\n       COUNT(*) AS '采样数'\nFROM dwd_banking.`sys_exchange_rate_source`\n\
+    WHERE create_time >= DATE_SUB(NOW(), INTERVAL 1 DAY)\nGROUP BY rate_source\nORDER\
+    \ BY `采样数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_exchange_rate_source
+  difficulty: easy

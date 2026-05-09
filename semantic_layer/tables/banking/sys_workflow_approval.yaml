@@ -1,0 +1,101 @@
+table:
+  name: sys_workflow_approval
+  database: dwd_banking
+  display_name: 系统工作流审批步骤表
+  description: '工作流每个审批步骤的明细记录。
+
+    每行代表一个审批步骤事件(审批人、时间、审批结果、操作日志)。'
+  tags:
+  - 工作流步骤
+  - workflow approval
+  - 审批日志
+  - sys_workflow_approval
+  query_tips: ''
+columns:
+- name: waid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: flow_id
+  display_name: 流ID
+  type: VARCHAR(64)
+  description: 流ID
+- name: flow_type
+  display_name: 流类型
+  type: INT
+  description: 流类型，1000=商户类，2000=财务类，9000=配置类
+  enum_values:
+  - value: 1000
+    label: 商户
+  - value: 2000
+    label: 财务
+  - value: 9000
+    label: 配置
+- name: event_desc
+  display_name: 事件描述
+  type: VARCHAR(255)
+  description: 描述对外可见
+- name: event_time
+  display_name: 操作时间
+  type: DATETIME
+  description: 操作时间
+- name: event_log
+  display_name: 操作日志详情
+  type: TEXT
+  description: 操作动作详情记录
+  skip_index: true
+- name: creator_id
+  display_name: 创建人ID
+  type: VARCHAR(36)
+- name: creator_name
+  display_name: 创建人名
+  type: VARCHAR(240)
+- name: flow_steps_count
+  display_name: 步骤序号
+  type: SMALLINT
+  description: 授权计数,可做排序、每一步的KEY
+- name: reference_id
+  display_name: 关联ID
+  type: VARCHAR(48)
+  description: 关联ID，唯一与creator_id
+- name: review_status
+  display_name: 每步审查状态
+  type: TINYINT(1)
+  description: 每步审查状态：1=passed, 0=in_review, -1=rejected
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: 0
+    label: 审核中
+  - value: -1
+    label: 拒绝
+relations:
+- column: flow_id
+  target_table: sys_workflow
+  target_column: flow_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 各步骤平均耗时
+  sql: "SELECT flow_steps_count AS '步骤序号',\n       COUNT(*) AS '操作数'\nFROM dwd_banking.`sys_workflow_approval`\n\
+    WHERE event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\nGROUP BY flow_steps_count\n\
+    ORDER BY flow_steps_count\nLIMIT 100\n"
+  tables:
+  - sys_workflow_approval
+  difficulty: easy
+- question: 审批人工作量(最近30天)
+  sql: "SELECT creator_name AS '审批人',\n       COUNT(*) AS '审批次数',\n       SUM(CASE\
+    \ WHEN review_status = 1 THEN 1 ELSE 0 END) AS '通过数',\n       SUM(CASE WHEN review_status\
+    \ = -1 THEN 1 ELSE 0 END) AS '拒绝数'\nFROM dwd_banking.`sys_workflow_approval`\n\
+    WHERE event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\nGROUP BY creator_name\n\
+    ORDER BY `审批次数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_workflow_approval
+  difficulty: medium
+- question: 某工作流的步骤详情
+  sql: "SELECT flow_steps_count AS '步骤',\n       event_desc AS '事件',\n       creator_name\
+    \ AS '操作人',\n       review_status AS '审核状态',\n       event_time AS '时间'\nFROM\
+    \ dwd_banking.`sys_workflow_approval`\nWHERE flow_id = ?\nORDER BY flow_steps_count\n\
+    LIMIT 100\n"
+  tables:
+  - sys_workflow_approval
+  difficulty: easy

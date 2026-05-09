@@ -1,0 +1,69 @@
+table:
+  name: sys_data_dictionary
+  database: dwd_banking
+  display_name: 数据字典表
+  description: '通用Key-Value字典，按模块分类，存储各类动态配置。
+
+    每行代表一个字典项。'
+  tags:
+  - 数据字典
+  - 通用配置
+  - dictionary
+  - sys_data_dictionary
+  query_tips: ''
+columns:
+- name: id
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: dict_key
+  display_name: 字典键
+  type: VARCHAR(64)
+  description: 字典键，系统内唯一标识某个字典项
+- name: dict_value
+  display_name: 字典值
+  type: TEXT
+  description: 字典值，可存储动态内容
+  skip_index: true
+- name: dict_module
+  display_name: 所属模块
+  type: VARCHAR(64)
+  description: 字典项所属模块/类别
+- name: description
+  display_name: 说明
+  type: VARCHAR(255)
+  description: 字典项说明
+- name: field_regular
+  display_name: 正则公式
+  type: VARCHAR(255)
+  description: 正则公式
+- name: create_time
+  display_name: 添加时间
+  type: DATETIME
+  description: 添加时间
+- name: status
+  display_name: 状态
+  type: TINYINT
+  description: 状态：1-启用，-1-禁用
+  enum_values:
+  - value: 1
+    label: 启用
+  - value: -1
+    label: 禁用
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+common_queries:
+- question: 某模块的字典项
+  sql: "SELECT dict_key AS '键',\n       dict_value AS '值',\n       description AS\
+    \ '说明'\nFROM dwd_banking.`sys_data_dictionary`\nWHERE dict_module = ?\n  AND status\
+    \ = 1\nLIMIT 100\n"
+  tables:
+  - sys_data_dictionary
+  difficulty: easy
+- question: 各模块字典项数量
+  sql: "SELECT dict_module AS '模块',\n       COUNT(*) AS '字典项数'\nFROM dwd_banking.`sys_data_dictionary`\n\
+    WHERE status = 1\nGROUP BY dict_module\nORDER BY `字典项数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_data_dictionary
+  difficulty: easy

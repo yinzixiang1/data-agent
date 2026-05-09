@@ -1,0 +1,113 @@
+table:
+  name: pmt_channel_file
+  database: dwd_banking
+  display_name: 渠道文件表
+  description: '上游渠道下载/上传的文件记录(如对账单/STATEMENT)。
+
+    每行代表一个渠道侧的文件，含路径、hash、状态等。'
+  tags:
+  - 渠道文件
+  - 对账单
+  - statement
+  - 文件管理
+  - pmt_channel_file
+  query_tips: ''
+columns:
+- name: fid
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: file_id
+  display_name: 文件ID
+  type: VARCHAR(36)
+  description: 文件ID
+- name: short_reference_id
+  display_name: 短号
+  type: VARCHAR(36)
+  description: 短号
+- name: file_type
+  display_name: 文件类别
+  type: VARCHAR(30)
+  description: 如 STATEMENT
+- name: file_name
+  display_name: 文件名
+  type: VARCHAR(255)
+  description: 文件名
+- name: file_format
+  display_name: 文件格式
+  type: VARCHAR(10)
+  description: 文件格式类型 csv excel pdf
+  enum_values:
+  - csv
+  - excel
+  - pdf
+- name: file_path
+  display_name: 文件存储路径
+  type: VARCHAR(255)
+  description: 文件存储路径，服务器 or NAS
+  sensitive: true
+- name: file_hash
+  display_name: 文件hash
+  type: VARCHAR(255)
+  description: hash值
+- name: file_status
+  display_name: 文件状态
+  type: TINYINT(1)
+  description: 文件状态：Pending=0、Failed=-1、Success=1
+  enum_values:
+  - value: 0
+    label: Pending
+  - value: -1
+    label: Failed
+  - value: 1
+    label: Success
+- name: region
+  display_name: 区域
+  type: VARCHAR(255)
+  description: region
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(64)
+  description: 渠道code
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME(3)
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME(3)
+  description: 更新时间
+- name: deleted_at
+  display_name: 删除时间(GORM软删除)
+  type: DATETIME(3)
+  description: grom软删除
+relations:
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 渠道对账单下载状态
+  sql: "SELECT channel_code AS '渠道',\n       SUM(CASE WHEN file_status = 1 THEN 1\
+    \ ELSE 0 END) AS '成功',\n       SUM(CASE WHEN file_status = -1 THEN 1 ELSE 0 END)\
+    \ AS '失败',\n       SUM(CASE WHEN file_status = 0 THEN 1 ELSE 0 END) AS '待处理'\n\
+    FROM dwd_banking.`pmt_channel_file`\nWHERE deleted_at IS NULL\n  AND file_type\
+    \ = 'STATEMENT'\nGROUP BY channel_code\nLIMIT 100\n"
+  tables:
+  - pmt_channel_file
+  difficulty: medium
+- question: 各渠道文件下载频率(最近30天)
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '文件数'\nFROM dwd_banking.`pmt_channel_file`\n\
+    WHERE create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\n  AND deleted_at IS NULL\n\
+    GROUP BY channel_code\nORDER BY `文件数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_file
+  difficulty: easy
+- question: 失败的文件下载列表
+  sql: "SELECT channel_code AS '渠道',\n       file_name AS '文件名',\n       file_type\
+    \ AS '类型',\n       create_time AS '创建时间'\nFROM dwd_banking.`pmt_channel_file`\n\
+    WHERE file_status = -1\n  AND deleted_at IS NULL\nORDER BY create_time DESC\n\
+    LIMIT 100\n"
+  tables:
+  - pmt_channel_file
+  difficulty: easy

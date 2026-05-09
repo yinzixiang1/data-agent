@@ -1,0 +1,71 @@
+table:
+  name: pmt_service_restrict
+  database: dwd_banking
+  display_name: 服务约束表
+  description: '商户/产品/渠道层面的限制规则配置(币种限制、地区限制等)。
+
+    每行代表一个约束规则。'
+  tags:
+  - 约束
+  - 限制规则
+  - restrict
+  - 风控配置
+  - pmt_service_restrict
+  query_tips: ''
+columns:
+- name: restrict_id
+  display_name: 约束ID
+  type: INT
+  skip_index: true
+- name: restrict_type
+  display_name: 约束类型
+  type: INT
+  description: 约束类型：1000-merchant,3000-product, 4000-channel
+  enum_values:
+  - value: 1000
+    label: merchant
+  - value: 3000
+    label: product
+  - value: 4000
+    label: channel
+- name: restrict_name
+  display_name: 路由名称
+  type: VARCHAR(60)
+  description: 路由名称
+- name: restrict_params
+  display_name: 约束参数JSON
+  type: TEXT
+  description: 约束参数json
+  skip_index: true
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 更新时间
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: restrict_status
+  display_name: 状态
+  type: TINYINT(1)
+  description: 状态：0=无效 1=有效
+  enum_values:
+  - value: 0
+    label: 无效
+  - value: 1
+    label: 有效
+common_queries:
+- question: 启用中的约束规则
+  sql: "SELECT restrict_id AS 'ID',\n       restrict_type AS '类型',\n       restrict_name\
+    \ AS '名称'\nFROM dwd_banking.`pmt_service_restrict`\nWHERE restrict_status = 1\n\
+    ORDER BY restrict_type\nLIMIT 100\n"
+  tables:
+  - pmt_service_restrict
+  difficulty: easy
+- question: 各类型约束分布
+  sql: "SELECT\n  CASE restrict_type\n    WHEN 1000 THEN 'merchant'\n    WHEN 3000\
+    \ THEN 'product'\n    WHEN 4000 THEN 'channel'\n  END AS '类型',\n  COUNT(*) AS\
+    \ '约束数'\nFROM dwd_banking.`pmt_service_restrict`\nWHERE restrict_status = 1\n\
+    GROUP BY restrict_type\nLIMIT 100\n"
+  tables:
+  - pmt_service_restrict
+  difficulty: medium

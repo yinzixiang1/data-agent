@@ -1,0 +1,157 @@
+table:
+  name: uqpay_user_operate_log
+  database: dwd_banking
+  display_name: 用户操作日志表
+  description: '商户用户(非管理员)的操作日志。
+
+    每行代表一次用户操作，记录请求URI、参数、变更前数据、IP、设备指纹、UA。'
+  tags:
+  - 用户日志
+  - 审计
+  - user operate log
+  - 设备指纹
+  - 操作追溯
+  - uqpay_user_operate_log
+  query_tips: ''
+columns:
+- name: olid
+  display_name: 主键ID
+  type: BIGINT
+  description: 主键
+  skip_index: true
+- name: log_id
+  display_name: 日志ID
+  type: VARCHAR(36)
+  description: 操作日志Id
+- name: user_id
+  display_name: 用户ID
+  type: VARCHAR(36)
+  description: userid
+- name: account_id
+  display_name: 账户ID
+  type: VARCHAR(36)
+  description: account_id
+- name: type
+  display_name: 动作类型
+  type: VARCHAR(60)
+  description: 动作类型：INSERT=创建，UPDATE=更新，DELETE=删除
+  enum_values:
+  - INSERT
+  - UPDATE
+  - DELETE
+- name: uri
+  display_name: 请求路径
+  type: VARCHAR(255)
+  description: 请求路径
+- name: params
+  display_name: 请求参数
+  type: LONGTEXT
+  description: 请求参数
+  skip_index: true
+- name: original_data
+  display_name: 变更前数据
+  type: TEXT
+  description: 变更前数据
+  skip_index: true
+- name: events
+  display_name: 事件结果
+  type: TEXT
+  description: 事件结果
+  skip_index: true
+- name: ip
+  display_name: 请求IP
+  type: VARCHAR(64)
+  description: 请求ip
+  sensitive: true
+- name: device_id
+  display_name: 设备指纹ID
+  type: VARCHAR(64)
+  description: 设备指纹ID
+  sensitive: true
+- name: user_agent
+  display_name: 浏览器agent
+  type: TEXT
+  description: 浏览器agent
+  skip_index: true
+- name: reference_type
+  display_name: 关联类型
+  type: INT
+  description: 关联类型：0=普通日志，1000=客户Account，1001=Onboard，2000=财务，9000=配置
+  enum_values:
+  - value: 0
+    label: 普通日志
+  - value: 1000
+    label: 客户Account
+  - value: 1001
+    label: Onboard
+  - value: 2000
+    label: 财务
+  - value: 9000
+    label: 配置
+- name: reference_data
+  display_name: 关联数据JSON
+  type: TEXT
+  description: 关联数据json
+  skip_index: true
+- name: creator_id
+  display_name: 创建userid
+  type: VARCHAR(36)
+  description: 创建userid
+- name: creator_name
+  display_name: 创建人名
+  type: VARCHAR(50)
+  description: 创建人名
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME(3)
+  description: 创建时间
+- name: operate_status
+  display_name: 操作状态
+  type: VARCHAR(10)
+  description: 操作状态：FAILED=失败，COMPLETE=完成
+  enum_values:
+  - FAILED
+  - COMPLETE
+- name: reference_id
+  display_name: 关联account id
+  type: VARCHAR(36)
+  description: 关联account id
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 某用户操作历史
+  sql: "SELECT type AS '动作',\n       uri AS '路径',\n       ip AS 'IP',\n       operate_status\
+    \ AS '状态',\n       create_time AS '时间'\nFROM dwd_banking.`uqpay_user_operate_log`\n\
+    WHERE user_id = ?\nORDER BY create_time DESC\nLIMIT 100\n"
+  tables:
+  - uqpay_user_operate_log
+  difficulty: easy
+- question: 异常设备指纹(同设备多账户)
+  sql: "SELECT device_id AS '设备指纹',\n       COUNT(DISTINCT account_id) AS '关联账户数',\n\
+    \       COUNT(*) AS '操作次数'\nFROM dwd_banking.`uqpay_user_operate_log`\nWHERE device_id\
+    \ IS NOT NULL\n  AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\nGROUP BY\
+    \ device_id\nHAVING COUNT(DISTINCT account_id) > 3\nORDER BY `关联账户数` DESC\nLIMIT\
+    \ 100\n"
+  tables:
+  - uqpay_user_operate_log
+  difficulty: hard
+- question: 高风险IP操作
+  sql: "SELECT ip AS 'IP',\n       COUNT(DISTINCT user_id) AS '用户数',\n       COUNT(*)\
+    \ AS '操作数'\nFROM dwd_banking.`uqpay_user_operate_log`\nWHERE create_time >= DATE_SUB(NOW(),\
+    \ INTERVAL 7 DAY)\nGROUP BY ip\nHAVING COUNT(DISTINCT user_id) > 5\nORDER BY `用户数`\
+    \ DESC\nLIMIT 100\n"
+  tables:
+  - uqpay_user_operate_log
+  difficulty: hard
+- question: 各业务类型操作分布
+  sql: "SELECT\n  CASE reference_type\n    WHEN 0 THEN '普通'\n    WHEN 1000 THEN '客户Account'\n\
+    \    WHEN 1001 THEN 'Onboard'\n    WHEN 2000 THEN '财务'\n    WHEN 9000 THEN '配置'\n\
+    \  END AS '类型',\n  COUNT(*) AS '次数'\nFROM dwd_banking.`uqpay_user_operate_log`\n\
+    WHERE create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)\nGROUP BY reference_type\n\
+    LIMIT 100\n"
+  tables:
+  - uqpay_user_operate_log
+  difficulty: medium

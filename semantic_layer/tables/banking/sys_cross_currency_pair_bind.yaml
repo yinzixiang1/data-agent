@@ -1,0 +1,64 @@
+table:
+  name: sys_cross_currency_pair_bind
+  database: dwd_banking
+  display_name: 货币对与渠道关联表
+  description: '跨币种交易对(currency_pair)与渠道的绑定关系。
+
+    每行代表一个 (currency_pair_code, channel_code) 绑定。'
+  tags:
+  - 跨币种
+  - 货币对路由
+  - currency pair bind
+  - sys_cross_currency_pair_bind
+  query_tips: ''
+columns:
+- name: bid
+  display_name: 主键ID
+  type: BIGINT
+  description: 主键 ID
+  skip_index: true
+- name: currency_pair_code
+  display_name: 货币对代码(6位)
+  type: CHAR(6)
+  description: 货币对
+- name: channel_code
+  display_name: 渠道代码
+  type: VARCHAR(32)
+  description: 渠道代码
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 更新时间
+relations:
+- column: currency_pair_code
+  target_table: sys_currency_pair
+  target_column: currency_pair_code
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 某币种对支持的渠道
+  sql: 'SELECT channel_code AS ''渠道''
+
+    FROM dwd_banking.`sys_cross_currency_pair_bind`
+
+    WHERE currency_pair_code = ?
+
+    LIMIT 100
+
+    '
+  tables:
+  - sys_cross_currency_pair_bind
+  difficulty: easy
+- question: 各渠道支持的币种对数
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '币种对数'\nFROM dwd_banking.`sys_cross_currency_pair_bind`\n\
+    GROUP BY channel_code\nORDER BY `币种对数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_cross_currency_pair_bind
+  difficulty: easy

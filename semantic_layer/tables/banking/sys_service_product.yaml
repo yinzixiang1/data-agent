@@ -1,0 +1,69 @@
+table:
+  name: sys_service_product
+  database: dwd_banking
+  display_name: 系统服务产品表
+  description: '系统级产品定义，含授权交易类型对应的产品代码(接口定义)。
+
+    每行代表一个 (auth_trade_type, product_code) 接口定义。'
+  tags:
+  - 系统产品
+  - 接口定义
+  - 授权类型
+  - service product
+  - sys_service_product
+  query_tips: ''
+columns:
+- name: spid
+  display_name: 主键ID
+  type: INT UNSIGNED
+  skip_index: true
+- name: product_type
+  display_name: 产品类型
+  type: INT
+  description: 类型：1000=VA, 2000=FX, 3000=AC, 4000=IC
+  enum_values:
+  - value: 1000
+    label: VA
+  - value: 2000
+    label: FX
+  - value: 3000
+    label: AC
+  - value: 4000
+    label: IC
+- name: product_code
+  display_name: 产品代码
+  type: VARCHAR(60)
+  description: 代码（定义接口）
+- name: product_name
+  display_name: 产品名称
+  type: VARCHAR(60)
+  description: 名称（定义接口）
+- name: auth_trade_type
+  display_name: 授权代码
+  type: VARCHAR(60)
+  description: 授权代码
+  skip_index: true
+- name: auth_trade_name
+  display_name: 授权名
+  type: VARCHAR(60)
+relations:
+- column: product_code
+  target_table: pmt_service_product
+  target_column: product_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 各产品类型的接口数
+  sql: "SELECT\n  CASE product_type\n    WHEN 1000 THEN 'VA'\n    WHEN 2000 THEN 'FX'\n\
+    \    WHEN 3000 THEN 'AC'\n    WHEN 4000 THEN 'IC'\n  END AS '类型',\n  COUNT(DISTINCT\
+    \ product_code) AS '产品数',\n  COUNT(*) AS '接口数'\nFROM dwd_banking.`sys_service_product`\n\
+    GROUP BY product_type\nLIMIT 100\n"
+  tables:
+  - sys_service_product
+  difficulty: medium
+- question: 授权类型分布
+  sql: "SELECT auth_trade_type AS '授权代码',\n       auth_trade_name AS '授权名',\n    \
+    \   COUNT(*) AS '产品数'\nFROM dwd_banking.`sys_service_product`\nGROUP BY auth_trade_type,\
+    \ auth_trade_name\nORDER BY `产品数` DESC\nLIMIT 100\n"
+  tables:
+  - sys_service_product
+  difficulty: easy

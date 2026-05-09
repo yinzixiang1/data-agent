@@ -1,0 +1,117 @@
+table:
+  name: sys_check_aml
+  database: dwd_banking
+  display_name: AML本地库
+  description: 'AML(反洗钱)及制裁名单检测的本地缓存。
+
+    每行代表一次AML检查，含输入、检查结果、原始API响应(sumsub/Idenfy)。'
+  tags:
+  - AML
+  - 反洗钱
+  - 制裁筛查
+  - KYC
+  - 风控
+  - 合规
+  - sys_check_aml
+  query_tips: ''
+columns:
+- name: id
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: first_name
+  display_name: 名
+  type: VARCHAR(45)
+  description: 姓 个人需要填
+  sensitive: true
+- name: last_name
+  display_name: 姓
+  type: VARCHAR(45)
+  description: 名称
+  sensitive: true
+- name: company_name
+  display_name: 公司名
+  type: VARCHAR(255)
+  description: 公司名
+- name: country
+  display_name: 国家代码
+  type: VARCHAR(3)
+  description: 国家代码
+- name: entity_type
+  display_name: 实体类型
+  type: INT
+  description: 1000=PERSONAL, 2000=COMPANY
+  enum_values:
+  - value: 1000
+    label: 个人
+  - value: 2000
+    label: 企业
+- name: overall_status
+  display_name: 整体状态(可疑状态)
+  type: VARCHAR(20)
+  description: 可疑状态
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: check_time
+  display_name: 检查时间
+  type: DATETIME
+  description: check时间
+- name: idenfy_body
+  display_name: API结果JSON
+  type: TEXT
+  description: API结果
+  skip_index: true
+- name: reference_table_name
+  display_name: 关联表名
+  type: VARCHAR(100)
+  description: 关联表名
+- name: reference_key
+  display_name: 关联表key
+  type: VARCHAR(80)
+  description: 关联表key
+- name: reference_id
+  display_name: 关联ID
+  type: VARCHAR(48)
+  description: 关联ID
+- name: batch_id
+  display_name: 批次号
+  type: VARCHAR(32)
+  description: 批次号
+- name: sumsub_response
+  display_name: sumsub响应
+  type: TEXT
+  description: sumsub API response
+  skip_index: true
+common_queries:
+- question: AML命中数量(各状态)
+  sql: "SELECT overall_status AS 'AML状态',\n       COUNT(*) AS '数量'\nFROM dwd_banking.`sys_check_aml`\n\
+    WHERE check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\nGROUP BY overall_status\n\
+    LIMIT 100\n"
+  tables:
+  - sys_check_aml
+  difficulty: easy
+- question: 各国家AML命中率
+  sql: "SELECT country AS '国家',\n       COUNT(*) AS '总检查',\n       SUM(CASE WHEN overall_status\
+    \ NOT IN ('CLEAN', 'GREEN') THEN 1 ELSE 0 END) AS '命中数',\n       ROUND(SUM(CASE\
+    \ WHEN overall_status NOT IN ('CLEAN', 'GREEN') THEN 1 ELSE 0 END) * 100.0 / COUNT(*),\
+    \ 2) AS '命中率%'\nFROM dwd_banking.`sys_check_aml`\nGROUP BY country\nORDER BY `命中率%`\
+    \ DESC\nLIMIT 100\n"
+  tables:
+  - sys_check_aml
+  difficulty: hard
+- question: 待处理可疑案例
+  sql: "SELECT first_name AS '名',\n       last_name AS '姓',\n       country AS '国家',\n\
+    \       overall_status AS '状态',\n       check_time AS '检查时间'\nFROM dwd_banking.`sys_check_aml`\n\
+    WHERE overall_status NOT IN ('CLEAN', 'GREEN')\nORDER BY check_time DESC\nLIMIT\
+    \ 50\n"
+  tables:
+  - sys_check_aml
+  difficulty: easy
+- question: 个人 vs 企业AML检查量
+  sql: "SELECT\n  CASE entity_type WHEN 1000 THEN '个人' WHEN 2000 THEN '企业' END AS\
+    \ '实体类型',\n  COUNT(*) AS '检查数'\nFROM dwd_banking.`sys_check_aml`\nGROUP BY entity_type\n\
+    LIMIT 100\n"
+  tables:
+  - sys_check_aml
+  difficulty: easy

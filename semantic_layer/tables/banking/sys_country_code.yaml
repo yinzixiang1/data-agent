@@ -1,0 +1,89 @@
+table:
+  name: sys_country_code
+  database: dwd_banking
+  display_name: 系统国家ISO表
+  description: 'ISO国家代码字典(alpha2/alpha3/numeric)。
+
+    每行代表一个国家，含手机区号、图标、是否制裁国、使用范围。'
+  tags:
+  - 国家字典
+  - ISO代码
+  - country code
+  - 制裁国
+  - sys_country_code
+  query_tips: ''
+columns:
+- name: country_id
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: country_name
+  display_name: 国家名
+  type: VARCHAR(200)
+- name: alpha_two_code
+  display_name: 2位ISO代码
+  type: VARCHAR(2)
+- name: alpha_three_code
+  display_name: 3位ISO代码
+  type: VARCHAR(3)
+- name: numeric_code
+  display_name: 数字代码
+  type: VARCHAR(3)
+- name: country_status
+  display_name: 状态
+  type: TINYINT(1)
+  enum_values:
+  - value: 0
+    label: 禁用
+  - value: 1
+    label: 启用
+- name: state_alpha_two_code_all
+  display_name: 州/省代码JSON
+  type: TEXT
+  skip_index: true
+- name: phone_area_code
+  display_name: 手机区号
+  type: VARCHAR(8)
+  description: 手机区号
+- name: phone_length
+  display_name: 手机长度限制
+  type: VARCHAR(10)
+  description: 手机长度限制
+- name: country_icon
+  display_name: 图标
+  type: VARCHAR(200)
+  description: icon图标
+  skip_index: true
+- name: is_sanction
+  display_name: 是否制裁国
+  type: SMALLINT
+  description: 是否制裁国/地址
+  enum_values:
+  - value: 0
+    label: 否
+  - value: 1
+    label: 是
+- name: scope_of_use
+  display_name: 使用范围
+  type: VARCHAR(255)
+  description: onboard/deposit/payout
+common_queries:
+- question: 制裁国列表
+  sql: "SELECT country_name AS '国家名',\n       alpha_three_code AS 'ISO3'\nFROM dwd_banking.`sys_country_code`\n\
+    WHERE is_sanction = 1\nLIMIT 100\n"
+  tables:
+  - sys_country_code
+  difficulty: easy
+- question: 支持开户的国家
+  sql: "SELECT country_name AS '国家名',\n       alpha_three_code AS 'ISO3'\nFROM dwd_banking.`sys_country_code`\n\
+    WHERE country_status = 1\n  AND scope_of_use LIKE '%onboard%'\n  AND is_sanction\
+    \ = 0\nLIMIT 100\n"
+  tables:
+  - sys_country_code
+  difficulty: medium
+- question: payout支持的国家数
+  sql: "SELECT COUNT(*) AS '支持payout国家数'\nFROM dwd_banking.`sys_country_code`\nWHERE\
+    \ country_status = 1\n  AND scope_of_use LIKE '%payout%'\nLIMIT 100\n"
+  tables:
+  - sys_country_code
+  difficulty: easy

@@ -1,0 +1,141 @@
+table:
+  name: sys_workflow
+  database: dwd_banking
+  display_name: 系统工作流记录表
+  description: '多级审批工作流主表(商户/财务/配置/批量邮件)。
+
+    每行代表一个审批工作流，记录审批步骤数、当前进度、关联业务对象。'
+  tags:
+  - 工作流
+  - workflow
+  - 多级审批
+  - 审核流程
+  - sys_workflow
+  query_tips: ''
+columns:
+- name: wid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: flow_id
+  display_name: 流ID
+  type: VARCHAR(64)
+  description: 流ID
+- name: short_reference_id
+  display_name: 短号
+  type: VARCHAR(20)
+  description: 短号
+- name: flow_type
+  display_name: 流类型
+  type: INT
+  description: 流类型，1000=商户类，2000=财务类，9000=配置类，9001=批量邮件类
+  enum_values:
+  - value: 1000
+    label: 商户类
+  - value: 2000
+    label: 财务类
+  - value: 9000
+    label: 配置类
+  - value: 9001
+    label: 批量邮件类
+- name: reference_table_name
+  display_name: 关联表名
+  type: VARCHAR(100)
+  description: 关联表名
+- name: reference_key
+  display_name: 关联表key
+  type: VARCHAR(80)
+  description: 关联表key
+- name: reference_id
+  display_name: 关联ID
+  type: VARCHAR(48)
+  description: 关联ID，唯一与creator_id
+- name: reference_params
+  display_name: 参数JSON
+  type: TEXT
+  description: 参数
+  skip_index: true
+- name: flow_desc
+  display_name: 描述/快照
+  type: VARCHAR(255)
+  description: 备注，可做快照
+- name: flow_steps_count
+  display_name: 当前授权计数
+  type: SMALLINT
+  description: 授权计数
+- name: flow_steps_required
+  display_name: 总步骤数
+  type: SMALLINT
+  description: 授权步骤计数
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 更新时间
+- name: creator_id
+  display_name: 创建者ID
+  type: VARCHAR(60)
+  description: 创建者ID
+- name: creator_name
+  display_name: 创建者名
+  type: VARCHAR(240)
+  description: 创建者名
+- name: review_status
+  display_name: 最后审查状态
+  type: TINYINT(1)
+  description: 最后审查状态：1=passed, 0=in_review, -1=rejected
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: 0
+    label: 审核中
+  - value: -1
+    label: 拒绝
+- name: account_id
+  display_name: 关联账户ID
+  type: VARCHAR(36)
+  description: account 相关workflow
+relations:
+- column: flow_id
+  target_table: sys_workflow_approval
+  target_column: flow_id
+  join_type: LEFT JOIN
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 待审批工作流量
+  sql: "SELECT\n  CASE flow_type\n    WHEN 1000 THEN '商户'\n    WHEN 2000 THEN '财务'\n\
+    \    WHEN 9000 THEN '配置'\n    WHEN 9001 THEN '批量邮件'\n  END AS '流类型',\n  COUNT(*)\
+    \ AS '待审批数'\nFROM dwd_banking.`sys_workflow`\nWHERE review_status = 0\nGROUP BY\
+    \ flow_type\nLIMIT 100\n"
+  tables:
+  - sys_workflow
+  difficulty: medium
+- question: 各类型审批耗时
+  sql: "SELECT flow_type AS '流类型',\n       AVG(TIMESTAMPDIFF(HOUR, create_time, update_time))\
+    \ AS '平均耗时(小时)'\nFROM dwd_banking.`sys_workflow`\nWHERE review_status IN (1, -1)\n\
+    GROUP BY flow_type\nLIMIT 100\n"
+  tables:
+  - sys_workflow
+  difficulty: medium
+- question: 审批拒绝率
+  sql: "SELECT flow_type AS '流类型',\n       ROUND(SUM(CASE WHEN review_status = -1\
+    \ THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS '拒绝率%'\nFROM dwd_banking.`sys_workflow`\n\
+    WHERE review_status IN (1, -1)\nGROUP BY flow_type\nLIMIT 100\n"
+  tables:
+  - sys_workflow
+  difficulty: medium
+- question: 长时间未完成的审批
+  sql: "SELECT short_reference_id AS '短号',\n       flow_type AS '类型',\n       flow_desc\
+    \ AS '描述',\n       create_time AS '创建时间',\n       TIMESTAMPDIFF(HOUR, create_time,\
+    \ NOW()) AS '已等待小时'\nFROM dwd_banking.`sys_workflow`\nWHERE review_status = 0\n\
+    \  AND create_time < DATE_SUB(NOW(), INTERVAL 24 HOUR)\nORDER BY create_time\n\
+    LIMIT 100\n"
+  tables:
+  - sys_workflow
+  difficulty: medium

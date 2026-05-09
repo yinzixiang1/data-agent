@@ -105,6 +105,10 @@ MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
 # GLOSSARY_SCORE_THRESHOLD: 术语向量检索的余弦相似度阈值，低于此分数的匹配会被过滤
 GLOSSARY_SCORE_THRESHOLD = float(os.getenv("GLOSSARY_SCORE_THRESHOLD", "0.5"))
 
+# ── 启动行为 ──
+# REBUILD_INDEX_ON_STARTUP: 启动时是否全量重建索引（true=重建, false=复用已有 Collection）
+REBUILD_INDEX_ON_STARTUP = os.getenv("REBUILD_INDEX_ON_STARTUP", "false").lower() == "true"
+
 # ── API 安全 ──
 # DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值
 DEFAULT_AGENT_TOKEN = os.getenv("DEFAULT_AGENT_TOKEN", "")

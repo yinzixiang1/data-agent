@@ -1,0 +1,176 @@
+table:
+  name: pmt_channel_order_rfi
+  database: dwd_banking
+  display_name: 渠道订单RFI表
+  description: '渠道在交易处理中要求商户补充信息(Request For Information)的记录。
+
+    每行代表一次渠道RFI请求，覆盖payin/deposit/transfer/payout/conversion/refund等场景。'
+  tags:
+  - RFI
+  - 渠道补料
+  - 合规审核
+  - 信息补充
+  - request for information
+  - pmt_channel_order_rfi
+  query_tips: ''
+columns:
+- name: crid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: rfi_id
+  display_name: RFI ID
+  type: VARCHAR(36)
+  description: ID
+- name: transaction_type
+  display_name: 交易类型
+  type: INT
+  description: 记录类型：1000=payin, 1001=deposit, 1002=transfer in,  2000=payout, 2001=transfer
+    out, 3000=conversion，8001=refund
+  enum_values:
+  - value: 1000
+    label: payin
+  - value: 1001
+    label: deposit
+  - value: 1002
+    label: transfer in
+  - value: 2000
+    label: payout
+  - value: 2001
+    label: transfer out
+  - value: 3000
+    label: conversion
+  - value: 8001
+    label: refund
+- name: channel_rfi_id
+  display_name: 渠道RFI ID
+  type: VARCHAR(120)
+  description: 渠道RFI ID
+- name: channel_reference_id
+  display_name: 关联渠道订单ID
+  type: VARCHAR(36)
+  description: 关联渠道订单 ID
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+  description: 父ID（常用于机构模式）
+- name: account_id
+  display_name: 账户ID
+  type: VARCHAR(36)
+  description: 系统内部账户ID
+- name: short_account_id
+  display_name: 商户短号
+  type: VARCHAR(20)
+  description: 商户短号
+- name: account_name
+  display_name: 商户名
+  type: VARCHAR(250)
+  description: 商户名
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(250)
+  description: 渠道号
+- name: rfi_details
+  display_name: RFI详情
+  type: TEXT
+  description: rfi详情
+  skip_index: true
+- name: rfi_answer_info
+  display_name: RFI提交内容
+  type: TEXT
+  description: rfi提交内容
+  skip_index: true
+- name: rfi_status
+  display_name: RFI状态
+  type: TINYINT(1)
+  description: 状态：-2-closed，-1-reject，0-pending，1-completed，2-processing，3-return，4-Channel
+    processing
+  enum_values:
+  - value: -2
+    label: closed
+  - value: -1
+    label: reject
+  - value: 0
+    label: pending
+  - value: 1
+    label: completed
+  - value: 2
+    label: processing
+  - value: 3
+    label: return
+  - value: 4
+    label: Channel processing
+- name: ref_reference_id
+  display_name: 关联订单ID
+  type: VARCHAR(36)
+  description: 关联ID 订单等
+- name: ref_short_reference_id
+  display_name: 关联短号
+  type: VARCHAR(20)
+  description: 关联短号
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: channel_rfi_details
+  display_name: 渠道RFI详情(匹配上传)
+  type: TEXT
+  description: rfi详情-匹配上传信息
+  skip_index: true
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+- column: ref_reference_id
+  target_table: pmt_finance_payout
+  target_column: payout_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 待处理的RFI数量(按交易类型)
+  sql: "SELECT\n  CASE transaction_type\n    WHEN 1000 THEN 'payin'\n    WHEN 1001\
+    \ THEN 'deposit'\n    WHEN 2000 THEN 'payout'\n    WHEN 3000 THEN 'conversion'\n\
+    \    WHEN 8001 THEN 'refund'\n    ELSE 'other' END AS '交易类型',\n  COUNT(*) AS '待处理RFI数'\n\
+    FROM dwd_banking.`pmt_channel_order_rfi`\nWHERE rfi_status IN (0, 2, 3, 4)\nGROUP\
+    \ BY transaction_type\nLIMIT 100\n"
+  tables:
+  - pmt_channel_order_rfi
+  difficulty: medium
+- question: 各渠道RFI数量比例
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS 'RFI数',\n       ROUND(COUNT(*)\
+    \ * 100.0 / (SELECT COUNT(*) FROM dwd_banking.`pmt_channel_order_rfi`), 2) AS\
+    \ '占比%'\nFROM dwd_banking.`pmt_channel_order_rfi`\nGROUP BY channel_code\nORDER\
+    \ BY `RFI数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_order_rfi
+  difficulty: medium
+- question: RFI平均处理时长
+  sql: "SELECT channel_code AS '渠道',\n       AVG(TIMESTAMPDIFF(HOUR, create_time,\
+    \ update_time)) AS '平均耗时(小时)'\nFROM dwd_banking.`pmt_channel_order_rfi`\nWHERE\
+    \ rfi_status = 1\n  AND update_time IS NOT NULL\nGROUP BY channel_code\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_channel_order_rfi
+  difficulty: medium
+- question: RFI拒绝率
+  sql: "SELECT channel_code AS '渠道',\n       ROUND(SUM(CASE WHEN rfi_status = -1 THEN\
+    \ 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS '拒绝率%'\nFROM dwd_banking.`pmt_channel_order_rfi`\n\
+    WHERE rfi_status IN (-1, 1)\nGROUP BY channel_code\nLIMIT 100\n"
+  tables:
+  - pmt_channel_order_rfi
+  difficulty: medium
+- question: pending超过3天的RFI
+  sql: "SELECT short_account_id AS '商户短号',\n       account_name AS '商户名',\n      \
+    \ ref_short_reference_id AS '关联订单',\n       channel_code AS '渠道',\n       create_time\
+    \ AS 'RFI创建时间'\nFROM dwd_banking.`pmt_channel_order_rfi`\nWHERE rfi_status = 0\n\
+    \  AND create_time < DATE_SUB(NOW(), INTERVAL 3 DAY)\nORDER BY create_time\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_channel_order_rfi
+  difficulty: medium

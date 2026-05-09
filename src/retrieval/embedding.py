@@ -1,12 +1,13 @@
 """
-Qwen3-Embedding 编码器 — 仅输出 Dense 向量，Sparse 由 Milvus BM25 Function 处理。
+Embedding 编码器 — 仅输出 Dense 向量，Sparse 由 Milvus BM25 Function 处理。
+
+支持两种来源:
+    - local: 通过 sentence-transformers 本地推理
+    - api: 通过 OpenAI-compatible /v1/embeddings API 在线调用
 
 Dense / Sparse 完全解耦:
-    - Dense: 本模块通过 sentence-transformers 编码
+    - Dense: 本模块编码
     - Sparse: Milvus BM25 Function 在 insert 时自动生成，search 时自动匹配
-
-支持 MRL (Matryoshka Representation Learning):
-    dev 环境使用 1024 维截断 + L2 重归一化，prod 使用满血 2560 维。
 
 使用示例::
 
@@ -30,12 +31,27 @@ from src.retrieval.config import DENSE_MODEL, DENSE_DIM, DENSE_DEVICE, NL2SQL_EN
 
 logger = logging.getLogger(__name__)
 
-_instance: Optional["Qwen3Embedding"] = None
+_instance: Optional["BaseEmbedding"] = None
 
 
-class Qwen3Embedding:
+class BaseEmbedding:
+    """Embedding 基类，定义统一接口。"""
+
+    def __init__(self, dim: int, instructions: dict | None = None):
+        self.dim = dim
+        self.instructions = instructions or {}
+
+    def encode(self, texts: list[str], instruction: str = "") -> np.ndarray:
+        raise NotImplementedError
+
+    def encode_query(self, query: str, collection_type: str = "table") -> np.ndarray:
+        instruction = self.instructions.get(collection_type, "")
+        return self.encode([query], instruction=instruction)
+
+
+class Qwen3Embedding(BaseEmbedding):
     """
-    Qwen3-Embedding 编码器，仅输出 Dense 向量。
+    本地 Embedding 编码器 (sentence-transformers)。
 
     Attributes:
         model: SentenceTransformer 实例
@@ -46,18 +62,15 @@ class Qwen3Embedding:
     """
 
     def __init__(self, embedding_config: dict | None = None):
-        """
-        Args:
-            embedding_config: EMBEDDING_CONFIG 字典，为 None 时使用 config.py 默认值
-        """
         from sentence_transformers import SentenceTransformer
         import torch
 
         cfg = embedding_config or {}
         model_name = cfg.get("model", DENSE_MODEL)
-        self.dim = cfg.get("dim", DENSE_DIM)
+        dim = cfg.get("dim", DENSE_DIM)
+        super().__init__(dim=dim, instructions=cfg.get("instructions", {}))
+
         self.mrl_renormalize = cfg.get("mrl_renormalize", NL2SQL_ENV == "dev")
-        self.instructions = cfg.get("instructions", {})
         self.batch_size = cfg.get("batch_size", 8)
         self.max_length = cfg.get("max_length", 512)
 
@@ -79,17 +92,6 @@ class Qwen3Embedding:
         logger.info("Embedding 模型加载完成")
 
     def encode(self, texts: list[str], instruction: str = "") -> np.ndarray:
-        """
-        编码文本列表，返回 Dense 向量。
-
-        Args:
-            texts: 待编码文本列表
-            instruction: 查询 instruction (文档编码时留空)。
-                非空时自动格式化为 ``Instruct: {instruction}\\nQuery: `` 前缀。
-
-        Returns:
-            np.ndarray, shape (N, dim), float32
-        """
         if not texts:
             return np.empty((0, self.dim), dtype=np.float32)
 
@@ -117,36 +119,101 @@ class Qwen3Embedding:
 
         return vecs.astype(np.float32)
 
-    def encode_query(self, query: str, collection_type: str = "table") -> np.ndarray:
-        """
-        编码单条查询，自动注入 per-collection instruction。
 
-        Args:
-            query: 用户查询文本
-            collection_type: Collection 类型 (table/column/enum/fewshot/glossary)
+class ApiEmbedding(BaseEmbedding):
+    """
+    在线 API Embedding 编码器 (OpenAI-compatible /v1/embeddings)。
 
-        Returns:
-            np.ndarray, shape (1, dim), float32
-        """
-        instruction = self.instructions.get(collection_type, "")
-        return self.encode([query], instruction=instruction)
+    Attributes:
+        base_url: API base URL
+        api_key: 认证密钥
+        api_model_name: API 请求中的 model 参数
+        dim: 输出向量维度
+        batch_size: 每次 API 请求的最大文本数
+    """
+
+    def __init__(self, embedding_config: dict | None = None):
+        cfg = embedding_config or {}
+        dim = cfg.get("dim", DENSE_DIM)
+        super().__init__(dim=dim, instructions=cfg.get("instructions", {}))
+
+        self.base_url = cfg.get("base_url", "").rstrip("/")
+        self.api_key = cfg.get("api_key", "")
+        self.api_model_name = cfg.get("api_model_name", cfg.get("model", ""))
+        self.batch_size = cfg.get("batch_size", 64)
+        self.max_length = cfg.get("max_seq_length", 8192)
+
+        if not self.base_url:
+            raise ValueError("API Embedding 需要 base_url 配置")
+
+        logger.info(
+            f"初始化 API Embedding: base_url={self.base_url}, "
+            f"model={self.api_model_name}, dim={self.dim}"
+        )
+
+    def encode(self, texts: list[str], instruction: str = "") -> np.ndarray:
+        import httpx
+
+        if not texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+
+        # 如有 instruction，加入前缀
+        if instruction:
+            texts = [f"Instruct: {instruction}\nQuery: {t}" for t in texts]
+
+        all_vecs = []
+        url = f"{self.base_url}/embeddings"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            body = {"model": self.api_model_name, "input": batch}
+            if self.dim:
+                body["dimensions"] = self.dim
+
+            resp = httpx.post(url, json=body, headers=headers, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+
+            embeddings = sorted(data["data"], key=lambda x: x["index"])
+            for item in embeddings:
+                vec = item["embedding"]
+                all_vecs.append(vec)
+
+        result = np.array(all_vecs, dtype=np.float32)
+        # 截断到目标维度（兼容 API 不支持 dimensions 参数的情况）
+        if result.shape[1] > self.dim:
+            result = result[:, :self.dim]
+
+        return result
 
 
-# 向后兼容别名 (Phase 3 完成后可移除)
+# 向后兼容别名
 BGEEmbedding = Qwen3Embedding
 
 
-def get_embedding(embedding_config: dict | None = None) -> Qwen3Embedding:
+def get_embedding(embedding_config: dict | None = None) -> BaseEmbedding:
     """
     获取全局 Embedding 单例（懒加载）。
+
+    根据 embedding_config.source 选择本地或 API 实现:
+        - "local" (默认): Qwen3Embedding (sentence-transformers)
+        - "api": ApiEmbedding (OpenAI-compatible HTTP API)
 
     Args:
         embedding_config: EMBEDDING_CONFIG 字典，仅首次调用时生效
 
     Returns:
-        Qwen3Embedding 实例
+        BaseEmbedding 实例
     """
     global _instance
     if _instance is None:
-        _instance = Qwen3Embedding(embedding_config)
+        cfg = embedding_config or {}
+        source = cfg.get("source", "local")
+        if source == "api":
+            _instance = ApiEmbedding(cfg)
+        else:
+            _instance = Qwen3Embedding(cfg)
     return _instance

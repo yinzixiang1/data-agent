@@ -122,10 +122,11 @@ class FewShotSelector:
 
         if self.milvus_index and self.milvus_index.count > 0:
             results = self.milvus_index.dense_search(q_dense, top_k=candidate_k)
-            candidate_indices = [doc_id for doc_id, score, _ in results]
-            similarities = np.zeros(len(self.examples))
+            n = len(self.examples)
+            candidate_indices = [doc_id for doc_id, score, _ in results if doc_id < n]
+            similarities = np.zeros(n)
             for doc_id, score, _ in results:
-                if doc_id < len(self.examples):
+                if doc_id < n:
                     similarities[doc_id] = score
         else:
             return []

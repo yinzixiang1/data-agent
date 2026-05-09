@@ -1,0 +1,205 @@
+table:
+  name: pmt_account_bank_details
+  database: dwd_banking
+  display_name: 账户银行信息表
+  description: '商户账户绑定的银行账号信息，含虚拟账户VA和真实账户。
+
+    每行代表一个 (account_id, country_code, currency_code, account_number, channel_code)
+    的银行账号绑定。
+
+    支持LOCAL/SWIFT两种支付方式，覆盖多种清算系统(ACH/FEDWIRE/SEPA/FAST等)。'
+  tags:
+  - 银行账户
+  - VA
+  - virtual account
+  - SWIFT
+  - LOCAL
+  - 收款账户
+  - 清算系统
+  - 银行信息
+  - pmt_account_bank_details
+  query_tips: 查询启用VA需带 status=1；按账户类型筛VA用 account_bank_type=1000
+columns:
+- name: asid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+- name: account_id
+  display_name: 系统内部账户ID
+  type: VARCHAR(36)
+- name: account_bank_id
+  display_name: 账户银行内部ID
+  type: VARCHAR(36)
+  description: 银行账户唯一标识
+- name: country_code
+  display_name: 国家代码
+  type: CHAR(2)
+  description: 2位ISO 3166-2
+- name: currency_code
+  display_name: 币种
+  type: CHAR(3)
+  description: 3位ISO 4217
+- name: account_holder
+  display_name: 账户持有人
+  type: VARCHAR(200)
+  sensitive: true
+- name: account_number
+  display_name: 账号
+  type: VARCHAR(60)
+  sensitive: true
+- name: payment_method
+  display_name: 支付方式
+  type: INT
+  description: 1000=LOCAL, 2000=SWIFT
+  enum_values:
+  - value: 1000
+    label: LOCAL-本地
+  - value: 2000
+    label: SWIFT-跨境
+- name: clearing_system_type
+  display_name: 清算系统类型
+  type: VARCHAR(20)
+  description: SG-FAST/RTGS/GIRO/US-ACH/Fedwire/SEPA/Faster Payments/CHAPS/Bacs/Zengin/FPS/MEPS/SWIFT
+    等
+- name: clearing_system_code
+  display_name: 清算系统编号
+  type: VARCHAR(24)
+  description: ACH,FEDWIRE, GRIO,SWIFT CODE的编号
+- name: bank_name
+  display_name: 银行名称
+  type: VARCHAR(45)
+- name: bank_code
+  display_name: 银行代码
+  type: VARCHAR(20)
+- name: bank_address
+  display_name: 银行地址
+  type: VARCHAR(255)
+- name: payment_reference
+  display_name: 银行转账引用备注
+  type: VARCHAR(60)
+  description: 用于银行转账引用备注
+- name: deposit_conversion_currency
+  display_name: 存款转换币种
+  type: VARCHAR(3)
+  description: 外汇管制国(印尼/马来西亚等)入款转换币种
+- name: ref_cc_account_id
+  display_name: 关联CurrencyCloud账户ID
+  type: VARCHAR(36)
+  skip_index: true
+- name: channel_code
+  display_name: VA渠道编码
+  type: VARCHAR(64)
+  description: va账号渠道
+- name: status
+  display_name: 状态
+  type: TINYINT(1)
+  description: 1-ACTIVE, 0-INACTIVE, -1=CLOSED
+  enum_values:
+  - value: 1
+    label: ACTIVE-启用
+  - value: 0
+    label: INACTIVE-未启用
+  - value: -1
+    label: CLOSED-关闭
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: account_channel_id
+  display_name: 用户渠道ID
+  type: VARCHAR(36)
+  description: 用户渠道ID
+- name: account_bank_type
+  display_name: 账户类型
+  type: INT
+  description: 账户余额类型 1000=VA 2000=FX(预留), 3000=AC, 4000=IC
+  enum_values:
+  - value: 1000
+    label: VA
+  - value: 2000
+    label: FX
+  - value: 3000
+    label: AC
+  - value: 4000
+    label: IC
+- name: product_code
+  display_name: 产品代码
+  type: VARCHAR(200)
+- name: nickname
+  display_name: 昵称
+  type: VARCHAR(255)
+- name: supported_currencies
+  display_name: 支持的币种列表
+  type: VARCHAR(255)
+  description: 逗号分隔，如 USD,EUR,GBP
+- name: event_desc
+  display_name: 事件描述
+  type: VARCHAR(255)
+  description: 事件描述
+- name: flow_id
+  display_name: 工作流ID
+  type: VARCHAR(36)
+  description: 关联va申请workflow
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+- column: account_channel_id
+  target_table: pmt_account_channel
+  target_column: account_channel_id
+  join_type: LEFT JOIN
+- column: flow_id
+  target_table: pmt_account_bank_details_log
+  target_column: flow_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 各国家的VA开通数量
+  sql: "SELECT country_code AS '国家',\n       COUNT(*) AS 'VA数量'\nFROM dwd_banking.`pmt_account_bank_details`\n\
+    WHERE account_bank_type = 1000\n  AND status = 1\nGROUP BY country_code\nORDER\
+    \ BY `VA数量` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_bank_details
+  difficulty: easy
+- question: 哪些商户开通了SWIFT？
+  sql: "SELECT DISTINCT a.short_account_id AS '商户短号',\n       a.account_name AS '商户名',\n\
+    \       abd.currency_code AS '币种'\nFROM dwd_banking.`pmt_account_bank_details`\
+    \ abd\nLEFT JOIN dwd_banking.`pmt_account` a ON abd.account_id = a.account_id\n\
+    WHERE abd.payment_method = 2000\n  AND abd.status = 1\nLIMIT 100\n"
+  tables:
+  - pmt_account_bank_details
+  - pmt_account
+  difficulty: medium
+- question: 不同清算系统的使用占比
+  sql: "SELECT clearing_system_type AS '清算系统',\n       COUNT(*) AS '数量',\n       ROUND(COUNT(*)\
+    \ * 100.0 / (SELECT COUNT(*) FROM dwd_banking.`pmt_account_bank_details` WHERE\
+    \ status = 1), 2) AS '占比%'\nFROM dwd_banking.`pmt_account_bank_details`\nWHERE\
+    \ status = 1\n  AND clearing_system_type IS NOT NULL\nGROUP BY clearing_system_type\n\
+    ORDER BY `数量` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_bank_details
+  difficulty: medium
+- question: 关闭状态的VA数量(按渠道)
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '已关闭VA数'\nFROM dwd_banking.`pmt_account_bank_details`\n\
+    WHERE status = -1\n  AND account_bank_type = 1000\nGROUP BY channel_code\nORDER\
+    \ BY `已关闭VA数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_account_bank_details
+  difficulty: easy
+- question: 每个商户绑定的银行账户数(TOP10)
+  sql: "SELECT a.short_account_id AS '商户短号',\n       a.account_name AS '商户名',\n  \
+    \     COUNT(*) AS '银行账户数'\nFROM dwd_banking.`pmt_account_bank_details` abd\nLEFT\
+    \ JOIN dwd_banking.`pmt_account` a ON abd.account_id = a.account_id\nWHERE abd.status\
+    \ = 1\nGROUP BY a.short_account_id, a.account_name\nORDER BY `银行账户数` DESC\nLIMIT\
+    \ 10\n"
+  tables:
+  - pmt_account_bank_details
+  - pmt_account
+  difficulty: medium

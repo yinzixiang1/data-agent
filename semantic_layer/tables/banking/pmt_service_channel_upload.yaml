@@ -1,0 +1,159 @@
+table:
+  name: pmt_service_channel_upload
+  database: dwd_banking
+  display_name: 渠道材料上传记录表
+  description: '商户文件向渠道上传的批次记录(批次号唯一)。
+
+    每行代表一个上传批次，含文档类型、发送状态和渠道返回信息。'
+  tags:
+  - 渠道上传
+  - 文件批次
+  - channel upload
+  - pmt_service_channel_upload
+  query_tips: ''
+columns:
+- name: sc_id
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: order_batch_id
+  display_name: 渠道批次号
+  type: VARCHAR(60)
+  description: 渠道返回的批次号
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(60)
+  description: 渠道编码
+- name: channel_name
+  display_name: 渠道名
+  type: VARCHAR(200)
+  description: 网关名称
+- name: customer_number
+  display_name: 渠道商户号
+  type: VARCHAR(100)
+  description: 渠道商户号
+- name: purpose
+  display_name: 上传目的
+  type: INT
+  description: 上传目的：1-Upload to channel、2-Just save
+  enum_values:
+  - value: 1
+    label: Upload to channel
+  - value: 2
+    label: Just save
+- name: docs_id
+  display_name: 文档长ID
+  type: VARCHAR(36)
+  description: 长ID
+- name: docs_main_type
+  display_name: 文档主类型
+  type: INT
+  description: 1000=account，1001=beneficiary，1002=payer，2000=deposit，2001=payout，3000=conversion
+  enum_values:
+  - value: 1000
+    label: 账户
+  - value: 1001
+    label: 受益人
+  - value: 1002
+    label: 付款人
+  - value: 2000
+    label: 存款
+  - value: 2001
+    label: 代付
+  - value: 3000
+    label: 汇兑
+- name: docs_sub_type
+  display_name: 文档子类型
+  type: INT
+  description: 二级类型，0其他文档。更多docs_sub_type.go
+- name: docs_type_name
+  display_name: 类型名
+  type: VARCHAR(255)
+  description: 类型名
+- name: docs_file_type
+  display_name: 文件类型
+  type: VARCHAR(45)
+  description: '资料类型: '
+- name: docs_file_name
+  display_name: 原始文件名
+  type: VARCHAR(255)
+  description: 原始文件名
+- name: docs_file_path
+  display_name: 文件存储路径
+  type: VARCHAR(255)
+  description: 文件存储路径
+  sensitive: true
+- name: docs_file_size
+  display_name: 文件大小
+  type: VARCHAR(50)
+  description: 文件大小：0kb
+- name: storage_location
+  display_name: 存储位置
+  type: TINYINT(1)
+  description: 1:cloud;2:local;3:cloud+local
+  enum_values:
+  - value: 1
+    label: 云端
+  - value: 2
+    label: 本地
+  - value: 3
+    label: 云端+本地
+- name: creator_id
+  display_name: 创建人ID
+  type: VARCHAR(36)
+- name: creator_name
+  display_name: 创建人名
+  type: VARCHAR(65)
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: send_status
+  display_name: 发送状态
+  type: TINYINT(1)
+  description: 状态：0-pending(waiting send), 1-success(sended success), 2-failed(send
+    failed)
+  enum_values:
+  - value: 0
+    label: pending(待发送)
+  - value: 1
+    label: success
+  - value: 2
+    label: failed
+- name: resp_message
+  display_name: 渠道返回错误信息
+  type: VARCHAR(255)
+  description: 渠道返回的错误信息
+relations:
+- column: docs_id
+  target_table: pmt_account_documents
+  target_column: docs_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 渠道上传失败率
+  sql: "SELECT channel_code AS '渠道',\n       ROUND(SUM(CASE WHEN send_status = 2 THEN\
+    \ 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS '失败率%',\n       COUNT(*) AS '总批次'\n\
+    FROM dwd_banking.`pmt_service_channel_upload`\nGROUP BY channel_code\nORDER BY\
+    \ `失败率%` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_service_channel_upload
+  difficulty: medium
+- question: 待发送批次量
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '待发送数'\nFROM dwd_banking.`pmt_service_channel_upload`\n\
+    WHERE send_status = 0\nGROUP BY channel_code\nORDER BY `待发送数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_service_channel_upload
+  difficulty: easy
+- question: 各渠道上传频率(最近30天)
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '上传批次数'\nFROM dwd_banking.`pmt_service_channel_upload`\n\
+    WHERE create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)\nGROUP BY channel_code\n\
+    ORDER BY `上传批次数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_service_channel_upload
+  difficulty: easy

@@ -1,0 +1,134 @@
+table:
+  name: pmt_channel_transactions_record
+  database: dwd_banking
+  display_name: 渠道交易记录表
+  description: '平台与渠道的请求-响应通用记录，覆盖各种交易类型的渠道侧调用流水。
+
+    每行代表一次渠道API调用，含请求/响应报文，用于排错和对账。'
+  tags:
+  - 渠道流水
+  - 请求响应
+  - 调用日志
+  - 排错
+  - 报文
+  - pmt_channel_transactions_record
+  query_tips: ''
+columns:
+- name: id
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: record_id
+  display_name: 记录ID
+  type: VARCHAR(36)
+- name: record_type
+  display_name: 记录类型
+  type: SMALLINT
+  description: 记录类型：1000=payin, 1001=deposit, 1002=transfer in,  2000=payout, 2001=transfer
+    out, 3000=conversion，8001=refund
+  enum_values:
+  - value: 1000
+    label: payin
+  - value: 1001
+    label: deposit
+  - value: 1002
+    label: transfer in
+  - value: 2000
+    label: payout
+  - value: 2001
+    label: transfer out
+  - value: 3000
+    label: conversion
+  - value: 8001
+    label: refund
+- name: record_remarks
+  display_name: 备注
+  type: VARCHAR(255)
+  description: 备注
+- name: channel_req_id
+  display_name: 渠道请求ID
+  type: VARCHAR(36)
+- name: channel_req_body
+  display_name: 渠道请求Body
+  type: TEXT
+  skip_index: true
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(64)
+  description: 渠道code
+- name: channel_resp_id
+  display_name: 渠道响应ID
+  type: VARCHAR(36)
+- name: channel_resp_status
+  display_name: 渠道响应状态
+  type: VARCHAR(20)
+- name: channel_resp_body
+  display_name: 渠道响应Body
+  type: TEXT
+  skip_index: true
+- name: execute_reason
+  display_name: 失败原因
+  type: TEXT
+  description: 对应失败原因
+- name: ref_reference_id
+  display_name: 关联订单ID
+  type: VARCHAR(36)
+- name: ref_short_reference_id
+  display_name: 关联订单短号
+  type: VARCHAR(30)
+- name: record_status
+  display_name: 记录状态
+  type: SMALLINT
+  description: 记录状态：-1=失败，0=pending，1=completed
+  enum_values:
+  - value: -1
+    label: 失败
+  - value: 0
+    label: pending
+  - value: 1
+    label: completed
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+relations:
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 渠道调用失败率
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '总调用',\n       SUM(CASE WHEN\
+    \ record_status = -1 THEN 1 ELSE 0 END) AS '失败数',\n       ROUND(SUM(CASE WHEN\
+    \ record_status = -1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS '失败率%'\nFROM\
+    \ dwd_banking.`pmt_channel_transactions_record`\nWHERE create_time >= DATE_SUB(NOW(),\
+    \ INTERVAL 7 DAY)\nGROUP BY channel_code\nORDER BY `失败率%` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_transactions_record
+  difficulty: medium
+- question: 失败原因排行(最近7天)
+  sql: "SELECT execute_reason AS '失败原因',\n       COUNT(*) AS '次数'\nFROM dwd_banking.`pmt_channel_transactions_record`\n\
+    WHERE record_status = -1\n  AND create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)\n\
+    GROUP BY execute_reason\nORDER BY `次数` DESC\nLIMIT 20\n"
+  tables:
+  - pmt_channel_transactions_record
+  difficulty: easy
+- question: 各渠道各业务类型调用量
+  sql: "SELECT channel_code AS '渠道',\n       CASE record_type\n         WHEN 1001\
+    \ THEN 'deposit'\n         WHEN 2000 THEN 'payout'\n         WHEN 3000 THEN 'conversion'\n\
+    \         WHEN 8001 THEN 'refund'\n         ELSE '其他' END AS '业务类型',\n       COUNT(*)\
+    \ AS '调用次数'\nFROM dwd_banking.`pmt_channel_transactions_record`\nWHERE create_time\
+    \ >= DATE_SUB(NOW(), INTERVAL 1 DAY)\nGROUP BY channel_code, record_type\nORDER\
+    \ BY channel_code, `调用次数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_transactions_record
+  difficulty: medium
+- question: pending状态卡住的记录
+  sql: "SELECT record_id AS '记录ID',\n       channel_code AS '渠道',\n       ref_short_reference_id\
+    \ AS '关联订单',\n       create_time AS '创建时间',\n       TIMESTAMPDIFF(HOUR, create_time,\
+    \ NOW()) AS '已等待小时'\nFROM dwd_banking.`pmt_channel_transactions_record`\nWHERE\
+    \ record_status = 0\n  AND create_time < DATE_SUB(NOW(), INTERVAL 1 HOUR)\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_channel_transactions_record
+  difficulty: easy

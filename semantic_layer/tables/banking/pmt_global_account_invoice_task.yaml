@@ -1,0 +1,108 @@
+table:
+  name: pmt_global_account_invoice_task
+  database: dwd_banking
+  display_name: 全球账户Invoice任务表
+  description: '全球账户(Global Account)的开通任务记录。
+
+    每行代表一个 (account_id, channel_code, country_code, payment_method) 唯一约束的开通任务，跟踪渠道侧VA/Global
+    Account的申请进度。'
+  tags:
+  - 全球账户
+  - global account
+  - GA
+  - 任务调度
+  - VA开通
+  - pmt_global_account_invoice_task
+  query_tips: ''
+columns:
+- name: task_id
+  display_name: 任务ID
+  type: BIGINT
+  description: 任务ID，主键
+  skip_index: true
+- name: direct_id
+  display_name: 父级机构ID
+  type: VARCHAR(50)
+  description: 父ID（常用于机构模式）
+- name: account_id
+  display_name: 账户ID
+  type: VARCHAR(50)
+  description: 系统内部账户ID
+- name: channel_code
+  display_name: 渠道代码
+  type: VARCHAR(50)
+  description: 渠道代码
+- name: account_bank_id
+  display_name: 账户银行ID
+  type: VARCHAR(50)
+  description: 账户银行ID
+- name: country_code
+  display_name: 国家代码
+  type: VARCHAR(10)
+  description: 国家代码
+- name: payment_method
+  display_name: 支付方式
+  type: VARCHAR(20)
+  description: 支付方式 1000=Local 2000=SWIFT
+  enum_values:
+  - value: '1000'
+    label: Local
+  - value: '2000'
+    label: SWIFT
+- name: task_status
+  display_name: 任务状态
+  type: TINYINT
+  description: 任务状态 0=待处理 1=成功 2=处理中 -1=失败
+  enum_values:
+  - value: 0
+    label: 待处理
+  - value: 1
+    label: 成功
+  - value: 2
+    label: 处理中
+  - value: -1
+    label: 失败
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: msg_reason
+  display_name: 失败原因或处理信息
+  type: VARCHAR(200)
+  description: 失败原因或处理信息
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: account_bank_id
+  target_table: pmt_account_bank_details
+  target_column: account_bank_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+common_queries:
+- question: 待处理的GA任务数
+  sql: "SELECT channel_code AS '渠道',\n       country_code AS '国家',\n       COUNT(*)\
+    \ AS '待处理任务'\nFROM dwd_banking.`pmt_global_account_invoice_task`\nWHERE task_status\
+    \ IN (0, 2)\nGROUP BY channel_code, country_code\nORDER BY `待处理任务` DESC\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_global_account_invoice_task
+  difficulty: easy
+- question: 失败任务原因
+  sql: "SELECT msg_reason AS '失败原因',\n       COUNT(*) AS '次数'\nFROM dwd_banking.`pmt_global_account_invoice_task`\n\
+    WHERE task_status = -1\nGROUP BY msg_reason\nORDER BY `次数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_global_account_invoice_task
+  difficulty: easy
+- question: 各渠道GA成功率
+  sql: "SELECT channel_code AS '渠道',\n       ROUND(SUM(CASE WHEN task_status = 1 THEN\
+    \ 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS '成功率%',\n       COUNT(*) AS '总数'\nFROM\
+    \ dwd_banking.`pmt_global_account_invoice_task`\nGROUP BY channel_code\nLIMIT\
+    \ 100\n"
+  tables:
+  - pmt_global_account_invoice_task
+  difficulty: medium

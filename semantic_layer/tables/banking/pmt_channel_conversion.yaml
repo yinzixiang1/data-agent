@@ -1,0 +1,229 @@
+table:
+  name: pmt_channel_conversion
+  database: dwd_banking
+  display_name: 渠道汇兑表
+  description: '平台对接上游渠道的汇兑记录，与pmt_conversion(对客)对应。
+
+    每行代表一笔平台到渠道的真实汇兑流水，含客户汇率和平台核心汇率。'
+  tags:
+  - 渠道汇兑
+  - FX
+  - 平台对冲
+  - 上游汇兑
+  - channel conversion
+  - pmt_channel_conversion
+  query_tips: ''
+columns:
+- name: ccid
+  display_name: 主键ID
+  type: INT
+  skip_index: true
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+- name: account_id
+  display_name: 商户账户ID
+  type: VARCHAR(36)
+- name: short_account_id
+  display_name: 短号
+  type: VARCHAR(20)
+  description: 短号
+- name: account_name
+  display_name: 商户名
+  type: VARCHAR(250)
+- name: conversion_id
+  display_name: 长汇兑ID
+  type: VARCHAR(36)
+  description: 长汇兑ID
+- name: short_reference_id
+  display_name: 短汇兑ID
+  type: VARCHAR(20)
+  description: 短汇兑ID
+- name: core_rate
+  display_name: 平台核心汇率
+  type: DECIMAL(16,6)
+  description: 综合多个市场价格的平台核心定价
+- name: client_rate
+  display_name: 客户汇率
+  type: DECIMAL(16,6)
+  description: 面向客户的执行汇率
+- name: fixed_side
+  display_name: 固定边
+  type: VARCHAR(6)
+  description: 哪一边币种是固定的(buy/sell)
+- name: buy_amount
+  display_name: 买入金额
+  type: DECIMAL(16,2)
+- name: buy_currency
+  display_name: 买入币种
+  type: VARCHAR(3)
+- name: currency_pair
+  display_name: 币种对
+  type: VARCHAR(6)
+  description: 交易对
+- name: sell_amount
+  display_name: 卖出金额
+  type: DECIMAL(16,2)
+- name: sell_currency
+  display_name: 卖出币种
+  type: VARCHAR(3)
+- name: mid_market_rate
+  display_name: 中间价
+  type: DECIMAL(16,6)
+- name: conversion_date
+  display_name: 汇兑日期
+  type: DATETIME
+- name: conversion_reason
+  display_name: 汇兑原因
+  type: VARCHAR(100)
+- name: unique_request_id
+  display_name: 客户端幂等键
+  type: VARCHAR(36)
+  description: User-generated idempotency key.
+- name: quote_id
+  display_name: 报价ID
+  type: VARCHAR(36)
+- name: lockfx_quote_id
+  display_name: LockFX报价ID
+  type: VARCHAR(36)
+  description: LockFX quote id
+- name: remark
+  display_name: 备注
+  type: VARCHAR(255)
+  description: 备注
+- name: creator_id
+  display_name: 创建人ID
+  type: VARCHAR(36)
+  description: 创建人ID
+- name: creator_name
+  display_name: 创建人名
+  type: VARCHAR(100)
+  description: 创建人名
+- name: channel_resp_id
+  display_name: 渠道响应ID
+  type: VARCHAR(100)
+- name: channel_resp_status
+  display_name: 渠道响应状态
+  type: VARCHAR(20)
+- name: channel_resp_body
+  display_name: 渠道响应Body
+  type: TEXT
+  skip_index: true
+- name: execute_reason
+  display_name: 失败原因
+  type: TEXT
+  description: 内部用：对应失败原因
+- name: transaction_id
+  display_name: 交易流水ID
+  type: VARCHAR(36)
+  description: 交易流水ID
+- name: create_type
+  display_name: 创建类型
+  type: INT
+  description: 0=默认等级，1=提交API
+  enum_values:
+  - value: 0
+    label: 默认等级
+  - value: 1
+    label: API提交
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: settlement_time
+  display_name: 结算截止时间
+  type: DATETIME
+  description: 结算截止时间
+- name: complete_time
+  display_name: 完成时间
+  type: DATETIME
+- name: review_status
+  display_name: 审查状态
+  type: TINYINT(1)
+  description: 审查状态：1=passed, 0=in_review, -1=rejected
+  enum_values:
+  - value: 1
+    label: 通过
+  - value: 0
+    label: 审核中
+  - value: -1
+    label: 拒绝
+- name: conversion_status
+  display_name: 汇兑状态
+  type: TINYINT(1)
+  description: 0=PENDING, 2=SENT_TO_CHANNEL, 1=TRADE_SETTLED, -1=CLOSED
+  enum_values:
+  - value: 0
+    label: PENDING
+  - value: 2
+    label: SENT_TO_CHANNEL
+  - value: 1
+    label: TRADE_SETTLED
+  - value: -1
+    label: CLOSED
+- name: channel_code
+  display_name: 渠道编码
+  type: VARCHAR(60)
+  description: 渠道编码
+- name: ref_reference_id
+  display_name: 关联payout_id
+  type: VARCHAR(36)
+  description: 关联ID：目前关联payout_id
+- name: ref_short_reference_id
+  display_name: 关联短ID
+  type: VARCHAR(20)
+  description: 关联短ID
+relations:
+- column: conversion_id
+  target_table: pmt_conversion
+  target_column: conversion_id
+  join_type: LEFT JOIN
+- column: channel_code
+  target_table: pmt_service_channel
+  target_column: channel_code
+  join_type: LEFT JOIN
+- column: ref_reference_id
+  target_table: pmt_finance_payout
+  target_column: payout_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 各渠道的汇兑成交量
+  sql: "SELECT channel_code AS '渠道',\n       COUNT(*) AS '汇兑笔数',\n       SUM(buy_amount)\
+    \ AS '买入总额'\nFROM dwd_banking.`pmt_channel_conversion`\nWHERE conversion_status\
+    \ = 1\nGROUP BY channel_code\nORDER BY `汇兑笔数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_conversion
+  difficulty: easy
+- question: 汇率加点收益(client_rate - core_rate)
+  sql: "SELECT channel_code AS '渠道',\n       currency_pair AS '币种对',\n       COUNT(*)\
+    \ AS '笔数',\n       AVG(client_rate - core_rate) AS '平均加点'\nFROM dwd_banking.`pmt_channel_conversion`\n\
+    WHERE conversion_status = 1\nGROUP BY channel_code, currency_pair\nORDER BY `笔数`\
+    \ DESC\nLIMIT 20\n"
+  tables:
+  - pmt_channel_conversion
+  difficulty: medium
+- question: 各币种对的汇兑量
+  sql: "SELECT currency_pair AS '币种对',\n       COUNT(*) AS '笔数',\n       SUM(buy_amount)\
+    \ AS '买入总量'\nFROM dwd_banking.`pmt_channel_conversion`\nWHERE conversion_status\
+    \ = 1\nGROUP BY currency_pair\nORDER BY `笔数` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_channel_conversion
+  difficulty: easy
+- question: 失败的渠道汇兑及原因
+  sql: "SELECT short_reference_id AS '短号',\n       channel_code AS '渠道',\n       currency_pair\
+    \ AS '币种对',\n       execute_reason AS '失败原因',\n       create_time AS '时间'\nFROM\
+    \ dwd_banking.`pmt_channel_conversion`\nWHERE conversion_status = -1\nORDER BY\
+    \ create_time DESC\nLIMIT 50\n"
+  tables:
+  - pmt_channel_conversion
+  difficulty: easy
+- question: pending状态的渠道汇兑超过24h
+  sql: "SELECT short_reference_id AS '短号',\n       channel_code AS '渠道',\n       create_time\
+    \ AS '创建时间',\n       TIMESTAMPDIFF(HOUR, create_time, NOW()) AS '已等待小时'\nFROM\
+    \ dwd_banking.`pmt_channel_conversion`\nWHERE conversion_status IN (0, 2)\n  AND\
+    \ create_time < DATE_SUB(NOW(), INTERVAL 24 HOUR)\nLIMIT 100\n"
+  tables:
+  - pmt_channel_conversion
+  difficulty: medium

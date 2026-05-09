@@ -270,16 +270,3 @@ glossary:
   - pmt_finance_transfer
   related_columns:
   - client_idempotency_key
-- term: 最近一段时间
-  definition: 最近一段时间一般是指最近1个月
-  sql_hint: DATE_SUB(NOW(), INTERVAL 30 DAY)
-  related_tables: []
-  related_columns: []
-- term: 打款
-  definition: 打款即代付(payout)，商户主动发起的出金操作
-  sql_hint: payout_status = 1
-  related_tables:
-  - pmt_finance_payout
-  related_columns:
-  - pmt_finance_payout.source_amount
-  - pmt_finance_payout.payout_status

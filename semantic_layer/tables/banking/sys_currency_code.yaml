@@ -1,0 +1,89 @@
+table:
+  name: sys_currency_code
+  database: dwd_banking
+  display_name: 系统币种表
+  description: 'ISO 4217币种字典，支持法币和加密货币。
+
+    每行代表一种币种(网络区分FIAT/链)。'
+  tags:
+  - 币种字典
+  - ISO 4217
+  - 法币加密
+  - currency code
+  - sys_currency_code
+  query_tips: ''
+columns:
+- name: scid
+  display_name: 主键ID
+  type: INT
+  description: ISO 4217 Currency Codes
+  skip_index: true
+- name: currency_type
+  display_name: 币种类型
+  type: INT
+  description: 币种类型 1000=fiat 2000=crypto
+  enum_values:
+  - value: 1000
+    label: fiat-法币
+  - value: 2000
+    label: crypto-加密货币
+- name: network
+  display_name: 网络
+  type: VARCHAR(12)
+  description: 法币-FIAT，其他根据链区分
+- name: currency_name
+  display_name: 币种名
+  type: VARCHAR(60)
+- name: currency_code
+  display_name: 币种代码
+  type: VARCHAR(8)
+- name: decimal_places
+  display_name: 小数位
+  type: INT
+  description: 小数点位
+- name: numeric_code
+  display_name: 数字代码
+  type: VARCHAR(4)
+  description: 法币数字代码
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 创建/更新时间
+- name: currency_status
+  display_name: 状态
+  type: TINYINT(1)
+  enum_values:
+  - value: 1
+    label: 启用
+  - value: 0
+    label: 禁用
+- name: currency_symbol
+  display_name: 币种符号
+  type: VARCHAR(10)
+  description: 币种符号
+- name: scope_of_use
+  display_name: 使用范围
+  type: VARCHAR(255)
+  description: onboard/deposit/payout
+common_queries:
+- question: 启用中的币种列表
+  sql: "SELECT currency_code AS '币种',\n       currency_name AS '名称',\n       currency_symbol\
+    \ AS '符号'\nFROM dwd_banking.`sys_currency_code`\nWHERE currency_status = 1\nORDER\
+    \ BY currency_type, currency_code\nLIMIT 100\n"
+  tables:
+  - sys_currency_code
+  difficulty: easy
+- question: 加密货币列表
+  sql: "SELECT currency_code AS '币种',\n       currency_name AS '名称',\n       network\
+    \ AS '网络'\nFROM dwd_banking.`sys_currency_code`\nWHERE currency_type = 2000\n\
+    \  AND currency_status = 1\nLIMIT 100\n"
+  tables:
+  - sys_currency_code
+  difficulty: easy
+- question: 各币种类型数量
+  sql: "SELECT\n  CASE currency_type WHEN 1000 THEN '法币' WHEN 2000 THEN '加密货币' END\
+    \ AS '类型',\n  COUNT(*) AS '数量'\nFROM dwd_banking.`sys_currency_code`\nWHERE currency_status\
+    \ = 1\nGROUP BY currency_type\nLIMIT 100\n"
+  tables:
+  - sys_currency_code
+  difficulty: easy

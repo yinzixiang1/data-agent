@@ -250,6 +250,63 @@ class IndexManager:
             "table_schemas": table_schemas,
         }
 
+    def connect(
+        self,
+        schemas: list[dict],
+        embedding: Qwen3Embedding,
+        fewshot_examples: list[dict] | None = None,
+    ) -> dict:
+        """
+        连接已有 Collection（不重建索引），仅初始化内存对象。
+
+        比 build() 快得多：跳过 drop/create/insert，只构造 MilvusIndex 引用
+        和 FewShotSelector 内存状态（用于 MMR 多样性选择）。
+
+        Args:
+            schemas: 表 Schema 列表（用于 table_schemas 映射）
+            embedding: Qwen3Embedding 实例（FewShotSelector 需要）
+            fewshot_examples: Few-shot 示例列表（FewShotSelector 需要）
+
+        Returns:
+            dict: 与 build() 返回格式一致
+        """
+        dim = embedding.dim
+
+        table_index = MilvusIndex(TABLE_COLLECTION, dim=dim)
+        column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
+        enum_index = MilvusIndex(ENUM_COLLECTION, dim=dim)
+        value_index = MilvusIndex(VALUE_COLLECTION, has_dense=False)
+        value_idx = ValueIndexer(value_index)
+        glossary_index = MilvusIndex(GLOSSARY_COLLECTION, dim=dim)
+
+        # FewShotSelector 需要内存中的 examples + embeddings 用于 MMR
+        fewshot_index = MilvusIndex(FEWSHOT_COLLECTION, dim=dim)
+        fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
+        examples = fewshot_examples or []
+        if examples:
+            fewshot.examples = examples
+            texts = [ex["question"] for ex in examples]
+            fewshot.embeddings = embedding.encode(texts)
+            fewshot.example_table_sets = [set(ex.get("tables", [])) for ex in examples]
+            logger.info(f"Few-shot 内存状态加载: {len(examples)} 条示例")
+
+        table_schemas = {s["table_name"]: s for s in schemas}
+
+        counts = {name: MilvusIndex(name, dim=dim).count
+                  for name in [TABLE_COLLECTION, COLUMN_COLLECTION, ENUM_COLLECTION,
+                               VALUE_COLLECTION, FEWSHOT_COLLECTION, GLOSSARY_COLLECTION]}
+        logger.info(f"已连接现有 Collection: {counts}")
+
+        return {
+            "table_index": table_index,
+            "column_index": column_index,
+            "enum_index": enum_index,
+            "value_indexer": value_idx,
+            "fewshot_selector": fewshot,
+            "glossary_index": glossary_index,
+            "table_schemas": table_schemas,
+        }
+
     def rebuild_partial(
         self,
         collections: list[str],

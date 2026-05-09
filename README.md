@@ -328,7 +328,7 @@ app.py / main.py
 | `da_enum_def` / `da_enum_value` | 枚举字典（父子表） |
 | `da_fewshot` | 全局 Few-shot 示例 |
 | `da_agent` / `da_agent_config` / `da_agent_ref` | Agent 配置 |
-| `res_resource` | 通用资源（provider / vector_db / tool） |
+| `res_resource` | 通用资源（provider / vector_db / tool / model / model_type_def） |
 | `sys_config` | 全局系统配置 |
 | `sys_query_log` | 查询日志 |
 | `sys_eval_case` / `sys_eval_run` / `sys_eval_result` | 评估体系 |

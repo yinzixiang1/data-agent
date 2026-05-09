@@ -198,6 +198,7 @@ class QueryRequest(BaseModel):
     agent_id: int | None = Field(default=None, description="Agent ID，为空则使用默认配置")
     enable_explain: bool | None = Field(default=None, description="是否启用 EXPLAIN 校验，为空则使用 Agent 配置")
     metadata: QueryMetadata | None = Field(default=None, description="业务元数据（场景/业务线/调用方/追踪ID）")
+    history_summary: str = Field(default="", description="上一轮对话摘要（用于多轮上下文压缩），格式: question|||sql")
 
 
 class QueryResponse(BaseModel):
@@ -213,6 +214,8 @@ class QueryResponse(BaseModel):
     execution_time_ms: int = 0
     error: str = ""
     log_id: int | None = None
+    context_summary: str = Field(default="", description="本轮对话摘要，前端缓存后下一轮带回")
+    trace: dict | None = Field(default=None, description="详细链路追踪数据，仅调试时返回")
 
 
 class IndexRebuildRequest(BaseModel):
@@ -259,38 +262,140 @@ def run_query(
     question: str,
     config: AgentRuntimeConfig,
     client: OpenAI,
+    history_summary: str = "",
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
 
+    Args:
+        question: 用户原始问题
+        config: Agent 运行时配置
+        client: OpenAI 客户端
+        history_summary: 上一轮摘要，非空时触发上下文压缩
+
     Returns:
         dict 包含 sql, raw_answer, matched_tables, matched_terms, enum_hits,
-        is_success, retry_count, error
+        is_success, retry_count, error, context_summary, trace
     """
-    # RAG 检索
+    import time as _time
+
+    trace_steps = []
+    t_start = _time.monotonic()
+
+    def _elapsed_ms(t0):
+        return int((_time.monotonic() - t0) * 1000)
+
+    # 构建 LLM 调用的公共参数（某些供应商不支持 temperature）
+    llm_kwargs = {"model": config.llm_model}
+    is_anthropic = "anthropic" in (config.llm_base_url or "")
+    if not is_anthropic:
+        llm_kwargs["temperature"] = config.llm_temperature
+
+    # 多轮上下文压缩
+    effective_question = question
+    if history_summary:
+        t0 = _time.monotonic()
+        from src.retrieval.context_compressor import ContextCompressor
+        compressor = ContextCompressor(client, model=config.llm_model, custom_prompt=config.compress_prompt)
+        effective_question = compressor.compress(history_summary, question)
+        trace_steps.append({
+            "step": "context_compress",
+            "duration_ms": _elapsed_ms(t0),
+            "input": question,
+            "output": effective_question,
+        })
+
+    # RAG 检索（用压缩后的完整问题）
+    t0 = _time.monotonic()
     result = retriever.retrieve(
-        question,
+        effective_question,
         top_k=config.table_search_top_k,
         fewshot_k=config.fewshot_top_k,
         glossary_score_threshold=config.glossary_score_threshold,
     )
+    retrieval_ms = _elapsed_ms(t0)
 
     matched_tables = [t["table_name"] for t in result.relevant_tables]
     matched_terms = result.matched_terms
 
+    # trace: 术语解析
+    trace_steps.append({
+        "step": "glossary",
+        "duration_ms": retrieval_ms,
+        "matched_terms": matched_terms,
+        "business_context": result.business_context or "",
+    })
+
+    # trace: Schema 检索 + Reranker
+    table_details = []
+    for t in result.relevant_tables:
+        td = {"table_name": t["table_name"]}
+        if "rerank_score" in t:
+            td["rerank_score"] = round(t["rerank_score"], 4)
+        if "doc" in t and "score" in t["doc"]:
+            td["search_score"] = round(t["doc"]["score"], 4)
+        table_details.append(td)
+    trace_steps.append({
+        "step": "schema_retrieval",
+        "tables": table_details,
+        "count": len(matched_tables),
+    })
+
+    # trace: Value 匹配
+    if result.value_hits:
+        trace_steps.append({
+            "step": "value_matching",
+            "hits": [
+                {"column": v.get("column", ""), "value": v.get("value", ""), "table": v.get("table_name", "")}
+                for v in result.value_hits[:10]
+            ],
+            "count": len(result.value_hits),
+        })
+
+    # trace: 枚举
+    if result.enum_hits:
+        trace_steps.append({
+            "step": "enum_lookup",
+            "hits": [
+                {"column": e.get("column", ""), "value": e.get("value", "")}
+                for e in result.enum_hits[:10]
+            ],
+            "count": len(result.enum_hits),
+        })
+
+    # trace: Few-shot
+    fewshot_details = [
+        {"id": ex.get("id"), "question": ex.get("question", ""), "sql": ex.get("sql", "")}
+        for ex in result.relevant_examples
+        if ex.get("id") is not None
+    ]
+    if fewshot_details:
+        trace_steps.append({
+            "step": "fewshot",
+            "examples": fewshot_details,
+            "count": len(fewshot_details),
+        })
+
     # 构建对话
     messages = [
         {"role": "system", "content": config.system_prompt},
-        {"role": "user", "content": f"## 用户问题\n{question}\n\n{result.prompt_text}"},
+        {"role": "user", "content": f"## 用户问题\n{effective_question}\n\n{result.prompt_text}"},
     ]
 
     # 调用 LLM
-    resp = client.chat.completions.create(
-        model=config.llm_model,
-        temperature=config.llm_temperature,
-        messages=messages,
-    )
+    llm_calls = []
+    t0 = _time.monotonic()
+    resp = client.chat.completions.create(**llm_kwargs, messages=messages)
     answer = resp.choices[0].message.content
+    usage = resp.usage
+    llm_calls.append({
+        "role": "initial",
+        "duration_ms": _elapsed_ms(t0),
+        "model": config.llm_model,
+        "output": answer,
+        "input_tokens": usage.prompt_tokens if usage else None,
+        "output_tokens": usage.completion_tokens if usage else None,
+    })
     messages.append({"role": "assistant", "content": answer})
 
     # 提取 SQL
@@ -304,21 +409,33 @@ def run_query(
             "role": "user",
             "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。",
         })
-        resp = client.chat.completions.create(
-            model=config.llm_model,
-            temperature=config.llm_temperature,
-            messages=messages,
-        )
+        t0 = _time.monotonic()
+        resp = client.chat.completions.create(**llm_kwargs, messages=messages)
         answer = resp.choices[0].message.content
+        usage = resp.usage
+        llm_calls.append({
+            "role": "retry_no_sql",
+            "duration_ms": _elapsed_ms(t0),
+            "model": config.llm_model,
+            "output": answer,
+            "input_tokens": usage.prompt_tokens if usage else None,
+            "output_tokens": usage.completion_tokens if usage else None,
+        })
         messages.append({"role": "assistant", "content": answer})
         extracted_sql = SQLValidator.extract_sql(answer)
 
     # EXPLAIN 校验
+    explain_details = []
     if extracted_sql and config.enable_explain and validator:
         syntax_ok = False
         check = None
         for attempt in range(config.max_fix_retries):
             check = validator.validate(answer)
+            explain_details.append({
+                "attempt": attempt + 1,
+                "valid": check["valid"],
+                "error": check.get("error", ""),
+            })
             if check["valid"]:
                 syntax_ok = True
                 break
@@ -332,12 +449,18 @@ def run_query(
                     f"## EXPLAIN 报错\n{check['error']}\n\n"
                     f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
                 })
-                resp = client.chat.completions.create(
-                    model=config.llm_model,
-                    temperature=config.llm_temperature,
-                    messages=messages,
-                )
+                t0 = _time.monotonic()
+                resp = client.chat.completions.create(**llm_kwargs, messages=messages)
                 answer = resp.choices[0].message.content
+                usage = resp.usage
+                llm_calls.append({
+                    "role": f"explain_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.prompt_tokens if usage else None,
+                    "output_tokens": usage.completion_tokens if usage else None,
+                })
                 messages.append({"role": "assistant", "content": answer})
 
         if not syntax_ok:
@@ -352,16 +475,37 @@ def run_query(
                 f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
                 f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
             })
-            resp = client.chat.completions.create(
-                model=config.llm_model,
-                temperature=config.llm_temperature,
-                messages=messages,
-            )
+            t0 = _time.monotonic()
+            resp = client.chat.completions.create(**llm_kwargs, messages=messages)
             review_result = resp.choices[0].message.content
+            usage = resp.usage
+            llm_calls.append({
+                "role": "plan_review",
+                "duration_ms": _elapsed_ms(t0),
+                "model": config.llm_model,
+                "output": review_result,
+                "input_tokens": usage.prompt_tokens if usage else None,
+                "output_tokens": usage.completion_tokens if usage else None,
+            })
             if "LGTM" not in review_result.upper():
                 recheck = validator.validate(review_result)
                 if recheck["valid"]:
                     answer = review_result
+
+    # trace: LLM 调用
+    trace_steps.append({
+        "step": "llm_generation",
+        "calls": llm_calls,
+        "total_calls": len(llm_calls),
+    })
+
+    # trace: EXPLAIN 校验
+    if explain_details:
+        trace_steps.append({
+            "step": "explain_validate",
+            "attempts": explain_details,
+            "final_valid": is_success,
+        })
 
     final_sql = SQLValidator.extract_sql(answer) or ""
 
@@ -371,6 +515,18 @@ def run_query(
         for ex in result.relevant_examples
         if ex.get("id") is not None
     ]
+
+    # 构建本轮摘要供下一轮使用
+    from src.retrieval.context_compressor import ContextCompressor
+    context_summary = ContextCompressor.build_summary(effective_question, final_sql)
+
+    # 汇总 trace
+    trace = {
+        "question": question,
+        "effective_question": effective_question,
+        "steps": trace_steps,
+        "total_duration_ms": _elapsed_ms(t_start),
+    }
 
     return {
         "sql": final_sql,
@@ -382,6 +538,8 @@ def run_query(
         "retry_count": retry_count,
         "error": error_msg,
         "matched_fewshot": matched_fewshot,
+        "context_summary": context_summary,
+        "trace": trace,
     }
 
 
@@ -452,7 +610,7 @@ async def query(req: QueryRequest, request: Request):
         })
 
     try:
-        result = run_query(req.question, config, client)
+        result = run_query(req.question, config, client, history_summary=req.history_summary)
         elapsed_ms = int((time.time() - start_time) * 1000)
 
         # 记录查询日志
@@ -491,6 +649,8 @@ async def query(req: QueryRequest, request: Request):
             execution_time_ms=elapsed_ms,
             error=result["error"],
             log_id=log_id,
+            context_summary=result.get("context_summary", ""),
+            trace=result.get("trace"),
         )
 
     except Exception as e:

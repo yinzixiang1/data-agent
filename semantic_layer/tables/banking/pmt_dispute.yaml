@@ -1,0 +1,182 @@
+table:
+  name: pmt_dispute
+  database: dwd_banking
+  display_name: 争议记录表
+  description: '客户/商户对交易发起的争议申诉(chargeback)记录。
+
+    每行代表一笔争议，覆盖payin/deposit/payout/transfer/conversion/卡费/调账等类型。'
+  tags:
+  - 争议
+  - dispute
+  - chargeback
+  - 申诉
+  - 风控
+  - pmt_dispute
+  query_tips: ''
+columns:
+- name: dpid
+  display_name: 主键ID
+  type: BIGINT
+  skip_index: true
+- name: dispute_id
+  display_name: 争议长ID
+  type: VARCHAR(36)
+  description: ID
+- name: direct_id
+  display_name: 机构ID
+  type: VARCHAR(36)
+  description: 父ID（常用于机构模式）
+- name: account_id
+  display_name: 账户ID
+  type: VARCHAR(36)
+  description: 系统内部账户ID
+- name: short_account_id
+  display_name: 商户短号
+  type: VARCHAR(20)
+  description: 商户短号
+- name: short_reference_id
+  display_name: 争议短号
+  type: VARCHAR(20)
+  description: 短号
+- name: dispute_type
+  display_name: 争议类型
+  type: INT
+  description: 1000=payin, 1001=deposit, 2000=payout, 2001=transfer, 3000=conversion，4000=card
+    fee, 4001= card charge，8000=fee, 9000=adjustment
+  enum_values:
+  - value: 1000
+    label: payin
+  - value: 1001
+    label: deposit
+  - value: 2000
+    label: payout
+  - value: 2001
+    label: transfer
+  - value: 3000
+    label: conversion
+  - value: 4000
+    label: card fee
+  - value: 4001
+    label: card charge
+  - value: 8000
+    label: fee
+  - value: 9000
+    label: adjustment
+- name: dispute_amount
+  display_name: 争议金额
+  type: DECIMAL(16,4)
+  description: 金额
+- name: dispute_currency
+  display_name: 争议币种
+  type: VARCHAR(10)
+  description: 币种
+- name: dispute_remark
+  display_name: 争议备注
+  type: TEXT
+- name: dispute_documents
+  display_name: 所需文件内容
+  type: TEXT
+  description: 所需文件内容
+  skip_index: true
+- name: creator_id
+  display_name: 创建人ID
+  type: VARCHAR(36)
+- name: creator_name
+  display_name: 创建人名
+  type: VARCHAR(65)
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+- name: beneficiary_name
+  display_name: 受益人姓名
+  type: VARCHAR(120)
+  sensitive: true
+- name: payer_name
+  display_name: 付款人姓名
+  type: VARCHAR(120)
+  sensitive: true
+- name: ref_reference_id
+  display_name: 关联订单ID
+  type: VARCHAR(36)
+  description: 关联ID 订单等
+- name: ref_short_reference_id
+  display_name: 关联短号
+  type: VARCHAR(20)
+  description: 关联短号
+- name: document_status
+  display_name: 文档状态
+  type: TINYINT(1)
+  description: 0-等待上传，1=完成上传
+  enum_values:
+  - value: 0
+    label: 等待上传
+  - value: 1
+    label: 完成上传
+- name: dispute_status
+  display_name: 争议状态
+  type: TINYINT(1)
+  description: 状态：-1拒绝，0默认创建，1 批准
+  enum_values:
+  - value: -1
+    label: 拒绝
+  - value: 0
+    label: 默认创建
+  - value: 1
+    label: 批准
+- name: dispute_reason
+  display_name: 争议原因
+  type: VARCHAR(255)
+relations:
+- column: account_id
+  target_table: pmt_account
+  target_column: account_id
+  join_type: LEFT JOIN
+- column: ref_reference_id
+  target_table: pmt_finance_payout
+  target_column: payout_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 月度争议数量
+  sql: "SELECT DATE_FORMAT(create_time, '%Y-%m') AS '月份',\n       COUNT(*) AS '争议数',\n\
+    \       SUM(dispute_amount) AS '争议金额'\nFROM dwd_banking.`pmt_dispute`\nGROUP BY\
+    \ DATE_FORMAT(create_time, '%Y-%m')\nORDER BY `月份` DESC\nLIMIT 100\n"
+  tables:
+  - pmt_dispute
+  difficulty: easy
+- question: 各类型争议占比
+  sql: "SELECT\n  CASE dispute_type\n    WHEN 1000 THEN 'payin'\n    WHEN 1001 THEN\
+    \ 'deposit'\n    WHEN 2000 THEN 'payout'\n    WHEN 3000 THEN 'conversion'\n  \
+    \  WHEN 4000 THEN 'card fee'\n    WHEN 4001 THEN 'card charge'\n    WHEN 8000\
+    \ THEN 'fee'\n    WHEN 9000 THEN 'adjustment'\n    ELSE '其他' END AS '争议类型',\n\
+    \  COUNT(*) AS '数量',\n  ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM dwd_banking.`pmt_dispute`),\
+    \ 2) AS '占比%'\nFROM dwd_banking.`pmt_dispute`\nGROUP BY dispute_type\nLIMIT 100\n"
+  tables:
+  - pmt_dispute
+  difficulty: medium
+- question: 争议批准率
+  sql: "SELECT\n  ROUND(SUM(CASE WHEN dispute_status = 1 THEN 1 ELSE 0 END) * 100.0\
+    \ / COUNT(*), 2) AS '批准率%',\n  SUM(CASE WHEN dispute_status = 1 THEN 1 ELSE 0\
+    \ END) AS '批准数',\n  COUNT(*) AS '总数'\nFROM dwd_banking.`pmt_dispute`\nWHERE dispute_status\
+    \ IN (1, -1)\nLIMIT 100\n"
+  tables:
+  - pmt_dispute
+  difficulty: medium
+- question: 争议金额TOP10商户
+  sql: "SELECT a.short_account_id AS '商户短号',\n       a.account_name AS '商户名',\n  \
+    \     COUNT(*) AS '争议数',\n       SUM(d.dispute_amount) AS '争议总金额'\nFROM dwd_banking.`pmt_dispute`\
+    \ d\nLEFT JOIN dwd_banking.`pmt_account` a ON d.account_id = a.account_id\nGROUP\
+    \ BY a.short_account_id, a.account_name\nORDER BY `争议总金额` DESC\nLIMIT 10\n"
+  tables:
+  - pmt_dispute
+  - pmt_account
+  difficulty: hard
+- question: 待上传文档的争议
+  sql: "SELECT short_reference_id AS '争议短号',\n       dispute_amount AS '金额',\n   \
+    \    dispute_currency AS '币种',\n       create_time AS '创建时间'\nFROM dwd_banking.`pmt_dispute`\n\
+    WHERE document_status = 0\nORDER BY create_time\nLIMIT 100\n"
+  tables:
+  - pmt_dispute
+  difficulty: easy

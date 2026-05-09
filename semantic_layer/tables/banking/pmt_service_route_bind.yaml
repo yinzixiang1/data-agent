@@ -1,0 +1,85 @@
+table:
+  name: pmt_service_route_bind
+  database: dwd_banking
+  display_name: 路由绑定表
+  description: '路由与商户/产品/渠道的多对多绑定关系。
+
+    每行代表一个 (route_id, target_id, target_type) 绑定。'
+  tags:
+  - 路由绑定
+  - route bind
+  - 关联配置
+  - pmt_service_route_bind
+  query_tips: ''
+columns:
+- name: rbid
+  display_name: 主键ID
+  type: BIGINT
+  description: 主键
+  skip_index: true
+- name: route_id
+  display_name: 路由ID
+  type: BIGINT
+  description: 路由id
+  skip_index: true
+- name: target_id
+  display_name: 目标ID
+  type: VARCHAR(48)
+  description: account_id或channel_code等
+- name: target_type
+  display_name: 绑定类型
+  type: INT
+  description: 绑定类型，1000-merchant, 3000-product, 4000-channel
+  enum_values:
+  - value: 1000
+    label: merchant
+  - value: 3000
+    label: product
+  - value: 4000
+    label: channel
+- name: bind_status
+  display_name: 是否有效
+  type: TINYINT(1)
+  description: 是否有效
+  enum_values:
+  - value: 0
+    label: 无效
+  - value: 1
+    label: 有效
+- name: create_time
+  display_name: 创建时间
+  type: DATETIME
+  description: 创建时间
+- name: update_time
+  display_name: 更新时间
+  type: DATETIME
+  description: 更新时间
+relations:
+- column: route_id
+  target_table: pmt_service_route
+  target_column: route_id
+  join_type: LEFT JOIN
+common_queries:
+- question: 某路由绑定的商户列表
+  sql: "SELECT target_id AS '商户ID',\n       create_time AS '绑定时间'\nFROM dwd_banking.`pmt_service_route_bind`\n\
+    WHERE route_id = ?\n  AND target_type = 1000\n  AND bind_status = 1\nLIMIT 100\n"
+  tables:
+  - pmt_service_route_bind
+  difficulty: easy
+- question: 某商户使用的路由
+  sql: "SELECT rb.route_id AS '路由ID',\n       r.route_name AS '路由名'\nFROM dwd_banking.`pmt_service_route_bind`\
+    \ rb\nLEFT JOIN dwd_banking.`pmt_service_route` r ON rb.route_id = r.route_id\n\
+    WHERE rb.target_id = ?\n  AND rb.target_type = 1000\n  AND rb.bind_status = 1\n\
+    LIMIT 100\n"
+  tables:
+  - pmt_service_route_bind
+  - pmt_service_route
+  difficulty: medium
+- question: 各类型绑定数量
+  sql: "SELECT\n  CASE target_type\n    WHEN 1000 THEN 'merchant'\n    WHEN 3000 THEN\
+    \ 'product'\n    WHEN 4000 THEN 'channel'\n  END AS '类型',\n  COUNT(*) AS '绑定数'\n\
+    FROM dwd_banking.`pmt_service_route_bind`\nWHERE bind_status = 1\nGROUP BY target_type\n\
+    LIMIT 100\n"
+  tables:
+  - pmt_service_route_bind
+  difficulty: medium
