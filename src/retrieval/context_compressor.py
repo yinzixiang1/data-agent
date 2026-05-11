@@ -20,7 +20,8 @@
 
 import logging
 
-from openai import OpenAI
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,7 @@ COMPRESS_PROMPT = """你是一个查询合并助手。用户在多轮对话中�
 class ContextCompressor:
     """多轮对话上下文压缩器。"""
 
-    def __init__(self, client: OpenAI, model: str = "deepseek-chat", custom_prompt: str = ""):
-        self.client = client
+    def __init__(self, model: BaseChatModel, custom_prompt: str = ""):
         self.model = model
         self.prompt_template = custom_prompt.strip() if custom_prompt else COMPRESS_PROMPT
 
@@ -73,13 +73,8 @@ class ContextCompressor:
         prompt = self.prompt_template.format(history=history_text, current=current_question)
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                temperature=0,
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            merged = resp.choices[0].message.content.strip()
+            resp = self.model.invoke([HumanMessage(content=prompt)])
+            merged = resp.content.strip()
             logger.info(f"上下文压缩: '{current_question}' → '{merged}'")
             return merged
         except Exception as e:

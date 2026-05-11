@@ -19,11 +19,12 @@ NL2SQL RAG 检索系统 — 交互式入口（CLI 模式）。
 
 import sys
 import logging
-from openai import OpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.retrieval.retriever import SchemaRetriever
 from src.retrieval.config import DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.query_logger import QueryLogger
+from src.retrieval.llm_factory import create_chat_model
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,10 +77,7 @@ def main():
     retriever.initialize()
 
     # 初始化 LLM
-    llm = OpenAI(
-        api_key=config.llm_api_key,
-        base_url=config.llm_base_url,
-    )
+    llm = create_chat_model(config)
     print(f"LLM 已就绪 (provider={config.llm_provider}, model={config.llm_model})")
 
     # EXPLAIN 校验器
@@ -157,15 +155,14 @@ def main():
             {"role": "user", "content": f"## 用户问题\n{query}\n\n{result.prompt_text}"},
         ]
 
-        # 调用 LLM
+        def _to_lc(msgs):
+            _map = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
+            return [_map.get(m["role"], HumanMessage)(content=m["content"]) for m in msgs]
+
         print("\n[生成 SQL]")
         try:
-            resp = llm.chat.completions.create(
-                model=config.llm_model,
-                temperature=config.llm_temperature,
-                messages=messages,
-            )
-            answer = resp.choices[0].message.content
+            resp = llm.invoke(_to_lc(messages))
+            answer = resp.content
             messages.append({"role": "assistant", "content": answer})
         except Exception as e:
             print(f"LLM 调用失败: {e}")
@@ -180,12 +177,8 @@ def main():
             print("[EXPLAIN] LLM 未生成 SQL，重新请求...")
             messages.append({"role": "user", "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。"})
             try:
-                resp = llm.chat.completions.create(
-                    model=config.llm_model,
-                    temperature=config.llm_temperature,
-                    messages=messages,
-                )
-                answer = resp.choices[0].message.content
+                resp = llm.invoke(_to_lc(messages))
+                answer = resp.content
                 messages.append({"role": "assistant", "content": answer})
                 extracted_sql = SQLValidator.extract_sql(answer)
             except Exception as e:
@@ -215,12 +208,8 @@ def main():
                         f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
                     })
                     try:
-                        resp = llm.chat.completions.create(
-                            model=config.llm_model,
-                            temperature=config.llm_temperature,
-                            messages=messages,
-                        )
-                        answer = resp.choices[0].message.content
+                        resp = llm.invoke(_to_lc(messages))
+                        answer = resp.content
                         messages.append({"role": "assistant", "content": answer})
                     except Exception as e:
                         print(f"LLM 修复调用失败: {e}")
@@ -238,12 +227,8 @@ def main():
                 f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
             })
             try:
-                resp = llm.chat.completions.create(
-                    model=config.llm_model,
-                    temperature=config.llm_temperature,
-                    messages=messages,
-                )
-                review_result = resp.choices[0].message.content
+                resp = llm.invoke(_to_lc(messages))
+                review_result = resp.content
                 if "LGTM" in review_result.upper():
                     print("[执行计划分析] 无明显性能问题 ✓")
                 else:

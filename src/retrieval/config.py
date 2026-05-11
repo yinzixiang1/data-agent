@@ -82,8 +82,13 @@ MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "data_agent")
 # ── Milvus 向量数据库 ──
 # MILVUS_URI: Milvus 服务地址（含端口）
 # MILVUS_DB: 使用的数据库名（自动创建）
+# MILVUS_USER / MILVUS_PASSWORD: 认证信息（可选，开启 auth 时必填）
+# MILVUS_TOKEN: Token 认证（可选，与 user/password 二选一）
 MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
 MILVUS_DB = os.getenv("MILVUS_DB", "nl2sql")
+MILVUS_USER = os.getenv("MILVUS_USER", "")
+MILVUS_PASSWORD = os.getenv("MILVUS_PASSWORD", "")
+MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "")
 
 # ── 检索参数 ──
 # TABLE_SEARCH_TOP_K: 最终返回的表数量（Reranker 之后）
@@ -104,6 +109,12 @@ MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
 # ── 术语检索参数 ──
 # GLOSSARY_SCORE_THRESHOLD: 术语向量检索的余弦相似度阈值，低于此分数的匹配会被过滤
 GLOSSARY_SCORE_THRESHOLD = float(os.getenv("GLOSSARY_SCORE_THRESHOLD", "0.5"))
+
+# ── 配置来源 ──
+# CONFIG_SOURCE: 配置加载方式（mysql=从数据库加载, local=从本地文件加载）
+# CONFIG_PROFILE: mysql 模式下为 Agent ID（如 "1"），local 模式下为配置文件路径
+CONFIG_SOURCE = os.getenv("CONFIG_SOURCE", "mysql")
+CONFIG_PROFILE = os.getenv("CONFIG_PROFILE", "")
 
 # ── 启动行为 ──
 # REBUILD_INDEX_ON_STARTUP: 启动时是否全量重建索引（true=重建, false=复用已有 Collection）

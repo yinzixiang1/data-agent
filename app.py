@@ -18,12 +18,24 @@ import time
 import logging
 import uuid
 import os
+import signal
 
 from contextlib import asynccontextmanager
+
+# 确保 Ctrl+C / kill 能强制终止进程（gRPC 线程会吞默认信号处理）
+def _force_exit(*_):
+    os._exit(1)
+
+try:
+    signal.signal(signal.SIGINT, _force_exit)
+    signal.signal(signal.SIGTERM, _force_exit)
+except ValueError:
+    pass  # 非主线程忽略
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.language_models import BaseChatModel
 from sqlalchemy import create_engine, text
 
 from src.retrieval.retriever import SchemaRetriever
@@ -33,9 +45,10 @@ from src.retrieval.query_logger import QueryLogger
 from src.retrieval.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE,
     MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
-    MILVUS_URI, MILVUS_DB,
+    MILVUS_URI, MILVUS_DB, MILVUS_USER, MILVUS_PASSWORD, MILVUS_TOKEN,
     EMBEDDING_MODEL, RERANKER_MODEL,
     DEFAULT_AGENT_TOKEN,
+    CONFIG_SOURCE, CONFIG_PROFILE,
 )
 
 logging.basicConfig(
@@ -48,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 retriever: SchemaRetriever | None = None
 validator: SQLValidator | None = None
-llm_client: OpenAI | None = None
+llm_client: BaseChatModel | None = None
 agent_config: AgentRuntimeConfig | None = None
 query_logger: QueryLogger | None = None
 config_loader: AgentConfigLoader | None = None
@@ -56,8 +69,28 @@ config_loader: AgentConfigLoader | None = None
 
 # ── 启动配置打印 ──
 
-def print_infra_config():
-    """打印基础设施配置（不随 Agent 变化的部分）。"""
+def print_infra_config(config: AgentRuntimeConfig | None = None):
+    """打印基础设施配置。传入 agent_config 后会显示实际使用的 Milvus 连接。"""
+    # Milvus: 优先 agent_config 资源绑定，fallback .env
+    m_uri = (config.milvus_uri if config and config.milvus_uri else MILVUS_URI)
+    m_db = (config.milvus_db if config and config.milvus_db else MILVUS_DB)
+    m_user = (config.milvus_user if config and config.milvus_user else MILVUS_USER)
+    m_pass = (config.milvus_password if config and config.milvus_password else MILVUS_PASSWORD)
+    m_token = (config.milvus_token if config and config.milvus_token else MILVUS_TOKEN)
+    m_source = "资源绑定" if config and config.milvus_uri else ".env"
+
+    # Embedding / Reranker: 优先 agent_config 覆盖值，fallback .env
+    emb_model = EMBEDDING_MODEL
+    emb_source = ".env"
+    if config and config.embedding_config.get("model"):
+        emb_model = config.embedding_config["model"]
+        emb_source = "Agent 配置"
+    rnk_model = RERANKER_MODEL
+    rnk_source = ".env"
+    if config and config.index_build_config.get("reranker", {}).get("model"):
+        rnk_model = config.index_build_config["reranker"]["model"]
+        rnk_source = "Agent 配置"
+
     lines = [
         "",
         "=" * 60,
@@ -74,15 +107,17 @@ def print_infra_config():
         f"    User:     {MYSQL_USER}",
         f"    Database: {MYSQL_DATABASE}",
         "",
-        "  [Milvus]",
-        f"    URI:      {MILVUS_URI}",
-        f"    Database: {MILVUS_DB}",
+        f"  [Milvus] (来源: {m_source})",
+        f"    URI:      {m_uri}",
+        f"    Database: {m_db}",
+        f"    User:     {m_user or '(anonymous)'}",
+        f"    Auth:     {'token' if m_token else ('password' if m_pass else 'none')}",
         "",
-        "  [Embedding]",
-        f"    Model:    {EMBEDDING_MODEL}",
+        f"  [Embedding] (来源: {emb_source})",
+        f"    Model:    {emb_model}",
         "",
-        "  [Reranker]",
-        f"    Model:    {RERANKER_MODEL}",
+        f"  [Reranker] (来源: {rnk_source})",
+        f"    Model:    {rnk_model}",
         "",
         "=" * 60,
     ]
@@ -97,12 +132,10 @@ def create_doris_engine():
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
 
-def create_llm_client(config: AgentRuntimeConfig) -> OpenAI:
-    """根据 Agent 配置创建 LLM 客户端。"""
-    return OpenAI(
-        api_key=config.llm_api_key,
-        base_url=config.llm_base_url,
-    )
+def create_llm_client(config: AgentRuntimeConfig) -> BaseChatModel:
+    """根据 Agent 配置创建 LangChain ChatModel。"""
+    from src.retrieval.llm_factory import create_chat_model
+    return create_chat_model(config)
 
 
 def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
@@ -120,14 +153,47 @@ def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
 async def lifespan(app: FastAPI):
     global retriever, validator, llm_client, agent_config, query_logger
 
-    # 打印基础设施配置
-    print_infra_config()
+    # 加载 Agent 配置（CONFIG_SOURCE + CONFIG_PROFILE 控制来源）
+    if CONFIG_SOURCE == "local":
+        agent_config = load_agent_config()
+    else:
+        profile = CONFIG_PROFILE or os.getenv("DEFAULT_AGENT_ID", "")
+        agent_config = load_agent_config(
+            agent_id=int(profile) if profile else None
+        )
 
-    # 加载 Agent 配置
-    default_agent_id = os.getenv("DEFAULT_AGENT_ID")
-    agent_config = load_agent_config(
-        agent_id=int(default_agent_id) if default_agent_id else None
-    )
+    # 打印基础设施配置（含 Agent 绑定的 Milvus 信息）
+    print_infra_config(agent_config)
+
+    # 注入 Milvus 连接配置（Agent 资源绑定 > .env 默认值）
+    from src.retrieval.milvus_store import configure as configure_milvus
+    if agent_config.milvus_uri:
+        configure_milvus(
+            uri=agent_config.milvus_uri,
+            db=agent_config.milvus_db,
+            user=agent_config.milvus_user,
+            password=agent_config.milvus_password,
+            token=agent_config.milvus_token,
+        )
+        logger.info(f"Milvus 配置来自资源绑定: {agent_config.milvus_uri}")
+    else:
+        logger.info(f"Milvus 配置来自 .env: {MILVUS_URI}")
+
+    # 验证 Milvus 连接（5s 超时，连不上直接退出）
+    import socket
+    milvus_uri = agent_config.milvus_uri or MILVUS_URI
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(milvus_uri)
+        m_host = parsed.hostname or "localhost"
+        m_port = parsed.port or 19530
+        logger.info(f"验证 Milvus 连接 ({m_host}:{m_port})...")
+        sock = socket.create_connection((m_host, m_port), timeout=5)
+        sock.close()
+        logger.info("Milvus 连接成功")
+    except (socket.timeout, OSError) as e:
+        logger.error(f"Milvus 连接失败: {milvus_uri} — {e}")
+        raise SystemExit(f"启动中止: Milvus 不可达 ({milvus_uri})")
 
     # 验证 Doris 连接
     logger.info(f"连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
@@ -141,9 +207,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"Doris 连接失败: {e}")
         raise
 
-    # 初始化 RAG
+    # 初始化 RAG（传入 agent_config 以使用 Agent 级 Embedding/Reranker 配置）
     retriever = SchemaRetriever()
-    retriever.initialize()
+    retriever.initialize(config=agent_config)
 
     # 初始化 LLM
     llm_client = create_llm_client(agent_config)
@@ -261,7 +327,7 @@ class EvalRunResponse(BaseModel):
 def run_query(
     question: str,
     config: AgentRuntimeConfig,
-    client: OpenAI,
+    client: BaseChatModel,
     history_summary: str = "",
 ) -> dict:
     """
@@ -270,7 +336,7 @@ def run_query(
     Args:
         question: 用户原始问题
         config: Agent 运行时配置
-        client: OpenAI 客户端
+        client: LangChain ChatModel
         history_summary: 上一轮摘要，非空时触发上下文压缩
 
     Returns:
@@ -285,18 +351,12 @@ def run_query(
     def _elapsed_ms(t0):
         return int((_time.monotonic() - t0) * 1000)
 
-    # 构建 LLM 调用的公共参数（某些供应商不支持 temperature）
-    llm_kwargs = {"model": config.llm_model}
-    is_anthropic = "anthropic" in (config.llm_base_url or "")
-    if not is_anthropic:
-        llm_kwargs["temperature"] = config.llm_temperature
-
     # 多轮上下文压缩
     effective_question = question
     if history_summary:
         t0 = _time.monotonic()
         from src.retrieval.context_compressor import ContextCompressor
-        compressor = ContextCompressor(client, model=config.llm_model, custom_prompt=config.compress_prompt)
+        compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
         effective_question = compressor.compress(history_summary, question)
         trace_steps.append({
             "step": "context_compress",
@@ -382,19 +442,27 @@ def run_query(
         {"role": "user", "content": f"## 用户问题\n{effective_question}\n\n{result.prompt_text}"},
     ]
 
+    def _to_lc_messages(msgs):
+        """dict 列表 → LangChain Message 列表。"""
+        _map = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
+        return [_map.get(m["role"], HumanMessage)(content=m["content"]) for m in msgs]
+
+    def _invoke(msgs):
+        """调用 LLM 并返回 (answer, usage_metadata)。"""
+        resp = client.invoke(_to_lc_messages(msgs))
+        return resp.content, getattr(resp, "usage_metadata", None)
+
     # 调用 LLM
     llm_calls = []
     t0 = _time.monotonic()
-    resp = client.chat.completions.create(**llm_kwargs, messages=messages)
-    answer = resp.choices[0].message.content
-    usage = resp.usage
+    answer, usage = _invoke(messages)
     llm_calls.append({
         "role": "initial",
         "duration_ms": _elapsed_ms(t0),
         "model": config.llm_model,
         "output": answer,
-        "input_tokens": usage.prompt_tokens if usage else None,
-        "output_tokens": usage.completion_tokens if usage else None,
+        "input_tokens": usage.get("input_tokens") if usage else None,
+        "output_tokens": usage.get("output_tokens") if usage else None,
     })
     messages.append({"role": "assistant", "content": answer})
 
@@ -410,16 +478,14 @@ def run_query(
             "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。",
         })
         t0 = _time.monotonic()
-        resp = client.chat.completions.create(**llm_kwargs, messages=messages)
-        answer = resp.choices[0].message.content
-        usage = resp.usage
+        answer, usage = _invoke(messages)
         llm_calls.append({
             "role": "retry_no_sql",
             "duration_ms": _elapsed_ms(t0),
             "model": config.llm_model,
             "output": answer,
-            "input_tokens": usage.prompt_tokens if usage else None,
-            "output_tokens": usage.completion_tokens if usage else None,
+            "input_tokens": usage.get("input_tokens") if usage else None,
+            "output_tokens": usage.get("output_tokens") if usage else None,
         })
         messages.append({"role": "assistant", "content": answer})
         extracted_sql = SQLValidator.extract_sql(answer)
@@ -450,16 +516,14 @@ def run_query(
                     f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
                 })
                 t0 = _time.monotonic()
-                resp = client.chat.completions.create(**llm_kwargs, messages=messages)
-                answer = resp.choices[0].message.content
-                usage = resp.usage
+                answer, usage = _invoke(messages)
                 llm_calls.append({
                     "role": f"explain_fix_{attempt + 1}",
                     "duration_ms": _elapsed_ms(t0),
                     "model": config.llm_model,
                     "output": answer,
-                    "input_tokens": usage.prompt_tokens if usage else None,
-                    "output_tokens": usage.completion_tokens if usage else None,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
                 })
                 messages.append({"role": "assistant", "content": answer})
 
@@ -476,16 +540,14 @@ def run_query(
                 f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
             })
             t0 = _time.monotonic()
-            resp = client.chat.completions.create(**llm_kwargs, messages=messages)
-            review_result = resp.choices[0].message.content
-            usage = resp.usage
+            review_result, usage = _invoke(messages)
             llm_calls.append({
                 "role": "plan_review",
                 "duration_ms": _elapsed_ms(t0),
                 "model": config.llm_model,
                 "output": review_result,
-                "input_tokens": usage.prompt_tokens if usage else None,
-                "output_tokens": usage.completion_tokens if usage else None,
+                "input_tokens": usage.get("input_tokens") if usage else None,
+                "output_tokens": usage.get("output_tokens") if usage else None,
             })
             if "LGTM" not in review_result.upper():
                 recheck = validator.validate(review_result)

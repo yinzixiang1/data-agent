@@ -1,8 +1,13 @@
 """
-Agent 动态配置加载 — 从 MySQL 读取 Agent 配置和资源信息。
+Agent 动态配置加载 — 支持 MySQL 和本地文件两种来源。
 
-从 da_agent + da_agent_config + da_agent_ref + sys_resource + sys_config 表
-加载 Agent 的 LLM / Prompt / 检索参数等配置，替代 .env 硬编码。
+配置来源由 CONFIG_SOURCE 环境变量控制：
+  - mysql: 从 da_agent + da_agent_config + sys_config 等表加载（默认）
+  - local: 从本地 JSON 文件加载（通过 config_export.py 导出）
+
+CONFIG_PROFILE 指定加载目标：
+  - mysql 模式: Agent ID（如 "1"）
+  - local 模式: 配置文件路径（如 "config/agent_config.json"）
 
 使用示例::
 
@@ -15,6 +20,7 @@ Agent 动态配置加载 — 从 MySQL 读取 Agent 配置和资源信息。
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
@@ -24,6 +30,7 @@ from src.retrieval.config import (
     RERANK_INPUT_TOP_K, FEWSHOT_TOP_K, RRF_K, MMR_LAMBDA,
     ENABLE_RERANKER, GLOSSARY_SCORE_THRESHOLD, DEFAULT_AGENT_TOKEN,
     NL2SQL_ENV, DENSE_MODEL, DENSE_DIM, RERANKER_MODEL,
+    CONFIG_SOURCE, CONFIG_PROFILE,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +76,13 @@ class AgentRuntimeConfig:
     embedding_config: dict = field(default_factory=dict)
     index_build_config: dict = field(default_factory=dict)
 
+    # Milvus 向量数据库（来自 agent_ref vector_db 资源绑定，fallback 到 .env）
+    milvus_uri: str = ""
+    milvus_db: str = ""
+    milvus_user: str = ""
+    milvus_password: str = ""
+    milvus_token: str = ""
+
     # 安全
     token: str = ""
 
@@ -94,25 +108,92 @@ Doris 日期函数注意：
 
 
 class AgentConfigLoader:
-    """从 MySQL 加载 Agent 运行时配置。"""
+    """
+    Agent 运行时配置加载器。
+
+    支持两种来源（由 CONFIG_SOURCE 环境变量控制）：
+      - mysql: 从 MySQL 数据库加载（默认）
+      - local: 从本地 JSON 文件加载
+    """
 
     def __init__(self, mysql_connection_string: str | None = None):
-        if mysql_connection_string is None:
-            mysql_connection_string = (
-                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
-                f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
-            )
-        self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)
+        if CONFIG_SOURCE == "local":
+            self.engine = None
+        else:
+            if mysql_connection_string is None:
+                mysql_connection_string = (
+                    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+                    f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+                )
+            self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)
 
     def load(self, agent_id: int | None = None) -> AgentRuntimeConfig:
         """
         加载 Agent 配置。
 
-        优先级: agent_config > sys_config > .env 默认值
-
-        Args:
-            agent_id: Agent ID，None 时只使用 sys_config + .env 默认值
+        CONFIG_SOURCE=local 时从文件加载，忽略 agent_id 参数。
+        CONFIG_SOURCE=mysql 时从 MySQL 加载，优先级: agent_config > sys_config > .env。
         """
+        if CONFIG_SOURCE == "local":
+            return self._load_from_file()
+
+        return self._load_from_mysql(agent_id)
+
+    def _load_from_file(self) -> AgentRuntimeConfig:
+        """从本地 JSON 文件加载配置。"""
+        file_path = Path(CONFIG_PROFILE)
+        if not file_path.is_absolute():
+            from src.retrieval.config import PROJECT_ROOT
+            file_path = PROJECT_ROOT / file_path
+
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"配置文件不存在: {file_path}\n"
+                f"请先运行 python -m src.retrieval.config_export 导出配置"
+            )
+
+        logger.info(f"从本地文件加载配置: {file_path}")
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        config = AgentRuntimeConfig()
+
+        # Agent 基础信息
+        agent = data.get("agent", {})
+        config.agent_id = agent.get("id")
+        config.agent_name = agent.get("name", "")
+        config.agent_handle = agent.get("handle", "")
+        config.token = agent.get("token", "")
+
+        # sys_config 全局参数
+        sys_configs = data.get("sys_config", {})
+        # 将 JSON 对象转为字符串格式，与 MySQL 加载保持一致
+        sys_str = {}
+        for k, v in sys_configs.items():
+            sys_str[k] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+        self._apply_sys_configs(config, sys_str)
+
+        # Agent 分段配置覆盖
+        agent_configs = data.get("agent_config", {})
+        if agent_configs:
+            self._apply_agent_configs(config, agent_configs, {})
+            config.config_source = "local"
+
+        # Provider base_url 解析
+        providers = data.get("providers", [])
+        if providers and not config.llm_base_url:
+            config.llm_base_url = providers[0].get("base_url", "")
+            if not config.llm_provider:
+                config.llm_provider = providers[0].get("name", "")
+
+        # 补充默认值
+        self._apply_defaults(config)
+
+        logger.info(f"本地配置加载完成: agent={config.agent_name}, source={config.config_source}")
+        return config
+
+    def _load_from_mysql(self, agent_id: int | None = None) -> AgentRuntimeConfig:
+        """从 MySQL 数据库加载配置（原有逻辑）。"""
         config = AgentRuntimeConfig()
 
         # 1. 加载 sys_config（全局默认值）
@@ -136,25 +217,28 @@ class AgentConfigLoader:
             else:
                 logger.warning(f"Agent {agent_id} 不存在，使用默认配置")
 
-        # 3. 补充默认 system_prompt
+        # 3. 补充默认值
+        self._apply_defaults(config)
+
+        return config
+
+    def _apply_defaults(self, config: AgentRuntimeConfig):
+        """补充默认 prompt、token、LLM fallback。"""
+        import os
+
         if not config.system_prompt:
             config.system_prompt = DEFAULT_SYSTEM_PROMPT
 
-        # 4. Token fallback 到默认值
         if not config.token:
             config.token = DEFAULT_AGENT_TOKEN
 
-        # 5. 补充 LLM 配置 fallback（从 .env）
         if not config.llm_base_url or not config.llm_api_key:
-            import os
             if not config.llm_base_url:
                 config.llm_base_url = os.getenv("DEEPSEEK_BASE_URL", "")
             if not config.llm_api_key:
                 config.llm_api_key = os.getenv("DEEPSEEK_API_KEY", "")
             if not config.llm_model:
                 config.llm_model = "deepseek-chat"
-
-        return config
 
     def _load_sys_configs(self) -> dict[str, str]:
         """从 sys_config 加载全局配置。"""
@@ -325,7 +409,6 @@ class AgentConfigLoader:
                     config.max_fix_retries = int(model_cfg["max_fix_retries"])
                 except (ValueError, TypeError):
                     pass
-
             # Agent 级 Embedding 配置覆盖（deep merge 到 sys_config 值）
             if "embedding_config" in model_cfg and model_cfg["embedding_config"]:
                 config.embedding_config.update(model_cfg["embedding_config"])
@@ -347,6 +430,29 @@ class AgentConfigLoader:
                 config.llm_base_url = res_config.get("base_url", "")
                 if not config.llm_provider:
                     config.llm_provider = provider_name
+
+        # 从 agent_ref 的 vector_db 引用解析 Milvus 连接
+        vector_refs = agent_refs.get("vector_db", [])
+        if vector_refs:
+            # resource_key 格式: "name/database"
+            ref_key = vector_refs[0]
+            parts = ref_key.split("/", 1)
+            resource_name = parts[0]
+            db_name = parts[1] if len(parts) > 1 else ""
+            res_config = self._load_resource_config("vector_db", resource_name)
+            if res_config:
+                host = res_config.get("host", "")
+                port = res_config.get("port", 19530)
+                if host:
+                    if ":" in host:
+                        config.milvus_uri = f"http://{host}"
+                    else:
+                        config.milvus_uri = f"http://{host}:{port}"
+                config.milvus_db = db_name or "default"
+                config.milvus_user = res_config.get("user", "")
+                config.milvus_password = res_config.get("password", "")
+                config.milvus_token = res_config.get("token", "")
+                logger.info(f"Vector DB 从资源绑定加载: uri={config.milvus_uri}, db={config.milvus_db}")
 
         # prompt 分区
         prompt_cfg = agent_configs.get("prompt", {})
@@ -590,8 +696,9 @@ class AgentConfigLoader:
 
         lines += [
             "",
-            f"  环境: {NL2SQL_ENV}",
             f"  配置来源: {config.config_source}",
+            f"  CONFIG_SOURCE: {CONFIG_SOURCE}",
+            f"  CONFIG_PROFILE: {CONFIG_PROFILE or '(未设置)'}",
             "=" * 60,
         ]
 

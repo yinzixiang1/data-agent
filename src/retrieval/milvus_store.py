@@ -41,31 +41,60 @@ from pymilvus import (
     WeightedRanker,
 )
 
-from src.retrieval.config import MILVUS_URI, MILVUS_DB
+from src.retrieval.config import MILVUS_URI, MILVUS_DB, MILVUS_USER, MILVUS_PASSWORD, MILVUS_TOKEN
 
 logger = logging.getLogger(__name__)
 
 _client: MilvusClient | None = None
+
+# 运行时覆盖（由 app.py 启动时通过 configure() 注入 Agent 绑定的资源配置）
+_runtime_uri: str = ""
+_runtime_db: str = ""
+_runtime_user: str = ""
+_runtime_password: str = ""
+_runtime_token: str = ""
+
+
+def configure(uri: str = "", db: str = "", user: str = "", password: str = "", token: str = ""):
+    """注入运行时 Milvus 连接参数（覆盖 .env 默认值）。必须在 get_milvus_client() 首次调用前执行。"""
+    global _runtime_uri, _runtime_db, _runtime_user, _runtime_password, _runtime_token
+    _runtime_uri = uri
+    _runtime_db = db
+    _runtime_user = user
+    _runtime_password = password
+    _runtime_token = token
 
 
 def get_milvus_client() -> MilvusClient:
     """
     获取 Milvus 客户端单例（懒加载）。
 
+    优先使用 configure() 注入的参数，fallback 到 config.py 环境变量。
     首次调用时连接 Milvus 服务，若目标数据库不存在则自动创建。
 
     Returns:
-        MilvusClient 实例，已切换到 config.MILVUS_DB 数据库
+        MilvusClient 实例，已切换到目标数据库
     """
     global _client
     if _client is None:
-        _client = MilvusClient(uri=MILVUS_URI, db_name="default")
+        uri = _runtime_uri or MILVUS_URI
+        db = _runtime_db or MILVUS_DB
+        user = _runtime_user or MILVUS_USER
+        password = _runtime_password or MILVUS_PASSWORD
+        token = _runtime_token or MILVUS_TOKEN
+
+        conn_kwargs = {"uri": uri, "db_name": "default", "timeout": 10}
+        if token:
+            conn_kwargs["token"] = token
+        elif user and password:
+            conn_kwargs["token"] = f"{user}:{password}"
+        _client = MilvusClient(**conn_kwargs)
         dbs = _client.list_databases()
-        if MILVUS_DB not in dbs:
-            _client.create_database(MILVUS_DB)
-            logger.info(f"创建数据库: {MILVUS_DB}")
-        _client.using_database(MILVUS_DB)
-        logger.info(f"Milvus 连接成功: {MILVUS_URI}, db={MILVUS_DB}")
+        if db not in dbs:
+            _client.create_database(db)
+            logger.info(f"创建数据库: {db}")
+        _client.using_database(db)
+        logger.info(f"Milvus 连接成功: {uri}, db={db}, user={user or '(anonymous)'}")
     return _client
 
 

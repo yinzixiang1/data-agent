@@ -26,3 +26,6 @@ index_store/
 # Model cache
 *.bin
 *.safetensors
+
+# Exported config (contains api_key/token)
+config/
