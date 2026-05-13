@@ -27,7 +27,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
     PROJECT_ROOT,
 )
 
@@ -40,7 +40,7 @@ DEFAULT_OUTPUT = "config/agent_config.json"
 def export_config(agent_id: int, output_path: str):
     """从 MySQL 导出 Agent 配置到 JSON 文件。"""
     conn_str = (
-        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
         f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
     )
     engine = create_engine(conn_str)

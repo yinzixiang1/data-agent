@@ -17,6 +17,7 @@ NL2SQL_ENV 环境变量控制 dev / prod 默认值差异。
 
 import os
 from pathlib import Path
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 # 防止 faiss-cpu 和 torch 在 ARM Mac 上的 OpenMP 冲突导致 segfault
@@ -41,12 +42,11 @@ DENSE_DEVICE = os.getenv("DENSE_DEVICE", "mps" if NL2SQL_ENV == "dev" else "cuda
 # DORIS_PORT: Doris MySQL 协议端口（默认 9030）
 # DORIS_USER: 登录用户名
 # DORIS_PASSWORD: 登录密码
-# DORIS_DATABASE: 默认数据库名
 DORIS_HOST = os.getenv("DORIS_HOST", "localhost")
 DORIS_PORT = int(os.getenv("DORIS_PORT", "9030"))
 DORIS_USER = os.getenv("DORIS_USER", "root")
 DORIS_PASSWORD = os.getenv("DORIS_PASSWORD", "")
-DORIS_DATABASE = os.getenv("DORIS_DATABASE", "dwd_banking")
+DORIS_PASSWORD_URL = quote_plus(DORIS_PASSWORD)
 
 # ── Dense Embedding 模型 ──
 # DENSE_MODEL: 默认 Embedding 模型（会被 sys_config EMBEDDING_CONFIG.model 覆盖）
@@ -77,6 +77,7 @@ MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "yzx12345.")
+MYSQL_PASSWORD_URL = quote_plus(MYSQL_PASSWORD)
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "data_agent")
 
 # ── Milvus 向量数据库 ──
@@ -119,6 +120,14 @@ CONFIG_PROFILE = os.getenv("CONFIG_PROFILE", "")
 # ── 启动行为 ──
 # REBUILD_INDEX_ON_STARTUP: 启动时是否全量重建索引（true=重建, false=复用已有 Collection）
 REBUILD_INDEX_ON_STARTUP = os.getenv("REBUILD_INDEX_ON_STARTUP", "false").lower() == "true"
+
+# ── 日志 ──
+# LOG_DIR: 日志输出目录（相对于项目根目录或绝对路径）
+# LOG_LEVEL: 日志级别（DEBUG/INFO/WARNING/ERROR）
+# LOG_RETENTION_DAYS: 日志保留天数（超过后自动删除压缩文件）
+LOG_DIR = os.getenv("LOG_DIR", "logs")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
 # ── API 安全 ──
 # DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值

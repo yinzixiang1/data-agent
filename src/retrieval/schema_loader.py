@@ -17,8 +17,8 @@ from collections import OrderedDict
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,14 @@ class SchemaLoader:
     ):
         if connection_string is None:
             connection_string = (
-                f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}"
-                f"@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+                f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
+                f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
             )
         self.doris_engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
 
         if mysql_connection_string is None:
             mysql_connection_string = (
-                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                 f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
             )
         self.mysql_engine = create_engine(mysql_connection_string, pool_size=5, pool_recycle=3600)
@@ -66,10 +66,11 @@ class SchemaLoader:
             rows = conn.execute(text("SHOW TABLES")).fetchall()
             return [row[0] for row in rows]
 
-    def get_table_schema(self, table_name: str) -> dict:
+    def get_table_schema(self, table_name: str, database: str) -> dict:
         """通过 DESCRIBE + SHOW CREATE TABLE 获取单张表的 Schema。"""
+        db = database
         with self.doris_engine.connect() as conn:
-            col_rows = conn.execute(text(f"DESCRIBE `{table_name}`")).fetchall()
+            col_rows = conn.execute(text(f"DESCRIBE `{db}`.`{table_name}`")).fetchall()
             columns = []
             for row in col_rows:
                 columns.append({
@@ -84,7 +85,7 @@ class SchemaLoader:
             table_comment = ""
             try:
                 create_rows = conn.execute(
-                    text(f"SHOW CREATE TABLE `{table_name}`")
+                    text(f"SHOW CREATE TABLE `{db}`.`{table_name}`")
                 ).fetchone()
                 if create_rows:
                     import re
@@ -95,8 +96,9 @@ class SchemaLoader:
                 pass
 
             return {
-                "database": DORIS_DATABASE,
-                "table_name": table_name,
+                "database": db,
+                "table_name": f"{db}.{table_name}",
+                "table_name_short": table_name,
                 "table_comment": table_comment,
                 "columns": columns,
             }
@@ -104,46 +106,56 @@ class SchemaLoader:
     # ── MySQL 语义层加载（对接 dataAgent-admin-api 的 da_* 表） ──
 
     def _load_table_semantics(self) -> dict[str, dict]:
-        """从 da_table 加载表语义 → {table_name: {display_name, description, tags, query_tips}}"""
+        """从 da_table 加载表语义 → {db.table: {display_name, description, tags, query_tips}}"""
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
-                "SELECT name, database_name, display_name, description, tags, query_tips "
-                "FROM da_table WHERE status = 1 AND available = 1"
+                "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.biz_line "
+                "FROM da_table t "
+                "JOIN da_biz_database b ON t.biz_database_id = b.id "
+                "WHERE t.status = 1 AND t.available = 1"
             )).fetchall()
 
         result = {}
         for row in rows:
+            db_name = row[1]
+            full_key = f"{db_name}.{row[0]}"
             tags = []
             if row[4]:
                 try:
                     tags = json.loads(row[4])
                 except (json.JSONDecodeError, TypeError):
                     tags = [t.strip() for t in row[4].split(",") if t.strip()]
-            result[row[0]] = {
-                "database_name": row[1] or DORIS_DATABASE,
+            result[full_key] = {
+                "database_name": db_name,
+                "table_name_short": row[0],
                 "display_name": row[2] or "",
                 "description": row[3] or "",
                 "tags": tags,
                 "query_tips": row[5] or "",
+                "biz_line": row[6] or "",
             }
 
         logger.info(f"MySQL 表语义加载: {len(result)} 张表")
         return result
 
     def _load_column_semantics(self) -> dict[str, list[dict]]:
-        """从 da_table_column JOIN da_table 加载列语义 → {table_name: [col_dict, ...]}"""
+        """从 da_table_column JOIN da_table 加载列语义 → {db.table: [col_dict, ...]}"""
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
                 "SELECT t.name, c.name, c.display_name, c.description, "
-                "c.enum_values, c.business_logic, c.is_sensitive, c.is_skip_index "
+                "c.enum_values, c.business_logic, c.is_sensitive, c.is_skip_index, "
+                "b.database_name "
                 "FROM da_table_column c "
                 "JOIN da_table t ON c.table_id = t.id "
+                "JOIN da_biz_database b ON t.biz_database_id = b.id "
                 "WHERE t.status = 1 AND t.available = 1 "
                 "ORDER BY t.name, c.sort_order"
             )).fetchall()
 
         result: dict[str, list[dict]] = {}
         for row in rows:
+            db_name = row[8]
+            full_key = f"{db_name}.{row[0]}"
             enum_values = None
             if row[4]:
                 try:
@@ -162,30 +174,34 @@ class SchemaLoader:
                 "is_sensitive": bool(row[6]),
                 "is_skip_index": bool(row[7]),
             }
-            result.setdefault(row[0], []).append(col)
+            result.setdefault(full_key, []).append(col)
 
         logger.info(f"MySQL 列语义加载: {sum(len(v) for v in result.values())} 列")
         return result
 
     def _load_relations(self) -> dict[str, list[dict]]:
-        """从 da_table_relation JOIN da_table 加载关联关系 → {source_table: [relation_dict, ...]}"""
+        """从 da_table_relation JOIN da_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
-                "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type "
+                "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type, "
+                "b.database_name "
                 "FROM da_table_relation r "
                 "JOIN da_table t ON r.table_id = t.id "
+                "JOIN da_biz_database b ON t.biz_database_id = b.id "
                 "WHERE t.status = 1 AND t.available = 1"
             )).fetchall()
 
         result: dict[str, list[dict]] = {}
         for row in rows:
+            db_name = row[5]
+            full_key = f"{db_name}.{row[0]}"
             rel = {
                 "column": row[1],
                 "target_table": row[2],
                 "target_column": row[3],
                 "join_type": row[4] or "LEFT JOIN",
             }
-            result.setdefault(row[0], []).append(rel)
+            result.setdefault(full_key, []).append(rel)
 
         logger.info(f"MySQL 关联关系加载: {sum(len(v) for v in result.values())} 条")
         return result
@@ -238,7 +254,7 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(
                 "SELECT d.table_name, d.field_name, d.field_label, "
-                "v.code, v.label, v.label_cn "
+                "v.code, v.label, v.label_cn, d.biz_line "
                 "FROM da_enum_value v "
                 "JOIN da_enum_def d ON v.definition_id = d.id "
                 "ORDER BY d.table_name, d.field_name, v.sort_order"
@@ -252,6 +268,7 @@ class SchemaLoader:
                     "table_name": row[0],
                     "field_name": row[1],
                     "field_label": row[2] or row[1],
+                    "biz_line": row[6] or "",
                     "values": [],
                 }
             groups[key]["values"].append({
@@ -323,6 +340,7 @@ class SchemaLoader:
             schema["description"] = table_sem.get("description", schema.get("table_comment", ""))
             schema["tags"] = table_sem.get("tags", [])
             schema["query_tips"] = table_sem.get("query_tips", "")
+            schema["biz_line"] = table_sem.get("biz_line", "")
 
         # 关联关系
         schema["relations"] = relations or []
@@ -370,19 +388,20 @@ class SchemaLoader:
         # 以 MySQL 为基准，逐表从 Doris 获取 DDL 补充列类型
         schemas = []
         skipped = []
-        for table_name, sem in table_semantics.items():
+        for full_key, sem in table_semantics.items():
+            short_name = sem["table_name_short"]
             try:
-                doris_schema = self.get_table_schema(table_name)
+                doris_schema = self.get_table_schema(short_name, database=sem.get("database_name"))
             except Exception as e:
-                logger.warning(f"Doris DDL 获取失败，跳过: {table_name} ({e})")
-                skipped.append(table_name)
+                logger.warning(f"Doris DDL 获取失败，跳过: {full_key} ({e})")
+                skipped.append(full_key)
                 continue
 
             merged = self.merge_schema(
                 doris_schema,
                 table_sem=sem,
-                col_sems=column_semantics.get(table_name),
-                relations=relations.get(table_name),
+                col_sems=column_semantics.get(full_key),
+                relations=relations.get(full_key),
             )
             schemas.append(merged)
 

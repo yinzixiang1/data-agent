@@ -17,6 +17,7 @@
 """
 
 import logging
+import re
 
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
@@ -54,12 +55,32 @@ class HybridSearcher:
         self.enum_index = enum_index
         self.table_schemas = table_schemas
         self.config = config
+        self._rebuild_short_map()
+
+    def _rebuild_short_map(self):
+        """构建 short_name -> full_name 反查映射（用于关联表解析）。"""
+        self._short_to_full: dict[str, str] = {}
+        for full_name in self.table_schemas:
+            short = full_name.split(".", 1)[1] if "." in full_name else full_name
+            self._short_to_full[short] = full_name
+
+    def _resolve_full_name(self, target: str) -> str | None:
+        """将关联表名（可能是短名或全名）解析为 table_schemas 中的全限定名。"""
+        if target in self.table_schemas:
+            return target
+        return self._short_to_full.get(target)
 
     @property
     def _ef_search(self) -> int:
         return self.config.index_build_config.get("hnsw", {}).get("ef_search", 64)
 
-    def search(self, query: str, top_k: int = 5) -> list[dict]:
+    def _biz_filter(self, biz_line: str | None) -> str | None:
+        """生成 biz_line 过滤表达式，sys 业务线的数据不被过滤。"""
+        if not biz_line:
+            return None
+        return f'biz_line == "{biz_line}" or biz_line == "sys"'
+
+    def search(self, query: str, top_k: int = 5, biz_line: str | None = None) -> list[dict]:
         """
         表级 + 列级混合检索，融合枚举反哺和关联表补全。
 
@@ -72,12 +93,14 @@ class HybridSearcher:
         Args:
             query: 用户查询（可能已经过术语增强）
             top_k: 最终返回的表数量
+            biz_line: 业务线过滤，为空则不过滤
 
         Returns:
             list[dict]: 按 score 降序，每个元素含 table_name, score, source,
                 hit_by_column, schema
         """
         csc = self.config.collection_search_config
+        filter_expr = self._biz_filter(biz_line)
 
         # ── 表级混合检索 ──
         table_params = get_search_params(csc, "table")
@@ -88,6 +111,7 @@ class HybridSearcher:
             ranker=table_params.ranker,
             recall_k=table_params.recall_limit,
             output_fields=["table_name"],
+            filter_expr=filter_expr,
             ef_search=self._ef_search,
         )
 
@@ -102,6 +126,7 @@ class HybridSearcher:
                 ranker=col_params.ranker,
                 recall_k=col_params.recall_limit,
                 output_fields=["table_name"],
+                filter_expr=filter_expr,
                 ef_search=self._ef_search,
             )
             for doc_id, score, entity in col_results:
@@ -130,6 +155,7 @@ class HybridSearcher:
                 ranker=enum_params.ranker,
                 recall_k=enum_params.recall_limit,
                 output_fields=["table_name"],
+                filter_expr=filter_expr,
                 ef_search=self._ef_search,
             )
             for doc_id, score, entity in enum_results:
@@ -147,8 +173,11 @@ class HybridSearcher:
         for table_name, score in current_top:
             schema = self.table_schemas.get(table_name, {})
             for rel in schema.get("relations", []):
-                related = rel.get("target_table", "")
-                if not related or related not in self.table_schemas or related == table_name:
+                target_short = rel.get("target_table", "")
+                if not target_short:
+                    continue
+                related = self._resolve_full_name(target_short)
+                if not related or related == table_name:
                     continue
                 bonus = score * 0.1
                 table_scores.setdefault(related, 0)
@@ -156,6 +185,9 @@ class HybridSearcher:
                 relation_boosted.add(related)
         if relation_boosted:
             logger.info(f"关联补全: {relation_boosted}")
+
+        # ── 币种转换意图检测 → 强制注入汇率表 ──
+        self._inject_exchange_rate_table(query, table_scores)
 
         # 按分数排序
         sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
@@ -180,13 +212,62 @@ class HybridSearcher:
         )
         return results
 
-    def search_enums(self, query: str, top_k: int = 8) -> list[dict]:
+    # 常见法币/加密货币代码（3 位大写字母）
+    _CURRENCY_CODES = {
+        "USD", "EUR", "GBP", "JPY", "CNY", "CNH", "HKD", "SGD", "AUD", "CAD",
+        "CHF", "NZD", "KRW", "TWD", "THB", "MYR", "IDR", "PHP", "VND", "INR",
+        "AED", "SAR", "BRL", "MXN", "ZAR", "TRY", "RUB", "PLN", "SEK", "NOK",
+        "DKK", "CZK", "HUF", "ILS", "CLP", "ARS", "PEN", "COP", "NGN", "KES",
+        "BTC", "ETH", "USDT", "USDC",
+    }
+    _CONVERT_KEYWORDS = re.compile(r"转|换|兑|换算|转换|折算|convert", re.IGNORECASE)
+    _EXCHANGE_RATE_KEYWORDS = re.compile(r"汇率|exchange\s*rate|FX", re.IGNORECASE)
+
+    def _inject_exchange_rate_table(self, query: str, table_scores: dict[str, float]):
+        """检测币种/汇率意图，命中时将汇率表注入候选。
+
+        触发路径（OR 关系）:
+            1. 直接提及: query 含 "汇率" / "exchange rate" / "FX"
+            2. 币种 + 转换: query 含币种代码(SGD/USD...) + 转换关键词(转/换/兑...)
+        """
+        # 路径1: 直接提及汇率
+        direct_hit = bool(self._EXCHANGE_RATE_KEYWORDS.search(query))
+
+        # 路径2: 币种代码 + 转换关键词
+        found_currencies: set[str] = set()
+        if not direct_hit:
+            found_currencies = {m.group().upper() for m in re.finditer(r"[A-Za-z]{3,5}", query)} & self._CURRENCY_CODES
+            if not found_currencies or not self._CONVERT_KEYWORDS.search(query):
+                return
+
+        # 从 table_schemas 中查找含 exchange_rate 的表
+        exchange_table = None
+        for full_name in self.table_schemas:
+            short = full_name.split(".", 1)[1] if "." in full_name else full_name
+            if "exchange_rate" in short and "source" not in short:
+                exchange_table = full_name
+                break
+
+        if not exchange_table:
+            return
+
+        trigger = "汇率关键词" if direct_hit else f"币种{found_currencies}"
+        max_score = max(table_scores.values()) if table_scores else 0.5
+        if exchange_table in table_scores:
+            table_scores[exchange_table] += 0.02
+            logger.info(f"汇率表意图检测({trigger}): 加分 {exchange_table}")
+        else:
+            table_scores[exchange_table] = max_score * 0.8
+            logger.info(f"汇率表意图检测({trigger}): 注入 {exchange_table} (score={max_score * 0.8:.4f})")
+
+    def search_enums(self, query: str, top_k: int = 8, biz_line: str | None = None) -> list[dict]:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
 
         Args:
             query: 用户原始查询
             top_k: 返回的最大枚举命中数
+            biz_line: 业务线过滤，为空则不过滤
 
         Returns:
             list[dict]: table_name, column_name, enum_label_cn, sql_value, score
@@ -196,6 +277,7 @@ class HybridSearcher:
 
         enum_params = get_search_params(self.config.collection_search_config, "enum")
         q_dense = self.embedding.encode_query(query, "enum")
+        filter_expr = self._biz_filter(biz_line)
 
         results = self.enum_index.hybrid_search(
             q_dense,
@@ -203,6 +285,7 @@ class HybridSearcher:
             ranker=enum_params.ranker,
             recall_k=max(top_k, enum_params.recall_limit),
             output_fields=["table_name", "column_name", "enum_label_cn", "sql_value", "enum_code"],
+            filter_expr=filter_expr,
             ef_search=self._ef_search,
         )
 

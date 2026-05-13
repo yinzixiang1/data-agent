@@ -41,8 +41,14 @@ class DocumentBuilder:
                 - "text" (str): 用于向量化的拼接文本
                 - "schema" (dict): 原始 Schema 引用（检索命中后取完整信息）
         """
+        table_name = schema["table_name"]  # db.table 全限定名
+        # SQL 中使用反引号格式
+        db = schema.get("database", "")
+        short = schema.get("table_name_short", table_name)
+        sql_name = f"`{db}`.`{short}`" if db else f"`{short}`"
+
         parts = [
-            f"表名: {schema['table_name']}",
+            f"表名: {sql_name}",
         ]
 
         if schema.get("display_name"):
@@ -73,7 +79,7 @@ class DocumentBuilder:
             col = rel.get("column", "")
             target_col = rel.get("target_column", "")
             if target:
-                parts.append(f"关联: {target} ON {schema['table_name']}.{col} = {target}.{target_col}")
+                parts.append(f"关联: {target} ON {short}.{col} = {target}.{target_col}")
 
         # 查询提示
         if schema.get("query_tips"):
@@ -82,7 +88,7 @@ class DocumentBuilder:
         text = "\n".join(parts)
 
         return {
-            "table_name": schema["table_name"],
+            "table_name": table_name,
             "doc_type": "table",
             "text": text,
             "schema": schema,
@@ -109,7 +115,8 @@ class DocumentBuilder:
                 - "doc_type" (str): 固定为 "column"
                 - "text" (str): 用于向量化的拼接文本
         """
-        table_name = schema["table_name"]
+        table_name = schema["table_name"]  # db.table 全限定名
+        short_name = schema.get("table_name_short", table_name)
         display_name = schema.get("display_name", "")
         docs = []
 
@@ -127,7 +134,7 @@ class DocumentBuilder:
                 continue
 
             parts = [
-                f"表: {table_name}({display_name})" if display_name else f"表: {table_name}",
+                f"表: {short_name}({display_name})" if display_name else f"表: {short_name}",
                 f"列名: {col['name']}",
             ]
 
@@ -189,6 +196,7 @@ class DocumentBuilder:
             table_name = entry["table_name"]
             col_name = entry["field_name"]
             col_cn = entry.get("field_label", "")
+            biz_line = entry.get("biz_line", "")
 
             for v in entry.get("values", []):
                 code = str(v.get("code", ""))
@@ -207,6 +215,7 @@ class DocumentBuilder:
                 docs.append({
                     "table_name": table_name,
                     "column_name": col_name,
+                    "biz_line": biz_line,
                     "enum_code": code,
                     "enum_label_cn": label_cn or label,
                     "description": "",
@@ -268,6 +277,7 @@ class DocumentBuilder:
         for entry in enums:
             table_name = entry["table_name"]
             col_name = entry["field_name"]
+            biz_line = entry.get("biz_line", "")
             for v in entry.get("values", []):
                 code = str(v.get("code", ""))
                 label = v.get("label", "")
@@ -287,6 +297,7 @@ class DocumentBuilder:
                 docs.append({
                     "table_name": table_name,
                     "column_name": col_name,
+                    "biz_line": biz_line,
                     "enum_code": code,
                     "enum_label_cn": label_cn or label,
                     "sql_value": code,

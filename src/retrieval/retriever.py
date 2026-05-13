@@ -192,6 +192,7 @@ class SchemaRetriever:
             self.searcher.column_index = indices["column_index"]
         if "table_schemas" in indices:
             self.searcher.table_schemas = indices["table_schemas"]
+            self.searcher._rebuild_short_map()
             self.table_schemas = indices["table_schemas"]
         if "enum_index" in indices:
             self.searcher.enum_index = indices["enum_index"]
@@ -218,6 +219,7 @@ class SchemaRetriever:
         top_k: int | None = None,
         fewshot_k: int | None = None,
         glossary_score_threshold: float | None = None,
+        biz_line: str | None = None,
     ) -> RetrievalResult:
         """
         完整 RAG 检索流程。
@@ -237,6 +239,7 @@ class SchemaRetriever:
             top_k: 最终返回的表数量，None 时用 config 值
             fewshot_k: Few-shot 示例数量，None 时用 config 值
             glossary_score_threshold: 术语匹配阈值
+            biz_line: 业务线过滤（如 "banking"、"issuing"），为空则不过滤
 
         Returns:
             RetrievalResult
@@ -250,7 +253,10 @@ class SchemaRetriever:
         if fewshot_k is None:
             fewshot_k = cfg.fewshot_top_k
 
-        logger.info(f"开始检索: '{user_query}'")
+        if biz_line:
+            logger.info(f"开始检索: '{user_query}' (biz_line={biz_line})")
+        else:
+            logger.info(f"开始检索: '{user_query}'")
 
         # 1. 业务术语解析
         resolve_kwargs = {}
@@ -263,12 +269,12 @@ class SchemaRetriever:
         # 2. Value 匹配 (Schema Linking)
         value_hits = []
         if self.value_indexer:
-            value_hits = self.value_indexer.match_values(user_query)
+            value_hits = self.value_indexer.match_values(user_query, biz_line=biz_line)
 
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
         rerank_k = table_params.rerank_top_n if cfg.enable_reranker and table_params.rerank else top_k
-        candidates = self.searcher.search(enriched_query, top_k=max(rerank_k, top_k))
+        candidates = self.searcher.search(enriched_query, top_k=max(rerank_k, top_k), biz_line=biz_line)
 
         # 4. Reranker 精排
         reranker = get_reranker()
@@ -283,14 +289,18 @@ class SchemaRetriever:
         for c in list(candidates):
             schema = c.get("schema", {})
             for rel in schema.get("relations", []):
-                related = rel.get("target_table", "")
-                if related in all_search_candidates and related not in hit_names:
+                target_short = rel.get("target_table", "")
+                if not target_short:
+                    continue
+                # 解析短名为全限定名
+                related = self.searcher._resolve_full_name(target_short)
+                if related and related in all_search_candidates and related not in hit_names:
                     candidates.append(all_search_candidates[related])
                     hit_names.add(related)
                     logger.info(f"Reranker 后补回关联表: {related}")
 
         # 6. 枚举值检索
-        enum_hits = self.searcher.search_enums(user_query)
+        enum_hits = self.searcher.search_enums(user_query, biz_line=biz_line)
 
         # 7. Few-shot 示例检索
         hit_tables = [c["table_name"] for c in candidates]

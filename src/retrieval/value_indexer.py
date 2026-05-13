@@ -62,6 +62,7 @@ class ValueIndexer:
             {
                 "table_name": d["table_name"],
                 "column_name": d["column_name"],
+                "biz_line": d.get("biz_line", ""),
                 "enum_code": d["enum_code"],
                 "enum_label_cn": d["enum_label_cn"],
                 "sql_value": d["sql_value"],
@@ -77,7 +78,8 @@ class ValueIndexer:
 
         策略:
             1. 中英文引号包裹的内容 (最高优先)
-            2. jieba 分词中的名词 / 未登录词 (>= 2 字符)
+            2. 大写英文词 (如 SGD, USD, SWIFT) — 通常是代码/缩写
+            3. jieba 分词中的名词 / 未登录词 / 英文词 (>= 2 字符)
 
         Args:
             query: 用户原始查询
@@ -95,8 +97,12 @@ class ValueIndexer:
         for m in re.finditer(r"['''\u2018]([^'''\u2019]+)['''\u2019]", query):
             candidates.add(m.group(1).strip())
 
-        # jieba 词性标注: 保留名词类 + 未登录词
-        keep_flags = {"n", "nr", "ns", "nt", "nz", "ng", "vn", "an", "x"}
+        # 大写英文词（>=2字符）：币种代码、协议名等
+        for m in re.finditer(r'[A-Z]{2,}', query):
+            candidates.add(m.group())
+
+        # jieba 词性标注: 保留名词类 + 未登录词 + 英文词
+        keep_flags = {"n", "nr", "ns", "nt", "nz", "ng", "vn", "an", "x", "eng"}
         for word, flag in pseg.cut(query):
             if len(word) >= 2 and flag in keep_flags:
                 candidates.add(word)
@@ -108,6 +114,7 @@ class ValueIndexer:
         self,
         query: str,
         top_k_per_entity: int = 3,
+        biz_line: str | None = None,
     ) -> list[dict]:
         """
         对 query 中的候选实体做 BM25 匹配。
@@ -115,6 +122,7 @@ class ValueIndexer:
         Args:
             query: 用户原始查询
             top_k_per_entity: 每个候选实体最多返回的匹配数
+            biz_line: 业务线过滤，为空则不过滤
 
         Returns:
             list[dict]: 按 score 降序，每条包含:
@@ -129,6 +137,7 @@ class ValueIndexer:
         if not candidates:
             return []
 
+        filter_expr = f'biz_line == "{biz_line}" or biz_line == "sys"' if biz_line else None
         results = []
         seen: set[tuple] = set()
 
@@ -137,6 +146,7 @@ class ValueIndexer:
                 entity,
                 top_k=top_k_per_entity,
                 output_fields=["table_name", "column_name", "enum_label_cn", "sql_value"],
+                filter_expr=filter_expr,
             )
             for doc_id, score, ent in hits:
                 # 完全匹配加权

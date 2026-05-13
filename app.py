@@ -43,18 +43,61 @@ from src.retrieval.sql_validator import SQLValidator
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.query_logger import QueryLogger
 from src.retrieval.config import (
-    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
     MILVUS_URI, MILVUS_DB, MILVUS_USER, MILVUS_PASSWORD, MILVUS_TOKEN,
     EMBEDDING_MODEL, RERANKER_MODEL,
     DEFAULT_AGENT_TOKEN,
     CONFIG_SOURCE, CONFIG_PROFILE,
+    LOG_DIR, LOG_LEVEL, LOG_RETENTION_DAYS, PROJECT_ROOT,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+# ── 日志配置：控制台 + 文件双写，按天轮转压缩 ──
+import gzip
+import shutil
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+
+_log_dir = Path(LOG_DIR) if Path(LOG_DIR).is_absolute() else PROJECT_ROOT / LOG_DIR
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_file = _log_dir / "app.log"
+_log_fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+
+
+def _namer(default_name: str) -> str:
+    return default_name + ".gz"
+
+
+def _rotator(source: str, dest: str) -> None:
+    with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    os.remove(source)
+
+
+_file_handler = TimedRotatingFileHandler(
+    filename=str(_log_file),
+    when="midnight",
+    interval=1,
+    backupCount=LOG_RETENTION_DAYS,
+    encoding="utf-8",
 )
+_file_handler.namer = _namer
+_file_handler.rotator = _rotator
+_file_handler.setFormatter(logging.Formatter(_log_fmt))
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter(_log_fmt))
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    handlers=[_console_handler, _file_handler],
+)
+# uvicorn 日志统一走 root handler（清除自带 handler，靠 propagate 传递）
+for _uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+    _uv_logger = logging.getLogger(_uv_name)
+    _uv_logger.handlers.clear()
+    _uv_logger.propagate = True
+
 logger = logging.getLogger(__name__)
 
 # ── 全局状态 ──
@@ -100,7 +143,6 @@ def print_infra_config(config: AgentRuntimeConfig | None = None):
         "  [Doris]",
         f"    Host:     {DORIS_HOST}:{DORIS_PORT}",
         f"    User:     {DORIS_USER}",
-        f"    Database: {DORIS_DATABASE}",
         "",
         "  [MySQL 语义层]",
         f"    Host:     {MYSQL_HOST}:{MYSQL_PORT}",
@@ -126,10 +168,38 @@ def print_infra_config(config: AgentRuntimeConfig | None = None):
 
 def create_doris_engine():
     url = (
-        f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}"
-        f"@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+        f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
+        f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
     )
     return create_engine(url, pool_size=2, pool_recycle=3600)
+
+
+def _register_engine_url(agent_id: int):
+    """启动时将本机 engine_url 写入 da_agent 表。"""
+    import socket
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+    except socket.gaierror:
+        ip = "127.0.0.1"
+    port = int(os.getenv("PORT", "9090"))
+    engine_url = f"http://{ip}:{port}"
+    try:
+        from sqlalchemy import create_engine, text
+        url = (
+            f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
+            f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+        )
+        eng = create_engine(url)
+        with eng.connect() as conn:
+            conn.execute(
+                text("UPDATE da_agent SET engine_url = :url WHERE id = :id"),
+                {"url": engine_url, "id": agent_id},
+            )
+            conn.commit()
+        eng.dispose()
+        logger.info(f"engine_url 已注册: agent_id={agent_id}, url={engine_url}")
+    except Exception as e:
+        logger.warning(f"engine_url 注册失败 (非致命): {e}")
 
 
 def create_llm_client(config: AgentRuntimeConfig) -> BaseChatModel:
@@ -222,6 +292,10 @@ async def lifespan(app: FastAPI):
     # 初始化查询日志
     query_logger = QueryLogger()
     logger.info("查询日志已就绪")
+
+    # 自动注册 engine_url 到 da_agent 表
+    if CONFIG_SOURCE == "mysql" and CONFIG_PROFILE:
+        _register_engine_url(int(CONFIG_PROFILE))
 
     logger.info("NL2SQL Data Agent 服务启动完成")
 
@@ -329,6 +403,7 @@ def run_query(
     config: AgentRuntimeConfig,
     client: BaseChatModel,
     history_summary: str = "",
+    biz_line: str = "",
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
@@ -372,6 +447,7 @@ def run_query(
         top_k=config.table_search_top_k,
         fewshot_k=config.fewshot_top_k,
         glossary_score_threshold=config.glossary_score_threshold,
+        biz_line=biz_line,
     )
     retrieval_ms = _elapsed_ms(t0)
 
@@ -406,7 +482,7 @@ def run_query(
         trace_steps.append({
             "step": "value_matching",
             "hits": [
-                {"column": v.get("column", ""), "value": v.get("value", ""), "table": v.get("table_name", "")}
+                {"table": v.get("table_name", ""), "column": v.get("column_name", ""), "value": f'{v.get("enum_label_cn", "")} → {v.get("sql_value", "")}'}
                 for v in result.value_hits[:10]
             ],
             "count": len(result.value_hits),
@@ -578,9 +654,11 @@ def run_query(
         if ex.get("id") is not None
     ]
 
-    # 构建本轮摘要供下一轮使用
+    # 构建本轮摘要供下一轮使用（仅成功时更新，失败轮不污染上下文）
     from src.retrieval.context_compressor import ContextCompressor
-    context_summary = ContextCompressor.build_summary(effective_question, final_sql)
+    context_summary = ""
+    if is_success and final_sql:
+        context_summary = ContextCompressor.build_summary(effective_question, matched_tables)
 
     # 汇总 trace
     trace = {
@@ -672,12 +750,12 @@ async def query(req: QueryRequest, request: Request):
         })
 
     try:
-        result = run_query(req.question, config, client, history_summary=req.history_summary)
+        meta = req.metadata or QueryMetadata()
+        result = run_query(req.question, config, client, history_summary=req.history_summary, biz_line=meta.business)
         elapsed_ms = int((time.time() - start_time) * 1000)
 
         # 记录查询日志
         log_id = None
-        meta = req.metadata or QueryMetadata()
         if query_logger:
             log_id = query_logger.log(
                 session_id=session_id,

@@ -25,7 +25,7 @@ import logging
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class QueryLogger:
     def __init__(self, mysql_connection_string: str | None = None):
         if mysql_connection_string is None:
             mysql_connection_string = (
-                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+                f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                 f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
             )
         self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)

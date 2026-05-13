@@ -47,6 +47,7 @@ GLOSSARY_COLLECTION = "nl2sql_glossary"
 TABLE_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "table_cn_name", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "table_comment", "dtype": DataType.VARCHAR, "max_length": 4096},
     {"name": "business_domain", "dtype": DataType.VARCHAR, "max_length": 256},
@@ -56,6 +57,7 @@ TABLE_FIELDS = [
 COLUMN_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128},
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128},
     {"name": "column_cn_name", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "column_type", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -67,6 +69,7 @@ COLUMN_FIELDS = [
 ENUM_FIELDS = [
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
     {"name": "enum_label_cn", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "description", "dtype": DataType.VARCHAR, "max_length": 1024},
@@ -77,6 +80,7 @@ ENUM_FIELDS = [
 VALUE_FIELDS = [
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
     {"name": "enum_label_cn", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "sql_value", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -150,6 +154,7 @@ class IndexManager:
                 {
                     "db_name": d["schema"].get("database", ""),
                     "table_name": d["table_name"],
+                    "biz_line": d["schema"].get("biz_line", ""),
                     "table_cn_name": d["schema"].get("display_name", ""),
                     "table_comment": (d["schema"].get("description") or "")[:4096],
                     "business_domain": ", ".join(d["schema"].get("tags", [])),
@@ -160,6 +165,9 @@ class IndexManager:
             table_index.insert(dense_vecs, table_texts, table_rows)
 
         # 3. 列级索引
+        # 构建 table_name -> biz_line / database 映射
+        table_biz_map = {s["table_name"]: s.get("biz_line", "") for s in schemas}
+        table_db_map = {s["table_name"]: s.get("database", "") for s in schemas}
         column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
         column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
         if column_docs:
@@ -167,8 +175,9 @@ class IndexManager:
             dense_vecs = embedding.encode(column_texts, instruction=embedding.instructions.get("column", ""))
             column_rows = [
                 {
-                    "db_name": schemas[0].get("database", "") if schemas else "",
+                    "db_name": table_db_map.get(d["table_name"], ""),
                     "table_name": d["table_name"],
+                    "biz_line": table_biz_map.get(d["table_name"], ""),
                     "column_name": d["column_name"],
                     "column_cn_name": d.get("column_cn_name", ""),
                     "column_type": d.get("column_type", ""),
@@ -190,6 +199,7 @@ class IndexManager:
                 {
                     "table_name": d["table_name"],
                     "column_name": d["column_name"],
+                    "biz_line": d.get("biz_line", ""),
                     "enum_code": d["enum_code"],
                     "enum_label_cn": d["enum_label_cn"],
                     "description": d.get("description", ""),
@@ -334,6 +344,8 @@ class IndexManager:
         if "table" in collections:
             logger.info("重建 table + column 索引...")
             table_docs, column_docs, _ = builder.build_all(schemas, None)
+            table_biz_map = {s["table_name"]: s.get("biz_line", "") for s in schemas}
+            table_db_map = {s["table_name"]: s.get("database", "") for s in schemas}
 
             table_index = MilvusIndex(TABLE_COLLECTION, dim=dim)
             table_index.create(TABLE_FIELDS, index_config=idx_cfg)
@@ -344,6 +356,7 @@ class IndexManager:
                     {
                         "db_name": d["schema"].get("database", ""),
                         "table_name": d["table_name"],
+                        "biz_line": d["schema"].get("biz_line", ""),
                         "table_cn_name": d["schema"].get("display_name", ""),
                         "table_comment": (d["schema"].get("description") or "")[:4096],
                         "business_domain": ", ".join(d["schema"].get("tags", [])),
@@ -361,8 +374,9 @@ class IndexManager:
                 dense_vecs = embedding.encode(column_texts, instruction=embedding.instructions.get("column", ""))
                 column_rows = [
                     {
-                        "db_name": schemas[0].get("database", "") if schemas else "",
+                        "db_name": table_db_map.get(d["table_name"], ""),
                         "table_name": d["table_name"],
+                        "biz_line": table_biz_map.get(d["table_name"], ""),
                         "column_name": d["column_name"],
                         "column_cn_name": d.get("column_cn_name", ""),
                         "column_type": d.get("column_type", ""),
@@ -389,6 +403,7 @@ class IndexManager:
                     {
                         "table_name": d["table_name"],
                         "column_name": d["column_name"],
+                        "biz_line": d.get("biz_line", ""),
                         "enum_code": d["enum_code"],
                         "enum_label_cn": d["enum_label_cn"],
                         "description": d.get("description", ""),

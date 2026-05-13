@@ -12,7 +12,7 @@
 
     compressor = ContextCompressor(client, model="deepseek-chat")
     merged = compressor.compress(
-        history_summary="张3今天有多少笔交易|SELECT COUNT(*) ...",
+        history_summary="张3今天有多少笔交易|||pmt_finance_transactions,pmt_account",
         current_question="不包含手续费，一次兑换属于一笔交易",
     )
     # "张3今天有多少笔交易，不包含手续费，一次兑换属于一笔交易"
@@ -56,7 +56,7 @@ class ContextCompressor:
         将历史摘要 + 当前问题压缩为一个完整问题。
 
         Args:
-            history_summary: 上一轮的摘要，格式 "question|||sql"
+            history_summary: 上一轮的摘要，格式 "question|||table1,table2,..."
             current_question: 当前用户输入
 
         Returns:
@@ -64,11 +64,11 @@ class ContextCompressor:
         """
         parts = history_summary.split("|||", 1)
         prev_question = parts[0] if parts else ""
-        prev_sql = parts[1] if len(parts) > 1 else ""
+        prev_tables = parts[1] if len(parts) > 1 else ""
 
         history_text = f"问题: {prev_question}"
-        if prev_sql:
-            history_text += f"\n生成的SQL: {prev_sql}"
+        if prev_tables:
+            history_text += f"\n涉及表: {prev_tables}"
 
         prompt = self.prompt_template.format(history=history_text, current=current_question)
 
@@ -82,15 +82,16 @@ class ContextCompressor:
             return current_question
 
     @staticmethod
-    def build_summary(question: str, sql: str) -> str:
+    def build_summary(question: str, tables: list[str]) -> str:
         """
         构建本轮摘要，供下一轮使用。
 
         Args:
             question: 本轮的完整问题（可能已经过压缩）
-            sql: 本轮生成的 SQL
+            tables: 本轮命中的表名列表
 
         Returns:
-            摘要字符串，格式 "question|||sql"
+            摘要字符串，格式 "question|||table1,table2,..."
         """
-        return f"{question}|||{sql}"
+        tables_str = ",".join(tables) if tables else ""
+        return f"{question}|||{tables_str}"

@@ -21,7 +21,7 @@ import sys
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.retrieval.retriever import SchemaRetriever
-from src.retrieval.config import DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE
+from src.retrieval.config import DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.query_logger import QueryLogger
 from src.retrieval.llm_factory import create_chat_model
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def create_doris_engine():
     from sqlalchemy import create_engine
-    url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+    url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
 
@@ -62,7 +62,7 @@ def main():
     print(f"\n连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
     try:
         from sqlalchemy import create_engine, text
-        url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD}@{DORIS_HOST}:{DORIS_PORT}/{DORIS_DATABASE}?charset=utf8mb4"
+        url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
         engine = create_engine(url, connect_args={"connect_timeout": 3})
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

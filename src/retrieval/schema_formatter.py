@@ -185,9 +185,9 @@ class SchemaFormatter:
         Returns:
             str: DDL 文本，如 "-- 商户账户表\\nCREATE TABLE `dwd_banking`.`pmt_account` (..."
         """
-        table_name = schema["table_name"]
+        short_name = schema.get("table_name_short", schema["table_name"])
         database = schema.get("database", "")
-        full_name = f"`{database}`.`{table_name}`" if database else f"`{table_name}`"
+        sql_name = f"`{database}`.`{short_name}`" if database else f"`{short_name}`"
 
         desc = schema.get("description") or schema.get("table_comment", "")
         header = f"-- {desc}" if desc else ""
@@ -218,7 +218,7 @@ class SchemaFormatter:
             col_lines.append(line)
 
         ddl = header + "\n" if header else ""
-        ddl += f"CREATE TABLE {full_name} (\n"
+        ddl += f"CREATE TABLE {sql_name} (\n"
         ddl += ",\n".join(col_lines)
         ddl += "\n);\n"
 
@@ -228,7 +228,7 @@ class SchemaFormatter:
             target_col = rel.get("target_column", "")
             join_type = rel.get("join_type", "JOIN")
             if target:
-                ddl += f"-- JOIN 提示: {table_name}.{col} = {target}.{target_col} ({join_type})\n"
+                ddl += f"-- JOIN 提示: {short_name}.{col} = {target}.{target_col} ({join_type})\n"
 
         if schema.get("query_tips"):
             ddl += f"-- 注意: {schema['query_tips']}\n"

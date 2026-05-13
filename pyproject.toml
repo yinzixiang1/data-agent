@@ -17,6 +17,12 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "openai>=1.0",
+    "pymilvus>=2.4",
+    "langchain>=0.3",
+    "langchain-openai>=0.2",
+    "langchain-anthropic>=0.3",
+    "anthropic>=0.40",
+    "jieba>=0.42",
 ]
 
 [project.optional-dependencies]

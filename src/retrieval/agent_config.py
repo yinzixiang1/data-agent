@@ -25,7 +25,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
     TABLE_SEARCH_TOP_K, COLUMN_SEARCH_TOP_K, RECALL_TOP_K,
     RERANK_INPUT_TOP_K, FEWSHOT_TOP_K, RRF_K, MMR_LAMBDA,
     ENABLE_RERANKER, GLOSSARY_SCORE_THRESHOLD, DEFAULT_AGENT_TOKEN,
@@ -122,7 +122,7 @@ class AgentConfigLoader:
         else:
             if mysql_connection_string is None:
                 mysql_connection_string = (
-                    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
+                    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                     f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
                 )
             self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)
@@ -223,22 +223,12 @@ class AgentConfigLoader:
         return config
 
     def _apply_defaults(self, config: AgentRuntimeConfig):
-        """补充默认 prompt、token、LLM fallback。"""
-        import os
-
+        """补充默认 prompt 和 token。"""
         if not config.system_prompt:
             config.system_prompt = DEFAULT_SYSTEM_PROMPT
 
         if not config.token:
             config.token = DEFAULT_AGENT_TOKEN
-
-        if not config.llm_base_url or not config.llm_api_key:
-            if not config.llm_base_url:
-                config.llm_base_url = os.getenv("DEEPSEEK_BASE_URL", "")
-            if not config.llm_api_key:
-                config.llm_api_key = os.getenv("DEEPSEEK_API_KEY", "")
-            if not config.llm_model:
-                config.llm_model = "deepseek-chat"
 
     def _load_sys_configs(self) -> dict[str, str]:
         """从 sys_config 加载全局配置。"""
