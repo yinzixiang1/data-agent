@@ -55,6 +55,7 @@ class AgentRuntimeConfig:
     # Prompt 配置（来自 agent_config.prompt 分区）
     system_prompt: str = ""
     compress_prompt: str = ""
+    output_rules: str = ""
 
     # 检索参数（来自 agent_config.retrieval 分区，fallback 到 sys_config / .env）
     table_search_top_k: int = TABLE_SEARCH_TOP_K
@@ -70,6 +71,12 @@ class AgentRuntimeConfig:
     # EXPLAIN 配置
     max_fix_retries: int = 5
     enable_explain: bool = True
+
+    # SQL 执行 & 结果总结配置
+    enable_execute: bool = False
+    execute_row_limit: int = 200
+    execute_timeout: int = 30
+    enable_summarize: bool = False
 
     # 结构化配置（from sys_config JSON，hot-reload 可更新）
     collection_search_config: dict = field(default_factory=dict)
@@ -90,17 +97,9 @@ class AgentRuntimeConfig:
     config_source: str = "env"
 
 
-DEFAULT_SYSTEM_PROMPT = """你是一个专业的 SQL 专家，专门将用户的自然语言问题转化为 Apache Doris SQL。
+DEFAULT_SYSTEM_PROMPT = """你是一个专业的 Apache Doris 数据分析专家。请根据下方提供的数据库 Schema、业务术语和参考示例，把用户的自然语言问题转换为可执行的 Doris SQL。
 
-规则：
-1. 必须输出一条可直接执行的 SQL，用 ```sql ``` 包裹
-2. 严格使用提供的表和列，不要编造不存在的表或列
-3. 列别名使用中文双引号，如 COUNT(*) AS "数量"
-4. 注意参考业务上下文中的过滤条件提示
-5. 参考 Few-shot 示例的 SQL 模式
-6. 即使信息不完整，也要基于已有表结构尽力生成最合理的 SQL
-
-Doris 日期函数注意：
+Doris 方言注意：
 - DATE_TRUNC(datetime, 'unit')，不是 DATE_TRUNC('unit', datetime)
 - 本月: complete_time >= DATE_TRUNC(NOW(), 'month') AND complete_time < DATE_ADD(DATE_TRUNC(NOW(), 'month'), INTERVAL 1 MONTH)
 - 近30天: create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -451,6 +450,8 @@ class AgentConfigLoader:
                 config.system_prompt = prompt_cfg["system_prompt"]
             if "compress_prompt" in prompt_cfg:
                 config.compress_prompt = prompt_cfg["compress_prompt"]
+            if "output_rules" in prompt_cfg:
+                config.output_rules = prompt_cfg["output_rules"]
 
         # retrieval 分区
         retrieval_cfg = agent_configs.get("retrieval", {})
@@ -481,6 +482,26 @@ class AgentConfigLoader:
             if "enable_explain" in retrieval_cfg:
                 v = retrieval_cfg["enable_explain"]
                 config.enable_explain = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+
+        # flow 分区（SQL 执行 & 结果总结）
+        flow_cfg = agent_configs.get("flow", {})
+        if flow_cfg:
+            if "enable_execute" in flow_cfg:
+                v = flow_cfg["enable_execute"]
+                config.enable_execute = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+            if "execute_row_limit" in flow_cfg:
+                try:
+                    config.execute_row_limit = int(flow_cfg["execute_row_limit"])
+                except (ValueError, TypeError):
+                    pass
+            if "execute_timeout" in flow_cfg:
+                try:
+                    config.execute_timeout = int(flow_cfg["execute_timeout"])
+                except (ValueError, TypeError):
+                    pass
+            if "enable_summarize" in flow_cfg:
+                v = flow_cfg["enable_summarize"]
+                config.enable_summarize = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)

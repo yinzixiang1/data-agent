@@ -1,0 +1,33 @@
+services:
+  data-agen:
+    container_name: data-agen
+    image: data-agen:latest
+    restart: always
+    ports:
+      - "9090:9090"
+    env_file:
+      - .env
+    environment:
+      - NL2SQL_ENV=prod
+      - DENSE_DEVICE=cuda
+      - CONFIG_SOURCE=mysql
+      - CONFIG_PROFILE=1
+      - REBUILD_INDEX_ON_STARTUP=true
+    volumes:
+      - model-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      start_period: 120s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  model-cache:

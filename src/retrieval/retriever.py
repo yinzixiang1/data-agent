@@ -106,8 +106,10 @@ class SchemaRetriever:
         # 初始化 Reranker
         get_reranker(config.index_build_config)
 
-        # 加载 Schema + 语义层 + 枚举 + Fewshot
-        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all()
+        # 加载 Schema + 语义层 + 枚举 + Fewshot（按 Agent 绑定数据源过滤）
+        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all(
+            agent_id=config.agent_id
+        )
 
         from src.retrieval.config import REBUILD_INDEX_ON_STARTUP
 
@@ -172,7 +174,9 @@ class SchemaRetriever:
             raise RuntimeError("Retriever 未初始化，请先调用 initialize()")
 
         embedding = get_embedding()
-        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all()
+        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all(
+            agent_id=self.config.agent_id
+        )
 
         logger.info(f"开始局部索引重建: {collections}")
         indices = self.index_manager.rebuild_partial(
@@ -317,6 +321,8 @@ class SchemaRetriever:
             business_context=business_context,
             enum_hits=enum_hits,
             value_hits=value_hits,
+            question=user_query,
+            output_rules=self.config.output_rules if self.config else "",
         )
 
         result = RetrievalResult(

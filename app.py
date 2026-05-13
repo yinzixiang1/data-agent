@@ -174,6 +174,104 @@ def create_doris_engine():
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
 
+def _get_mysql_engine():
+    """获取 MySQL 语义层连接引擎（复用）。"""
+    url = (
+        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
+        f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+    )
+    return create_engine(url, pool_size=2, pool_recycle=3600)
+
+
+def load_allowed_databases(agent_id: int | None) -> set[str]:
+    """从 da_agent_ref + da_biz_database 加载 Agent 绑定的数据库名白名单。"""
+    if not agent_id:
+        return set()
+    try:
+        eng = _get_mysql_engine()
+        with eng.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT b.database_name FROM da_agent_ref r "
+                "JOIN da_biz_database b ON r.resource_key = b.id "
+                "WHERE r.agent_id = :agent_id AND r.resource_type = 'biz_database'"
+            ), {"agent_id": agent_id}).fetchall()
+        eng.dispose()
+        result = {row[0].lower() for row in rows if row[0]}
+        logger.info(f"Agent {agent_id} 数据库白名单: {result}")
+        return result
+    except Exception as e:
+        logger.warning(f"加载数据库白名单失败: {e}")
+        return set()
+
+
+def load_doris_config(agent_id: int | None) -> dict:
+    """
+    加载 Agent 绑定的 Doris 连接配置。
+
+    优先级: da_agent_ref(type='doris') → sys_resource → .env 默认值
+    """
+    from urllib.parse import quote_plus
+    result = {
+        "host": DORIS_HOST,
+        "port": int(DORIS_PORT),
+        "user": DORIS_USER,
+        "password": DORIS_PASSWORD,
+        "password_url": DORIS_PASSWORD_URL,
+        "source": "env",
+    }
+    if not agent_id:
+        return result
+
+    try:
+        eng = _get_mysql_engine()
+        with eng.connect() as conn:
+            # 查 Agent 绑定的数据库资源（优先 database，兼容旧 doris）
+            ref_row = conn.execute(text(
+                "SELECT resource_key FROM da_agent_ref "
+                "WHERE agent_id = :agent_id AND resource_type IN ('database', 'doris') "
+                "ORDER BY sort_order LIMIT 1"
+            ), {"agent_id": agent_id}).fetchone()
+            if not ref_row:
+                eng.dispose()
+                return result
+
+            resource_name = ref_row[0]
+            # 从 sys_resource 读取连接配置（兼容 database 和旧 doris 类型）
+            res_row = conn.execute(text(
+                "SELECT config_json FROM sys_resource "
+                "WHERE resource_type IN ('database', 'doris') AND name = :name AND status = 1"
+            ), {"name": resource_name}).fetchone()
+        eng.dispose()
+
+        if res_row and res_row[0]:
+            import json
+            cfg = json.loads(res_row[0])
+            pwd = cfg.get("password", "")
+            result = {
+                "host": cfg.get("host", DORIS_HOST),
+                "port": int(cfg.get("port", DORIS_PORT)),
+                "user": cfg.get("user", DORIS_USER),
+                "password": pwd,
+                "password_url": quote_plus(pwd) if pwd else DORIS_PASSWORD_URL,
+                "source": f"resource:{resource_name}",
+            }
+            logger.info(f"Doris 配置来自资源绑定: {resource_name} ({result['host']}:{result['port']})")
+    except Exception as e:
+        logger.warning(f"加载 Doris 资源配置失败 (fallback .env): {e}")
+
+    return result
+
+
+def create_doris_engine_for_agent(agent_id: int | None = None):
+    """根据 Agent 绑定的 Doris 资源创建引擎，fallback 到 .env。"""
+    cfg = load_doris_config(agent_id)
+    url = (
+        f"mysql+pymysql://{cfg['user']}:{cfg['password_url']}"
+        f"@{cfg['host']}:{cfg['port']}/information_schema?charset=utf8mb4"
+    )
+    return create_engine(url, pool_size=2, pool_recycle=3600)
+
+
 def _register_engine_url(agent_id: int):
     """启动时将本机 engine_url 写入 da_agent 表。"""
     import socket
@@ -356,6 +454,9 @@ class QueryResponse(BaseModel):
     log_id: int | None = None
     context_summary: str = Field(default="", description="本轮对话摘要，前端缓存后下一轮带回")
     trace: dict | None = Field(default=None, description="详细链路追踪数据，仅调试时返回")
+    summary: str = Field(default="", description="LLM 对执行结果的自然语言总结")
+    query_result: dict | None = Field(default=None, description="SQL 执行结果: {columns, rows, row_count, truncated}")
+    execution_error: str = Field(default="", description="SQL 执行错误信息")
 
 
 class IndexRebuildRequest(BaseModel):
@@ -515,7 +616,7 @@ def run_query(
     # 构建对话
     messages = [
         {"role": "system", "content": config.system_prompt},
-        {"role": "user", "content": f"## 用户问题\n{effective_question}\n\n{result.prompt_text}"},
+        {"role": "user", "content": result.prompt_text},
     ]
 
     def _to_lc_messages(msgs):
@@ -542,16 +643,19 @@ def run_query(
     })
     messages.append({"role": "assistant", "content": answer})
 
+    # 检测 NEED_CLARIFY
+    clarify_msg = SQLValidator.extract_clarify(answer)
+
     # 提取 SQL
-    extracted_sql = SQLValidator.extract_sql(answer)
+    extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
     retry_count = 0
     is_success = True
     error_msg = ""
 
-    if not extracted_sql:
+    if not extracted_sql and not clarify_msg:
         messages.append({
             "role": "user",
-            "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。",
+            "content": "你没有生成 SQL，请根据上面的 Schema 生成可执行的 Doris SQL，用 ```sql ``` 包裹。",
         })
         t0 = _time.monotonic()
         answer, usage = _invoke(messages)
@@ -647,6 +751,104 @@ def run_query(
 
     final_sql = SQLValidator.extract_sql(answer) or ""
 
+    # NEED_CLARIFY: 模型认为问题模糊，需要澄清
+    if not final_sql and clarify_msg:
+        is_success = False
+        error_msg = f"NEED_CLARIFY: {clarify_msg}"
+
+    # SQL 执行 & 结果总结
+    query_result_data = None
+    execution_error = ""
+    summary = ""
+
+    if final_sql and is_success and config.enable_execute and validator:
+        # 数据库白名单校验
+        referenced_dbs = SQLValidator.extract_databases(final_sql)
+        allowed_dbs = load_allowed_databases(config.agent_id)
+
+        if allowed_dbs and referenced_dbs:
+            unauthorized = referenced_dbs - allowed_dbs
+            if unauthorized:
+                execution_error = f"安全拦截: 数据库 {', '.join(unauthorized)} 未在当前 Agent 的授权范围内"
+                logger.warning(f"数据库白名单校验失败: {unauthorized}, 允许: {allowed_dbs}")
+                trace_steps.append({
+                    "step": "sql_execution",
+                    "success": False,
+                    "error": execution_error,
+                    "database": ", ".join(referenced_dbs),
+                    "duration_ms": 0,
+                })
+
+        if not execution_error:
+            t0 = _time.monotonic()
+            # 使用 Agent 绑定的 Doris 连接执行 SQL（可能与 EXPLAIN 引擎不同）
+            exec_engine = create_doris_engine_for_agent(config.agent_id)
+            exec_validator = SQLValidator(exec_engine)
+            try:
+                exec_result = exec_validator.execute(
+                    final_sql,
+                    row_limit=config.execute_row_limit,
+                    timeout=config.execute_timeout,
+                )
+            finally:
+                exec_engine.dispose()
+            exec_ms = _elapsed_ms(t0)
+
+            trace_steps.append({
+                "step": "sql_execution",
+                "success": exec_result["success"],
+                "row_count": exec_result["row_count"],
+                "truncated": exec_result.get("truncated", False),
+                "error": exec_result.get("error", ""),
+                "database": ", ".join(referenced_dbs) if referenced_dbs else "",
+                "duration_ms": exec_ms,
+            })
+
+            if exec_result["success"]:
+                query_result_data = {
+                    "columns": exec_result["columns"],
+                    "rows": exec_result["rows"],
+                    "row_count": exec_result["row_count"],
+                    "truncated": exec_result["truncated"],
+                }
+
+                # LLM 结果总结
+                if config.enable_summarize and exec_result["row_count"] > 0:
+                    t0 = _time.monotonic()
+                    # 构建结果摘要（限制行数避免 token 过多）
+                    summary_rows = exec_result["rows"][:50]
+                    result_text = " | ".join(exec_result["columns"]) + "\n"
+                    for row in summary_rows:
+                        result_text += " | ".join(str(c) for c in row) + "\n"
+                    if len(exec_result["rows"]) > 50:
+                        result_text += f"... (共 {exec_result['row_count']} 行，仅展示前 50 行)\n"
+
+                    summarize_prompt = (
+                        f"用户问题：{effective_question}\n\n"
+                        f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
+                        f"查询结果：\n{result_text}\n\n"
+                        f"请用简洁的自然语言总结以上查询结果，直接回答用户的问题。"
+                        f"如果数据量较多，概括关键数据点。不要重复 SQL。"
+                    )
+                    summarize_msgs = [
+                        {"role": "system", "content": "你是一个数据分析助手，负责将 SQL 查询结果转化为用户易懂的自然语言回答。"},
+                        {"role": "user", "content": summarize_prompt},
+                    ]
+                    try:
+                        summary, s_usage = _invoke(summarize_msgs)
+                        summarize_ms = _elapsed_ms(t0)
+                        trace_steps.append({
+                            "step": "result_summarize",
+                            "duration_ms": summarize_ms,
+                            "output": summary,
+                            "tokens": (s_usage.get("input_tokens", 0) + s_usage.get("output_tokens", 0)) if s_usage else 0,
+                        })
+                    except Exception as e:
+                        logger.warning(f"结果总结失败: {e}")
+                        summary = ""
+            else:
+                execution_error = exec_result["error"] or "SQL 执行失败"
+
     # 提取命中的 fewshot 信息（id + question）
     matched_fewshot = [
         {"id": ex.get("id"), "question": ex.get("question", "")}
@@ -680,6 +882,9 @@ def run_query(
         "matched_fewshot": matched_fewshot,
         "context_summary": context_summary,
         "trace": trace,
+        "summary": summary,
+        "query_result": query_result_data,
+        "execution_error": execution_error,
     }
 
 
@@ -791,6 +996,9 @@ async def query(req: QueryRequest, request: Request):
             log_id=log_id,
             context_summary=result.get("context_summary", ""),
             trace=result.get("trace"),
+            summary=result.get("summary", ""),
+            query_result=result.get("query_result"),
+            execution_error=result.get("execution_error", ""),
         )
 
     except Exception as e:

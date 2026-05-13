@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+milvus/
+tests/
+docs/
+*.egg-info
+.env
+.env.*
+docker-compose*.yaml
+docker-compose*.yml
+Dockerfile
+README.md
