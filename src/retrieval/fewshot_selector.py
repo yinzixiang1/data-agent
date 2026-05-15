@@ -38,6 +38,7 @@ FEWSHOT_FIELDS = [
     {"name": "sql", "dtype": DataType.VARCHAR, "max_length": 8192},
     {"name": "involved_tables", "dtype": DataType.VARCHAR, "max_length": 512},
     {"name": "difficulty", "dtype": DataType.VARCHAR, "max_length": 32},
+    {"name": "metadata", "dtype": DataType.JSON},
 ]
 
 
