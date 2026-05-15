@@ -97,7 +97,7 @@ class AgentRuntimeConfig:
     agent_id: int | None = None
     agent_name: str = ""
     agent_handle: str = ""
-    engine_type: str = "nl2sql"  # 从 da_data_source 推导: nl2sql / knowledge / hybrid
+    engine_type: str = "nl2sql"  # 从 da_agent_source 推导: nl2sql / knowledge / hybrid
 
     # LLM 配置（来自 agent_config.model 分区 + sys_resource provider）
     llm_provider: str = ""
@@ -131,6 +131,9 @@ class AgentRuntimeConfig:
     execute_row_limit: int = 200
     execute_timeout: int = 30
     enable_summarize: bool = False
+
+    # 查询缓存
+    enable_query_cache: bool = False
 
     # 纠错增强配置
     max_execute_fix_retries: int = 2
@@ -321,7 +324,7 @@ class AgentConfigLoader:
             return None
 
     def _derive_engine_type(self, agent_id: int) -> str:
-        """从 da_data_source 推导引擎类型。
+        """从 da_agent_source 推导引擎类型。
 
         source_type=1 (业务库) → nl2sql 能力
         source_type=2 (知识库) → knowledge 能力
@@ -330,7 +333,7 @@ class AgentConfigLoader:
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text(
-                    "SELECT DISTINCT source_type FROM da_data_source "
+                    "SELECT DISTINCT source_type FROM da_agent_source "
                     "WHERE agent_id = :id AND status = 1"
                 ), {"id": agent_id}).fetchall()
             types = {row[0] for row in rows}
@@ -787,7 +790,7 @@ class AgentConfigLoader:
                 f"    ID:       {config.agent_id}",
                 f"    Name:     {config.agent_name}",
                 f"    Handle:   {config.agent_handle}",
-                f"    Engine:   {config.engine_type} (derived from da_data_source)",
+                f"    Engine:   {config.engine_type} (derived from da_agent_source)",
             ]
 
         lines += [

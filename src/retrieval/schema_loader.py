@@ -29,14 +29,14 @@ class SchemaLoader:
     加载 Doris DDL + MySQL 语义层，合并为完整 Schema。
 
     MySQL 表结构（dataAgent-admin-api 定义）:
-        da_table          — 表语义
-        da_table_column   — 列语义（FK → da_table.id）
-        da_table_relation — 关联关系（FK → da_table.id）
-        da_table_query    — 表级常见问题（FK → da_table.id）
-        da_glossary       — 业务术语
-        da_enum_def       — 枚举定义
-        da_enum_value     — 枚举值（FK → da_enum_def.id）
-        da_fewshot        — 全局 Few-shot 示例
+        da_semantic_table          — 表语义
+        da_semantic_column         — 列语义（FK → da_semantic_table.id）
+        da_semantic_relation       — 关联关系（FK → da_semantic_table.id）
+        da_semantic_query          — 表级常见问题（FK → da_semantic_table.id）
+        da_semantic_glossary       — 业务术语
+        da_semantic_enum           — 枚举定义
+        da_semantic_enum_value     — 枚举值（FK → da_semantic_enum.id）
+        da_semantic_fewshot        — 全局 Few-shot 示例
     """
 
     def __init__(
@@ -105,42 +105,41 @@ class SchemaLoader:
 
     # ── MySQL 语义层加载（对接 dataAgent-admin-api 的 da_* 表） ──
 
-    def _load_agent_biz_database_ids(self, agent_id: int) -> list[int]:
-        """从 da_agent_datasource 加载 Agent 绑定的执行数据源，反查 da_biz_database 得到 ID 列表。"""
+    def _load_agent_exec_db_ids(self, agent_id: int) -> list[int]:
+        """从 da_agent_exec_db 加载 Agent 绑定的执行数据库 ID 列表。"""
         try:
             with self.mysql_engine.connect() as conn:
                 rows = conn.execute(text(
-                    "SELECT DISTINCT b.id FROM da_agent_datasource ds "
-                    "JOIN da_biz_database b ON ds.database_name = b.database_name "
-                    "WHERE ds.agent_id = :agent_id AND ds.status = 1"
+                    "SELECT DISTINCT id FROM da_agent_exec_db "
+                    "WHERE agent_id = :agent_id AND status = 1"
                 ), {"agent_id": agent_id}).fetchall()
             return [int(row[0]) for row in rows]
         except Exception as e:
-            logger.warning(f"加载 Agent 执行数据源绑定失败: {e}")
+            logger.warning(f"加载 Agent 执行数据库绑定失败: {e}")
             return []
 
     @staticmethod
-    def _biz_db_in_clause(biz_db_ids: list[int], column: str = "t.biz_database_id") -> str:
-        """生成 biz_database_id IN (...) 子句（仅整数，安全拼接）。"""
-        id_list = ",".join(str(int(i)) for i in biz_db_ids)
+    def _exec_db_in_clause(exec_db_ids: list[int], column: str = "t.exec_db_id") -> str:
+        """生成 exec_db_id IN (...) 子句（仅整数，安全拼接）。"""
+        id_list = ",".join(str(int(i)) for i in exec_db_ids)
         return f" AND {column} IN ({id_list})"
 
     @staticmethod
-    def _biz_db_in_clause_nullable(biz_db_ids: list[int], column: str = "biz_database_id") -> str:
-        """生成 (biz_database_id IN (...) OR biz_database_id IS NULL) 子句，允许全局数据。"""
-        id_list = ",".join(str(int(i)) for i in biz_db_ids)
+    def _exec_db_in_clause_nullable(exec_db_ids: list[int], column: str = "exec_db_id") -> str:
+        """生成 (exec_db_id IN (...) OR exec_db_id IS NULL) 子句，允许全局数据。"""
+        id_list = ",".join(str(int(i)) for i in exec_db_ids)
         return f" AND ({column} IN ({id_list}) OR {column} IS NULL)"
 
-    def _load_table_semantics(self, biz_db_ids: list[int] | None = None) -> dict[str, dict]:
-        """从 da_table 加载表语义 → {db.table: {display_name, description, tags, query_tips, metadata}}"""
+    def _load_table_semantics(self, exec_db_ids: list[int] | None = None) -> dict[str, dict]:
+        """从 da_semantic_table 加载表语义 → {db.table: {display_name, description, tags, query_tips, metadata}}"""
         sql = (
-            "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.biz_line, b.meta_json "
-            "FROM da_table t "
-            "JOIN da_biz_database b ON t.biz_database_id = b.id "
+            "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.business_line, b.meta_json "
+            "FROM da_semantic_table t "
+            "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
             "WHERE t.status = 1 AND t.available = 1"
         )
-        if biz_db_ids:
-            sql += self._biz_db_in_clause(biz_db_ids)
+        if exec_db_ids:
+            sql += self._exec_db_in_clause(exec_db_ids)
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
 
@@ -172,19 +171,19 @@ class SchemaLoader:
         logger.info(f"MySQL 表语义加载: {len(result)} 张表")
         return result
 
-    def _load_column_semantics(self, biz_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
-        """从 da_table_column JOIN da_table 加载列语义 → {db.table: [col_dict, ...]}"""
+    def _load_column_semantics(self, exec_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
+        """从 da_semantic_column JOIN da_semantic_table 加载列语义 → {db.table: [col_dict, ...]}"""
         sql = (
             "SELECT t.name, c.name, c.display_name, c.description, "
             "c.enum_values, c.business_logic, c.is_sensitive, c.is_skip_index, "
             "b.database_name "
-            "FROM da_table_column c "
-            "JOIN da_table t ON c.table_id = t.id "
-            "JOIN da_biz_database b ON t.biz_database_id = b.id "
+            "FROM da_semantic_column c "
+            "JOIN da_semantic_table t ON c.table_id = t.id "
+            "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
             "WHERE t.status = 1 AND t.available = 1"
         )
-        if biz_db_ids:
-            sql += self._biz_db_in_clause(biz_db_ids)
+        if exec_db_ids:
+            sql += self._exec_db_in_clause(exec_db_ids)
         sql += " ORDER BY t.name, c.sort_order"
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
@@ -216,18 +215,18 @@ class SchemaLoader:
         logger.info(f"MySQL 列语义加载: {sum(len(v) for v in result.values())} 列")
         return result
 
-    def _load_relations(self, biz_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
-        """从 da_table_relation JOIN da_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
+    def _load_relations(self, exec_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
+        """从 da_semantic_relation JOIN da_semantic_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
         sql = (
             "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type, "
             "b.database_name "
-            "FROM da_table_relation r "
-            "JOIN da_table t ON r.table_id = t.id "
-            "JOIN da_biz_database b ON t.biz_database_id = b.id "
+            "FROM da_semantic_relation r "
+            "JOIN da_semantic_table t ON r.table_id = t.id "
+            "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
             "WHERE t.status = 1 AND t.available = 1"
         )
-        if biz_db_ids:
-            sql += self._biz_db_in_clause(biz_db_ids)
+        if exec_db_ids:
+            sql += self._exec_db_in_clause(exec_db_ids)
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
 
@@ -246,16 +245,16 @@ class SchemaLoader:
         logger.info(f"MySQL 关联关系加载: {sum(len(v) for v in result.values())} 条")
         return result
 
-    def load_glossary(self, biz_db_ids: list[int] | None = None) -> dict[str, dict]:
-        """从 da_glossary 加载业务术语 → {term: info_dict}"""
+    def load_glossary(self, exec_db_ids: list[int] | None = None) -> dict[str, dict]:
+        """从 da_semantic_glossary 加载业务术语 → {term: info_dict}"""
         sql = (
             "SELECT g.term, g.definition, g.sql_hint, g.related_tables, g.related_columns, g.synonyms, b.meta_json "
-            "FROM da_glossary g "
-            "LEFT JOIN da_biz_database b ON g.biz_database_id = b.id "
+            "FROM da_semantic_glossary g "
+            "LEFT JOIN da_agent_exec_db b ON g.exec_db_id = b.id "
             "WHERE g.status = 1"
         )
-        if biz_db_ids:
-            sql += self._biz_db_in_clause_nullable(biz_db_ids, "g.biz_database_id")
+        if exec_db_ids:
+            sql += self._exec_db_in_clause_nullable(exec_db_ids, "g.exec_db_id")
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
 
@@ -300,18 +299,18 @@ class SchemaLoader:
         logger.info(f"MySQL 业务术语加载: {len(glossary)} 条")
         return glossary
 
-    def load_enums(self, biz_db_ids: list[int] | None = None) -> list[dict]:
-        """从 da_enum_def JOIN da_enum_value 加载枚举字典 → [{table_name, field_name, field_label, metadata, values: [...]}]"""
+    def load_enums(self, exec_db_ids: list[int] | None = None) -> list[dict]:
+        """从 da_semantic_enum JOIN da_semantic_enum_value 加载枚举字典 → [{table_name, field_name, field_label, metadata, values: [...]}]"""
         sql = (
             "SELECT d.table_name, d.field_name, d.field_label, "
             "v.code, v.label, v.label_cn, d.biz_line, b.meta_json "
-            "FROM da_enum_value v "
-            "JOIN da_enum_def d ON v.definition_id = d.id "
-            "LEFT JOIN da_biz_database b ON d.biz_database_id = b.id "
+            "FROM da_semantic_enum_value v "
+            "JOIN da_semantic_enum d ON v.definition_id = d.id "
+            "LEFT JOIN da_agent_exec_db b ON d.exec_db_id = b.id "
             "WHERE 1=1"
         )
-        if biz_db_ids:
-            sql += self._biz_db_in_clause_nullable(biz_db_ids, "d.biz_database_id")
+        if exec_db_ids:
+            sql += self._exec_db_in_clause_nullable(exec_db_ids, "d.exec_db_id")
         sql += " ORDER BY d.table_name, d.field_name, v.sort_order"
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
@@ -342,20 +341,20 @@ class SchemaLoader:
         logger.info(f"MySQL 枚举字典加载: {len(result)} 个字段, {sum(len(g['values']) for g in result)} 个值")
         return result
 
-    def load_fewshot(self, biz_db_ids: list[int] | None = None) -> list[dict]:
-        """从 da_fewshot + da_table_query 加载 Few-shot 示例。"""
+    def load_fewshot(self, exec_db_ids: list[int] | None = None) -> list[dict]:
+        """从 da_semantic_fewshot + da_semantic_query 加载 Few-shot 示例。"""
         examples = []
 
         with self.mysql_engine.connect() as conn:
             # 全局 Few-shot
             fewshot_sql = (
                 "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json "
-                "FROM da_fewshot f "
-                "LEFT JOIN da_biz_database b ON f.biz_database_id = b.id "
+                "FROM da_semantic_fewshot f "
+                "LEFT JOIN da_agent_exec_db b ON f.exec_db_id = b.id "
                 "WHERE f.status = 1"
             )
-            if biz_db_ids:
-                fewshot_sql += self._biz_db_in_clause_nullable(biz_db_ids, "f.biz_database_id")
+            if exec_db_ids:
+                fewshot_sql += self._exec_db_in_clause_nullable(exec_db_ids, "f.exec_db_id")
             rows = conn.execute(text(fewshot_sql)).fetchall()
 
             for row in rows:
@@ -373,16 +372,16 @@ class SchemaLoader:
                     "metadata": metadata,
                 })
 
-            # 表级常见问题（也作为 Few-shot，通过 da_table 的 biz_database_id 过滤）
+            # 表级常见问题（也作为 Few-shot，通过 da_semantic_table 的 exec_db_id 过滤）
             query_sql = (
                 "SELECT q.question, q.`sql`, q.tables, q.difficulty, b.meta_json "
-                "FROM da_table_query q "
-                "JOIN da_table t ON q.table_id = t.id "
-                "JOIN da_biz_database b ON t.biz_database_id = b.id "
+                "FROM da_semantic_query q "
+                "JOIN da_semantic_table t ON q.table_id = t.id "
+                "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
                 "WHERE t.status = 1 AND t.available = 1"
             )
-            if biz_db_ids:
-                query_sql += self._biz_db_in_clause(biz_db_ids)
+            if exec_db_ids:
+                query_sql += self._exec_db_in_clause(exec_db_ids)
             query_rows = conn.execute(text(query_sql)).fetchall()
 
             for row in query_rows:
@@ -459,23 +458,23 @@ class SchemaLoader:
         Returns:
             tuple: (schemas, glossary, enums, fewshot)
         """
-        # 解析 Agent 绑定的数据源
-        biz_db_ids = None
+        # 解析 Agent 绑定的执行数据库
+        exec_db_ids = None
         if agent_id:
-            biz_db_ids = self._load_agent_biz_database_ids(agent_id)
-            if biz_db_ids:
-                logger.info(f"Agent {agent_id} 绑定数据源: biz_database_id={biz_db_ids}")
+            exec_db_ids = self._load_agent_exec_db_ids(agent_id)
+            if exec_db_ids:
+                logger.info(f"Agent {agent_id} 绑定执行数据库: exec_db_id={exec_db_ids}")
             else:
-                logger.warning(f"Agent {agent_id} 未绑定执行数据源 (da_agent_datasource)，加载全量数据")
-                biz_db_ids = None
+                logger.warning(f"Agent {agent_id} 未绑定执行数据库 (da_agent_exec_db)，加载全量数据")
+                exec_db_ids = None
 
         # 从 MySQL 加载语义层（只加载 status=1 AND available=1）
-        table_semantics = self._load_table_semantics(biz_db_ids)
-        column_semantics = self._load_column_semantics(biz_db_ids)
-        relations = self._load_relations(biz_db_ids)
-        glossary = self.load_glossary(biz_db_ids)
-        enums = self.load_enums(biz_db_ids)
-        fewshot = self.load_fewshot(biz_db_ids)
+        table_semantics = self._load_table_semantics(exec_db_ids)
+        column_semantics = self._load_column_semantics(exec_db_ids)
+        relations = self._load_relations(exec_db_ids)
+        glossary = self.load_glossary(exec_db_ids)
+        enums = self.load_enums(exec_db_ids)
+        fewshot = self.load_fewshot(exec_db_ids)
 
         logger.info(f"MySQL 可用表: {len(table_semantics)} 张 (status=1, available=1)")
 

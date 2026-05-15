@@ -142,7 +142,7 @@ class ValueIndexer:
 
         parts = []
         if biz_line:
-            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys")')
+            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys" or biz_line == "")')
         if metadata_filter:
             for key, value in metadata_filter.items():
                 parts.append(

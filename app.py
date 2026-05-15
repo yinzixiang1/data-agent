@@ -194,11 +194,11 @@ def _get_mysql_engine():
 
 
 def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = None) -> set[str]:
-    """从 da_agent_datasource 加载 Agent 绑定的可执行数据库名集合。
+    """从 da_agent_exec_db 加载 Agent 绑定的可执行数据库名集合。
 
     Args:
         agent_id: Agent ID
-        metadata_filter: 通用 KV 过滤，匹配 da_agent_datasource.meta_json。
+        metadata_filter: 通用 KV 过滤，匹配 da_agent_exec_db.meta_json。
             对于每个 key，meta_json 中不含该 key 的行视为公共数据（始终通过）。
     """
     if not agent_id:
@@ -207,7 +207,7 @@ def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = No
         eng = _get_mysql_engine()
         with eng.connect() as conn:
             rows = conn.execute(text(
-                "SELECT DISTINCT database_name, meta_json FROM da_agent_datasource "
+                "SELECT DISTINCT database_name, meta_json FROM da_agent_exec_db "
                 "WHERE agent_id = :agent_id AND status = 1"
             ), {"agent_id": agent_id}).fetchall()
         eng.dispose()
@@ -242,7 +242,7 @@ def load_doris_config(agent_id: int | None) -> dict:
     """
     加载 Agent 绑定的 Doris 连接配置。
 
-    优先级: da_agent_datasource.resource_id → sys_resource → .env 默认值
+    优先级: da_agent_exec_db.resource_id → sys_resource → .env 默认值
     """
     from urllib.parse import quote_plus
     result = {
@@ -259,9 +259,9 @@ def load_doris_config(agent_id: int | None) -> dict:
     try:
         eng = _get_mysql_engine()
         with eng.connect() as conn:
-            # 从 da_agent_datasource 取第一个启用的 resource_id
+            # 从 da_agent_exec_db 取第一个启用的 resource_id
             ds_row = conn.execute(text(
-                "SELECT resource_id FROM da_agent_datasource "
+                "SELECT resource_id FROM da_agent_exec_db "
                 "WHERE agent_id = :agent_id AND status = 1 "
                 "ORDER BY sort_order LIMIT 1"
             ), {"agent_id": agent_id}).fetchone()
@@ -429,10 +429,13 @@ async def lifespan(app: FastAPI):
         knowledge_retriever.connect()
         logger.info(f"知识库检索器已就绪 (engine_type={engine_type})")
 
-    # 初始化查询缓存
-    from src.retrieval.embedding import get_embedding
-    query_cache = QueryCache(get_embedding(), ttl=3600, max_size=500)
-    logger.info("查询缓存已就绪")
+    # 初始化查询缓存（默认关闭，需在 Agent 配置中开启）
+    if agent_config and agent_config.enable_query_cache:
+        from src.retrieval.embedding import get_embedding
+        query_cache = QueryCache(get_embedding(), ttl=3600, max_size=500)
+        logger.info("查询缓存已启用")
+    else:
+        logger.info("查询缓存已关闭 (enable_query_cache=false)")
 
     # 初始化 EXPLAIN 校验器
     if engine_type in ("nl2sql", "hybrid"):
@@ -474,7 +477,6 @@ app.add_middleware(
 # ── 请求/响应模型 ──
 
 class QueryMetadata(BaseModel):
-    scenario: str = Field(default="", description="使用场景: bi/risk/ops/ad-hoc")
     business: str = Field(default="", description="业务线: banking/issuing/acquiring/payment")
     caller: str = Field(default="", description="调用方标识")
     user_id: str = Field(default="", description="外部用户唯一标识")
@@ -1282,7 +1284,7 @@ async def _handle_knowledge_query(
                 is_success=True,
                 execution_time_ms=elapsed_ms,
                 agent_id=req.agent_id,
-                scenario=meta.scenario,
+                scenario=(meta.metadata_filter or {}).get("scenario", ""),
                 business=meta.business,
                 caller=meta.caller,
                 user_id=meta.user_id,
@@ -1351,9 +1353,12 @@ async def query(req: QueryRequest, request: Request):
     if not retriever or not retriever._initialized:
         raise HTTPException(status_code=503, detail="服务未就绪，NL2SQL RAG 尚未初始化")
 
-    # 查询缓存检查
+    meta = req.metadata or QueryMetadata()
+
+    # 查询缓存检查（context_key = biz_line + metadata_filter，不同上下文互不命中）
+    _cache_ctx = f"{meta.business}|{json.dumps(meta.metadata_filter, sort_keys=True) if meta.metadata_filter else ''}"
     if query_cache:
-        cached = query_cache.get(req.question)
+        cached = query_cache.get(req.question, context_key=_cache_ctx)
         if cached:
             elapsed_ms = int((time.time() - start_time) * 1000)
             return QueryResponse(
@@ -1386,7 +1391,6 @@ async def query(req: QueryRequest, request: Request):
         config = AgentRuntimeConfig(**{**config.__dict__, **overrides})
 
     try:
-        meta = req.metadata or QueryMetadata()
         result = run_query(
             req.question, config, client,
             history_summary=req.history_summary,
@@ -1407,7 +1411,7 @@ async def query(req: QueryRequest, request: Request):
                 "retry_count": result["retry_count"],
                 "error": "",
                 "summary": result.get("summary", ""),
-            })
+            }, context_key=_cache_ctx)
 
         # 记录查询日志
         log_id = None
@@ -1422,7 +1426,7 @@ async def query(req: QueryRequest, request: Request):
                 execution_time_ms=elapsed_ms,
                 retry_count=result["retry_count"],
                 agent_id=req.agent_id,
-                scenario=meta.scenario,
+                scenario=(meta.metadata_filter or {}).get("scenario", ""),
                 business=meta.business,
                 caller=meta.caller,
                 user_id=meta.user_id,
@@ -1465,7 +1469,7 @@ async def query(req: QueryRequest, request: Request):
                 is_success=False,
                 execution_time_ms=elapsed_ms,
                 agent_id=req.agent_id,
-                scenario=meta.scenario,
+                scenario=(meta.metadata_filter or {}).get("scenario", ""),
                 business=meta.business,
                 caller=meta.caller,
                 user_id=meta.user_id,

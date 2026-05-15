@@ -79,7 +79,7 @@ class HybridSearcher:
         """构建 Milvus 过滤表达式，支持 biz_line + 任意 metadata KV 组合过滤。"""
         parts = []
         if biz_line:
-            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys")')
+            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys" or biz_line == "")')
         if metadata_filter:
             for key, value in metadata_filter.items():
                 parts.append(
