@@ -1387,15 +1387,11 @@ async def query(req: QueryRequest, request: Request):
 
     try:
         meta = req.metadata or QueryMetadata()
-        # 构建通用 metadata_filter：优先用显式传入的 dict，否则从 scenario 字段构建
-        effective_metadata_filter = meta.metadata_filter
-        if not effective_metadata_filter and meta.scenario:
-            effective_metadata_filter = {"scenario": meta.scenario}
         result = run_query(
             req.question, config, client,
             history_summary=req.history_summary,
             biz_line=meta.business,
-            metadata_filter=effective_metadata_filter,
+            metadata_filter=meta.metadata_filter,
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
 
