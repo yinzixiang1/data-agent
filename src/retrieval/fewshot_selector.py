@@ -87,6 +87,7 @@ class FewShotSelector:
                     "sql": ex["sql"],
                     "involved_tables": ",".join(ex.get("tables", [])),
                     "difficulty": ex.get("difficulty", ""),
+                    "metadata": ex.get("metadata", {}),
                 }
                 for ex in examples
             ]
@@ -100,6 +101,7 @@ class FewShotSelector:
         query: str,
         tables: list[str] | None = None,
         top_k: int = FEWSHOT_TOP_K,
+        metadata_filter: dict | None = None,
     ) -> list[dict]:
         """
         选择最相关且多样化的 Few-shot 示例。
@@ -108,6 +110,7 @@ class FewShotSelector:
             query: 用户原始查询
             tables: 当前检索命中的表名列表，用于表重叠度加权
             top_k: 最终返回的示例数量
+            metadata_filter: 任意 KV 过滤
 
         Returns:
             list[dict]: 选中的示例列表
@@ -115,13 +118,24 @@ class FewShotSelector:
         if not self.examples:
             return []
 
+        # 构建 metadata 过滤表达式
+        filter_expr = None
+        if metadata_filter:
+            parts = []
+            for key, value in metadata_filter.items():
+                parts.append(
+                    f'(metadata["{key}"] == "{value}"'
+                    f' or not exists metadata["{key}"])'
+                )
+            filter_expr = " and ".join(parts) if parts else None
+
         # Dense 检索候选池
         q_dense = self.embedding.encode_query(query, collection_type="fewshot")
 
         candidate_k = min(len(self.examples), top_k * 3)
 
         if self.milvus_index and self.milvus_index.count > 0:
-            results = self.milvus_index.dense_search(q_dense, top_k=candidate_k)
+            results = self.milvus_index.dense_search(q_dense, top_k=candidate_k, filter_expr=filter_expr)
             n = len(self.examples)
             candidate_indices = [doc_id for doc_id, score, _ in results if doc_id < n]
             similarities = np.zeros(n)

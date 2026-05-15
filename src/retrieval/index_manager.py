@@ -48,6 +48,7 @@ TABLE_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
+    {"name": "metadata", "dtype": DataType.JSON},
     {"name": "table_cn_name", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "table_comment", "dtype": DataType.VARCHAR, "max_length": 4096},
     {"name": "business_domain", "dtype": DataType.VARCHAR, "max_length": 256},
@@ -58,6 +59,7 @@ COLUMN_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128},
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
+    {"name": "metadata", "dtype": DataType.JSON},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128},
     {"name": "column_cn_name", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "column_type", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -70,6 +72,7 @@ ENUM_FIELDS = [
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
+    {"name": "metadata", "dtype": DataType.JSON},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
     {"name": "enum_label_cn", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "description", "dtype": DataType.VARCHAR, "max_length": 1024},
@@ -81,6 +84,7 @@ VALUE_FIELDS = [
     {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
+    {"name": "metadata", "dtype": DataType.JSON},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
     {"name": "enum_label_cn", "dtype": DataType.VARCHAR, "max_length": 256},
     {"name": "sql_value", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -91,6 +95,7 @@ FEWSHOT_FIELDS = [
     {"name": "sql", "dtype": DataType.VARCHAR, "max_length": 8192},
     {"name": "involved_tables", "dtype": DataType.VARCHAR, "max_length": 512},
     {"name": "difficulty", "dtype": DataType.VARCHAR, "max_length": 32},
+    {"name": "metadata", "dtype": DataType.JSON},
 ]
 
 GLOSSARY_FIELDS = [
@@ -100,6 +105,7 @@ GLOSSARY_FIELDS = [
     {"name": "related_tables", "dtype": DataType.VARCHAR, "max_length": 2048},
     {"name": "related_columns", "dtype": DataType.VARCHAR, "max_length": 2048},
     {"name": "synonyms", "dtype": DataType.VARCHAR, "max_length": 2048},
+    {"name": "metadata", "dtype": DataType.JSON},
 ]
 
 
@@ -155,6 +161,7 @@ class IndexManager:
                     "db_name": d["schema"].get("database", ""),
                     "table_name": d["table_name"],
                     "biz_line": d["schema"].get("biz_line", ""),
+                    "metadata": d["schema"].get("metadata", {}),
                     "table_cn_name": d["schema"].get("display_name", ""),
                     "table_comment": (d["schema"].get("description") or "")[:4096],
                     "business_domain": ", ".join(d["schema"].get("tags", [])),
@@ -165,9 +172,10 @@ class IndexManager:
             table_index.insert(dense_vecs, table_texts, table_rows)
 
         # 3. 列级索引
-        # 构建 table_name -> biz_line / database 映射
+        # 构建 table_name -> biz_line / database / metadata 映射
         table_biz_map = {s["table_name"]: s.get("biz_line", "") for s in schemas}
         table_db_map = {s["table_name"]: s.get("database", "") for s in schemas}
+        table_meta_map = {s["table_name"]: s.get("metadata", {}) for s in schemas}
         column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
         column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
         if column_docs:
@@ -178,6 +186,7 @@ class IndexManager:
                     "db_name": table_db_map.get(d["table_name"], ""),
                     "table_name": d["table_name"],
                     "biz_line": table_biz_map.get(d["table_name"], ""),
+                    "metadata": table_meta_map.get(d["table_name"], {}),
                     "column_name": d["column_name"],
                     "column_cn_name": d.get("column_cn_name", ""),
                     "column_type": d.get("column_type", ""),
@@ -200,6 +209,7 @@ class IndexManager:
                     "table_name": d["table_name"],
                     "column_name": d["column_name"],
                     "biz_line": d.get("biz_line", ""),
+                    "metadata": d.get("metadata", {}),
                     "enum_code": d["enum_code"],
                     "enum_label_cn": d["enum_label_cn"],
                     "description": d.get("description", ""),
@@ -240,6 +250,7 @@ class IndexManager:
                     "related_tables": json.dumps(info.get("related_tables", []), ensure_ascii=False)[:2048],
                     "related_columns": json.dumps(info.get("related_columns", []), ensure_ascii=False)[:2048],
                     "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
+                    "metadata": info.get("metadata", {}),
                 })
             dense_vecs = embedding.encode(dense_texts, instruction=embedding.instructions.get("glossary", ""))
             glossary_index.insert(dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts)
@@ -357,6 +368,7 @@ class IndexManager:
                         "db_name": d["schema"].get("database", ""),
                         "table_name": d["table_name"],
                         "biz_line": d["schema"].get("biz_line", ""),
+                        "metadata": d["schema"].get("metadata", {}),
                         "table_cn_name": d["schema"].get("display_name", ""),
                         "table_comment": (d["schema"].get("description") or "")[:4096],
                         "business_domain": ", ".join(d["schema"].get("tags", [])),
@@ -369,6 +381,7 @@ class IndexManager:
 
             column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
             column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
+            table_meta_map = {s["table_name"]: s.get("metadata", {}) for s in schemas}
             if column_docs:
                 column_texts = [d["text"] for d in column_docs]
                 dense_vecs = embedding.encode(column_texts, instruction=embedding.instructions.get("column", ""))
@@ -377,6 +390,7 @@ class IndexManager:
                         "db_name": table_db_map.get(d["table_name"], ""),
                         "table_name": d["table_name"],
                         "biz_line": table_biz_map.get(d["table_name"], ""),
+                        "metadata": table_meta_map.get(d["table_name"], {}),
                         "column_name": d["column_name"],
                         "column_cn_name": d.get("column_cn_name", ""),
                         "column_type": d.get("column_type", ""),
@@ -404,6 +418,7 @@ class IndexManager:
                         "table_name": d["table_name"],
                         "column_name": d["column_name"],
                         "biz_line": d.get("biz_line", ""),
+                        "metadata": d.get("metadata", {}),
                         "enum_code": d["enum_code"],
                         "enum_label_cn": d["enum_label_cn"],
                         "description": d.get("description", ""),
@@ -454,6 +469,7 @@ class IndexManager:
                         "related_tables": json.dumps(info.get("related_tables", []), ensure_ascii=False)[:2048],
                         "related_columns": json.dumps(info.get("related_columns", []), ensure_ascii=False)[:2048],
                         "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
+                        "metadata": info.get("metadata", {}),
                     })
                 dense_vecs = embedding.encode(dense_texts, instruction=embedding.instructions.get("glossary", ""))
                 glossary_index.insert(dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts)

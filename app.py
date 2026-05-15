@@ -14,6 +14,7 @@ NL2SQL Data Agent — FastAPI HTTP 服务入口。
 """
 
 import json
+import re
 import time
 import logging
 import uuid
@@ -109,6 +110,15 @@ agent_config: AgentRuntimeConfig | None = None
 query_logger: QueryLogger | None = None
 config_loader: AgentConfigLoader | None = None
 
+# Phase 3: 知识库 + 意图分类
+from src.retrieval.intent_classifier import IntentClassifier
+from src.retrieval.knowledge_retriever import KnowledgeRetriever
+from src.retrieval.query_cache import QueryCache
+
+intent_classifier: IntentClassifier = IntentClassifier()
+knowledge_retriever: KnowledgeRetriever | None = None
+query_cache: QueryCache | None = None
+
 
 # ── 启动配置打印 ──
 
@@ -183,24 +193,48 @@ def _get_mysql_engine():
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
 
-def load_allowed_databases(agent_id: int | None) -> set[str]:
-    """从 da_agent_ref + da_biz_database 加载 Agent 绑定的数据库名白名单。"""
+def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = None) -> set[str]:
+    """从 da_agent_datasource 加载 Agent 绑定的可执行数据库名集合。
+
+    Args:
+        agent_id: Agent ID
+        metadata_filter: 通用 KV 过滤，匹配 da_agent_datasource.meta_json。
+            对于每个 key，meta_json 中不含该 key 的行视为公共数据（始终通过）。
+    """
     if not agent_id:
         return set()
     try:
         eng = _get_mysql_engine()
         with eng.connect() as conn:
             rows = conn.execute(text(
-                "SELECT b.database_name FROM da_agent_ref r "
-                "JOIN da_biz_database b ON r.resource_key = b.id "
-                "WHERE r.agent_id = :agent_id AND r.resource_type = 'biz_database'"
+                "SELECT DISTINCT database_name, meta_json FROM da_agent_datasource "
+                "WHERE agent_id = :agent_id AND status = 1"
             ), {"agent_id": agent_id}).fetchall()
         eng.dispose()
-        result = {row[0].lower() for row in rows if row[0]}
-        logger.info(f"Agent {agent_id} 数据库白名单: {result}")
+
+        if not metadata_filter:
+            result = {row[0].lower() for row in rows if row[0]}
+        else:
+            result = set()
+            for row in rows:
+                if not row[0]:
+                    continue
+                try:
+                    meta = json.loads(row[1]) if row[1] else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                # 公共数据规则：meta 中不含该 key → 视为公共，始终通过
+                match = all(
+                    key not in meta or meta[key] == value
+                    for key, value in metadata_filter.items()
+                )
+                if match:
+                    result.add(row[0].lower())
+
+        logger.info(f"Agent {agent_id} 授权数据库: {result}" + (f" (filter={metadata_filter})" if metadata_filter else ""))
         return result
     except Exception as e:
-        logger.warning(f"加载数据库白名单失败: {e}")
+        logger.warning(f"加载 Agent 授权数据库失败: {e}")
         return set()
 
 
@@ -208,7 +242,7 @@ def load_doris_config(agent_id: int | None) -> dict:
     """
     加载 Agent 绑定的 Doris 连接配置。
 
-    优先级: da_agent_ref(type='doris') → sys_resource → .env 默认值
+    优先级: da_agent_datasource.resource_id → sys_resource → .env 默认值
     """
     from urllib.parse import quote_plus
     result = {
@@ -225,27 +259,28 @@ def load_doris_config(agent_id: int | None) -> dict:
     try:
         eng = _get_mysql_engine()
         with eng.connect() as conn:
-            # 查 Agent 绑定的数据库资源（优先 database，兼容旧 doris）
-            ref_row = conn.execute(text(
-                "SELECT resource_key FROM da_agent_ref "
-                "WHERE agent_id = :agent_id AND resource_type IN ('database', 'doris') "
+            # 从 da_agent_datasource 取第一个启用的 resource_id
+            ds_row = conn.execute(text(
+                "SELECT resource_id FROM da_agent_datasource "
+                "WHERE agent_id = :agent_id AND status = 1 "
                 "ORDER BY sort_order LIMIT 1"
             ), {"agent_id": agent_id}).fetchone()
-            if not ref_row:
+            if not ds_row:
                 eng.dispose()
                 return result
 
-            resource_name = ref_row[0]
-            # 从 sys_resource 读取连接配置（兼容 database 和旧 doris 类型）
+            resource_id = ds_row[0]
+            # 从 sys_resource 读取连接配置
             res_row = conn.execute(text(
-                "SELECT config_json FROM sys_resource "
-                "WHERE resource_type IN ('database', 'doris') AND name = :name AND status = 1"
-            ), {"name": resource_name}).fetchone()
+                "SELECT name, config_json FROM sys_resource "
+                "WHERE id = :resource_id AND status = 1"
+            ), {"resource_id": resource_id}).fetchone()
         eng.dispose()
 
-        if res_row and res_row[0]:
+        if res_row and res_row[1]:
             import json
-            cfg = json.loads(res_row[0])
+            resource_name = res_row[0]
+            cfg = json.loads(res_row[1])
             pwd = cfg.get("password", "")
             result = {
                 "host": cfg.get("host", DORIS_HOST),
@@ -253,9 +288,9 @@ def load_doris_config(agent_id: int | None) -> dict:
                 "user": cfg.get("user", DORIS_USER),
                 "password": pwd,
                 "password_url": quote_plus(pwd) if pwd else DORIS_PASSWORD_URL,
-                "source": f"resource:{resource_name}",
+                "source": f"resource:{resource_name}(id={resource_id})",
             }
-            logger.info(f"Doris 配置来自资源绑定: {resource_name} ({result['host']}:{result['port']})")
+            logger.info(f"Doris 配置来自资源: {resource_name}(id={resource_id}) ({result['host']}:{result['port']})")
     except Exception as e:
         logger.warning(f"加载 Doris 资源配置失败 (fallback .env): {e}")
 
@@ -319,7 +354,7 @@ def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global retriever, validator, llm_client, agent_config, query_logger
+    global retriever, validator, llm_client, agent_config, query_logger, knowledge_retriever, query_cache
 
     # 加载 Agent 配置（CONFIG_SOURCE + CONFIG_PROFILE 控制来源）
     if CONFIG_SOURCE == "local":
@@ -363,29 +398,46 @@ async def lifespan(app: FastAPI):
         logger.error(f"Milvus 连接失败: {milvus_uri} — {e}")
         raise SystemExit(f"启动中止: Milvus 不可达 ({milvus_uri})")
 
-    # 验证 Doris 连接
-    logger.info(f"连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
-    try:
-        engine = create_doris_engine()
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        engine.dispose()
-        logger.info("Doris 连接成功")
-    except Exception as e:
-        logger.error(f"Doris 连接失败: {e}")
-        raise
-
     # 初始化 RAG（传入 agent_config 以使用 Agent 级 Embedding/Reranker 配置）
-    retriever = SchemaRetriever()
-    retriever.initialize(config=agent_config)
+    engine_type = agent_config.engine_type
+
+    # 验证 Doris 连接（仅 NL2SQL / Hybrid 模式需要）
+    if engine_type in ("nl2sql", "hybrid"):
+        logger.info(f"连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
+        try:
+            engine = create_doris_engine()
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            engine.dispose()
+            logger.info("Doris 连接成功")
+        except Exception as e:
+            logger.error(f"Doris 连接失败: {e}")
+            raise
+
+    if engine_type in ("nl2sql", "hybrid"):
+        retriever = SchemaRetriever()
+        retriever.initialize(config=agent_config)
 
     # 初始化 LLM
     llm_client = create_llm_client(agent_config)
     logger.info(f"LLM 已就绪 (provider={agent_config.llm_provider}, model={agent_config.llm_model})")
 
+    # 初始化知识库检索器（knowledge / hybrid 模式）
+    if engine_type in ("knowledge", "hybrid"):
+        from src.retrieval.embedding import get_embedding
+        knowledge_retriever = KnowledgeRetriever(get_embedding())
+        knowledge_retriever.connect()
+        logger.info(f"知识库检索器已就绪 (engine_type={engine_type})")
+
+    # 初始化查询缓存
+    from src.retrieval.embedding import get_embedding
+    query_cache = QueryCache(get_embedding(), ttl=3600, max_size=500)
+    logger.info("查询缓存已就绪")
+
     # 初始化 EXPLAIN 校验器
-    validator = SQLValidator(create_doris_engine())
-    logger.info("EXPLAIN 校验器已就绪")
+    if engine_type in ("nl2sql", "hybrid"):
+        validator = SQLValidator(create_doris_engine())
+        logger.info("EXPLAIN 校验器已就绪")
 
     # 初始化查询日志
     query_logger = QueryLogger()
@@ -428,6 +480,7 @@ class QueryMetadata(BaseModel):
     user_id: str = Field(default="", description="外部用户唯一标识")
     user_name: str = Field(default="", description="外部用户显示名")
     trace_id: str = Field(default="", description="链路追踪 ID")
+    metadata_filter: dict | None = Field(default=None, description="通用 KV 过滤 (如 {\"scenario\":\"bi\"}), 用于语义层 + 执行层隔离")
 
 
 class QueryRequest(BaseModel):
@@ -437,6 +490,7 @@ class QueryRequest(BaseModel):
     enable_explain: bool | None = Field(default=None, description="是否启用 EXPLAIN 校验，为空则使用 Agent 配置")
     metadata: QueryMetadata | None = Field(default=None, description="业务元数据（场景/业务线/调用方/追踪ID）")
     history_summary: str = Field(default="", description="上一轮对话摘要（用于多轮上下文压缩），格式: question|||sql")
+    expand_info: dict | None = Field(default=None, description="扩展参数，按需覆盖 Agent 配置（如 enable_execute, row_limit 等）")
 
 
 class QueryResponse(BaseModel):
@@ -505,6 +559,7 @@ def run_query(
     client: BaseChatModel,
     history_summary: str = "",
     biz_line: str = "",
+    metadata_filter: dict | None = None,
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
@@ -549,6 +604,7 @@ def run_query(
         fewshot_k=config.fewshot_top_k,
         glossary_score_threshold=config.glossary_score_threshold,
         biz_line=biz_line,
+        metadata_filter=metadata_filter,
     )
     retrieval_ms = _elapsed_ms(t0)
 
@@ -756,21 +812,65 @@ def run_query(
         is_success = False
         error_msg = f"NEED_CLARIFY: {clarify_msg}"
 
+    # ── P2: 枚举值预校验 ──
+    if final_sql and is_success and config.enable_enum_validate and result.enum_hits:
+        where_values = SQLValidator.extract_where_values(final_sql)
+        if where_values:
+            enum_mismatches = SQLValidator.validate_enum_values(where_values, result.enum_hits)
+            if enum_mismatches:
+                t0 = _time.monotonic()
+                mismatch_lines = []
+                for mm in enum_mismatches:
+                    line = f"- `{mm['column']} = '{mm['sql_value']}'`：该字段的枚举值为 {mm['expected_values']}"
+                    if mm.get("suggestion"):
+                        line += f"（{mm['suggestion']}）"
+                    mismatch_lines.append(line)
+                enum_fix_prompt = (
+                    f"你生成的 SQL 中以下条件值可能有误：\n\n"
+                    + "\n".join(mismatch_lines) + "\n\n"
+                    f"请根据枚举定义修正 SQL，用 ```sql ``` 包裹。"
+                )
+                messages.append({"role": "user", "content": enum_fix_prompt})
+                enum_fix_answer, enum_fix_usage = _invoke(messages)
+                llm_calls.append({
+                    "role": "enum_fix",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": enum_fix_answer,
+                    "input_tokens": enum_fix_usage.get("input_tokens") if enum_fix_usage else None,
+                    "output_tokens": enum_fix_usage.get("output_tokens") if enum_fix_usage else None,
+                })
+                messages.append({"role": "assistant", "content": enum_fix_answer})
+                fixed_sql = SQLValidator.extract_sql(enum_fix_answer)
+                enum_fixed = False
+                if fixed_sql and validator:
+                    recheck = validator.explain(fixed_sql)
+                    if recheck["valid"]:
+                        final_sql = fixed_sql
+                        answer = enum_fix_answer
+                        enum_fixed = True
+                trace_steps.append({
+                    "step": "enum_validate",
+                    "mismatches": enum_mismatches,
+                    "fixed": enum_fixed,
+                    "duration_ms": _elapsed_ms(t0),
+                })
+
     # SQL 执行 & 结果总结
     query_result_data = None
     execution_error = ""
     summary = ""
 
     if final_sql and is_success and config.enable_execute and validator:
-        # 数据库白名单校验
+        # 授权数据库校验
         referenced_dbs = SQLValidator.extract_databases(final_sql)
-        allowed_dbs = load_allowed_databases(config.agent_id)
+        authorized_dbs = load_agent_databases(config.agent_id, metadata_filter=metadata_filter)
 
-        if allowed_dbs and referenced_dbs:
-            unauthorized = referenced_dbs - allowed_dbs
+        if authorized_dbs and referenced_dbs:
+            unauthorized = referenced_dbs - authorized_dbs
             if unauthorized:
                 execution_error = f"安全拦截: 数据库 {', '.join(unauthorized)} 未在当前 Agent 的授权范围内"
-                logger.warning(f"数据库白名单校验失败: {unauthorized}, 允许: {allowed_dbs}")
+                logger.warning(f"数据库授权校验失败: 未授权={unauthorized}, 已授权={authorized_dbs}")
                 trace_steps.append({
                     "step": "sql_execution",
                     "success": False,
@@ -784,9 +884,10 @@ def run_query(
             # 使用 Agent 绑定的 Doris 连接执行 SQL（可能与 EXPLAIN 引擎不同）
             exec_engine = create_doris_engine_for_agent(config.agent_id)
             exec_validator = SQLValidator(exec_engine)
+            current_exec_sql = final_sql
             try:
                 exec_result = exec_validator.execute(
-                    final_sql,
+                    current_exec_sql,
                     row_limit=config.execute_row_limit,
                     timeout=config.execute_timeout,
                 )
@@ -804,6 +905,134 @@ def run_query(
                 "duration_ms": exec_ms,
             })
 
+            # ── P4: 超时降级 ──
+            _is_timeout = (not exec_result["success"]
+                           and exec_result.get("error")
+                           and re.search(r"(?:timeout|timed?\s*out|query_timeout)", exec_result["error"], re.IGNORECASE))
+            if _is_timeout and config.enable_timeout_fallback:
+                for level in (1, 2, 3):
+                    t0 = _time.monotonic()
+                    simplified = SQLValidator.simplify_sql_for_timeout(current_exec_sql, level)
+                    if simplified is None:
+                        # level 3: LLM 简化
+                        timeout_prompt = (
+                            f"以下 SQL 执行超时（{config.execute_timeout}s）：\n\n"
+                            f"```sql\n{current_exec_sql}\n```\n\n"
+                            f"请简化查询以提高性能（减少 JOIN、去掉子查询、缩小时间范围等）。\n"
+                            f"输出简化后的 SQL，用 ```sql ``` 包裹。保持查询意图不变。"
+                        )
+                        messages.append({"role": "user", "content": timeout_prompt})
+                        timeout_answer, t_usage = _invoke(messages)
+                        llm_calls.append({
+                            "role": "timeout_simplify",
+                            "duration_ms": _elapsed_ms(t0),
+                            "model": config.llm_model,
+                            "output": timeout_answer,
+                        })
+                        messages.append({"role": "assistant", "content": timeout_answer})
+                        simplified = SQLValidator.extract_sql(timeout_answer)
+                        if not simplified:
+                            break
+
+                    # EXPLAIN 校验简化后的 SQL
+                    simp_check = validator.explain(simplified)
+                    if not simp_check["valid"]:
+                        continue
+
+                    exec_engine = create_doris_engine_for_agent(config.agent_id)
+                    exec_validator_t = SQLValidator(exec_engine)
+                    try:
+                        exec_result = exec_validator_t.execute(
+                            simplified,
+                            row_limit=config.execute_row_limit,
+                            timeout=config.execute_timeout,
+                        )
+                    finally:
+                        exec_engine.dispose()
+
+                    trace_steps.append({
+                        "step": "timeout_fallback",
+                        "level": level,
+                        "simplified_sql": simplified,
+                        "success": exec_result["success"],
+                        "duration_ms": _elapsed_ms(t0),
+                    })
+
+                    if exec_result["success"]:
+                        final_sql = simplified
+                        current_exec_sql = simplified
+                        logger.info(f"超时降级成功 (level {level})")
+                        break
+
+            # ── P0: 执行失败纠错循环 ──
+            if not exec_result["success"] and config.max_execute_fix_retries > 0:
+                for exec_fix_i in range(config.max_execute_fix_retries):
+                    t0 = _time.monotonic()
+                    fix_prompt = (
+                        f"你生成的 SQL 执行失败。\n\n"
+                        f"## 原始 SQL\n```sql\n{current_exec_sql}\n```\n\n"
+                        f"## 执行错误\n{exec_result['error']}\n\n"
+                        f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
+                    )
+                    messages.append({"role": "user", "content": fix_prompt})
+                    fix_answer, fix_usage = _invoke(messages)
+                    llm_calls.append({
+                        "role": f"execution_fix_{exec_fix_i + 1}",
+                        "duration_ms": _elapsed_ms(t0),
+                        "model": config.llm_model,
+                        "output": fix_answer,
+                        "input_tokens": fix_usage.get("input_tokens") if fix_usage else None,
+                        "output_tokens": fix_usage.get("output_tokens") if fix_usage else None,
+                    })
+                    messages.append({"role": "assistant", "content": fix_answer})
+
+                    new_sql = SQLValidator.extract_sql(fix_answer)
+                    if not new_sql:
+                        trace_steps.append({"step": "execution_fix", "attempt": exec_fix_i + 1, "success": False, "reason": "无法提取 SQL"})
+                        break
+
+                    # 白名单校验
+                    new_dbs = SQLValidator.extract_databases(new_sql)
+                    if authorized_dbs and (new_dbs - authorized_dbs):
+                        trace_steps.append({"step": "execution_fix", "attempt": exec_fix_i + 1, "success": False, "reason": "数据库未授权"})
+                        break
+
+                    # EXPLAIN 校验
+                    fix_check = validator.explain(new_sql)
+                    if not fix_check["valid"]:
+                        trace_steps.append({"step": "execution_fix", "attempt": exec_fix_i + 1, "success": False, "reason": f"EXPLAIN 失败: {fix_check['error']}"})
+                        break
+
+                    # 重新执行
+                    current_exec_sql = new_sql
+                    exec_engine = create_doris_engine_for_agent(config.agent_id)
+                    exec_validator_retry = SQLValidator(exec_engine)
+                    try:
+                        exec_result = exec_validator_retry.execute(
+                            current_exec_sql,
+                            row_limit=config.execute_row_limit,
+                            timeout=config.execute_timeout,
+                        )
+                    finally:
+                        exec_engine.dispose()
+
+                    trace_steps.append({
+                        "step": "execution_fix",
+                        "attempt": exec_fix_i + 1,
+                        "fixed_sql": current_exec_sql,
+                        "success": exec_result["success"],
+                        "error": exec_result.get("error", ""),
+                        "duration_ms": _elapsed_ms(t0),
+                    })
+
+                    if exec_result["success"]:
+                        final_sql = current_exec_sql
+                        answer = fix_answer
+                        logger.info(f"执行纠错成功 (第 {exec_fix_i + 1} 次)")
+                        break
+                else:
+                    logger.warning(f"执行纠错 {config.max_execute_fix_retries} 次后仍失败")
+
             if exec_result["success"]:
                 query_result_data = {
                     "columns": exec_result["columns"],
@@ -812,10 +1041,35 @@ def run_query(
                     "truncated": exec_result["truncated"],
                 }
 
-                # LLM 结果总结
-                if config.enable_summarize and exec_result["row_count"] > 0:
+                # ── P1: 空结果智能分析 ──
+                if exec_result["row_count"] == 0 and config.enable_empty_analysis:
                     t0 = _time.monotonic()
-                    # 构建结果摘要（限制行数避免 token 过多）
+                    empty_prompt = (
+                        f"用户问题：{effective_question}\n\n"
+                        f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
+                        f"查询结果为空（0 行）。请分析可能的原因：\n"
+                        f"1. WHERE 条件是否过于严格？（时间范围、状态值、币种等）\n"
+                        f"2. 表或字段是否选择正确？\n"
+                        f"3. JOIN 条件是否导致数据被过滤？\n\n"
+                        f"请给出可能的原因（1-3 条），用简洁的自然语言回答。"
+                    )
+                    empty_msgs = [
+                        {"role": "system", "content": "你是一个数据分析助手，负责分析 SQL 查询结果为空的原因。"},
+                        {"role": "user", "content": empty_prompt},
+                    ]
+                    try:
+                        summary, e_usage = _invoke(empty_msgs)
+                        trace_steps.append({
+                            "step": "empty_analysis",
+                            "duration_ms": _elapsed_ms(t0),
+                            "output": summary,
+                        })
+                    except Exception as e:
+                        logger.warning(f"空结果分析失败: {e}")
+
+                # ── P3: 结果合理性检验 + LLM 总结 ──
+                elif config.enable_summarize and exec_result["row_count"] > 0:
+                    t0 = _time.monotonic()
                     summary_rows = exec_result["rows"][:50]
                     result_text = " | ".join(exec_result["columns"]) + "\n"
                     for row in summary_rows:
@@ -823,13 +1077,40 @@ def run_query(
                     if len(exec_result["rows"]) > 50:
                         result_text += f"... (共 {exec_result['row_count']} 行，仅展示前 50 行)\n"
 
-                    summarize_prompt = (
-                        f"用户问题：{effective_question}\n\n"
-                        f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
-                        f"查询结果：\n{result_text}\n\n"
-                        f"请用简洁的自然语言总结以上查询结果，直接回答用户的问题。"
-                        f"如果数据量较多，概括关键数据点。不要重复 SQL。"
-                    )
+                    # 规则型预检
+                    result_warnings = []
+                    if config.enable_result_check:
+                        result_warnings = SQLValidator.check_result_anomalies(
+                            effective_question, final_sql,
+                            exec_result["columns"], exec_result["rows"],
+                        )
+
+                    # 构建总结 Prompt（含合理性审查指令）
+                    if config.enable_result_check:
+                        summarize_prompt = (
+                            f"用户问题：{effective_question}\n\n"
+                            f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
+                            f"查询结果：\n{result_text}\n\n"
+                        )
+                        if result_warnings:
+                            summarize_prompt += f"规则预检发现以下异常：\n" + "\n".join(f"- {w}" for w in result_warnings) + "\n\n"
+                        summarize_prompt += (
+                            f"请完成两项任务：\n\n"
+                            f"**1. 合理性审查**\n"
+                            f"检查：数值是否合理、时间范围是否与问题一致、结果行数是否匹配查询意图、是否有异常。\n"
+                            f"如发现异常，在回答开头用 [数据提示] 标注。\n\n"
+                            f"**2. 结果总结**\n"
+                            f"用简洁的自然语言回答用户的问题。如果数据量较多，概括关键数据点。不要重复 SQL。"
+                        )
+                    else:
+                        summarize_prompt = (
+                            f"用户问题：{effective_question}\n\n"
+                            f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
+                            f"查询结果：\n{result_text}\n\n"
+                            f"请用简洁的自然语言总结以上查询结果，直接回答用户的问题。"
+                            f"如果数据量较多，概括关键数据点。不要重复 SQL。"
+                        )
+
                     summarize_msgs = [
                         {"role": "system", "content": "你是一个数据分析助手，负责将 SQL 查询结果转化为用户易懂的自然语言回答。"},
                         {"role": "user", "content": summarize_prompt},
@@ -837,12 +1118,15 @@ def run_query(
                     try:
                         summary, s_usage = _invoke(summarize_msgs)
                         summarize_ms = _elapsed_ms(t0)
-                        trace_steps.append({
+                        trace_data = {
                             "step": "result_summarize",
                             "duration_ms": summarize_ms,
                             "output": summary,
                             "tokens": (s_usage.get("input_tokens", 0) + s_usage.get("output_tokens", 0)) if s_usage else 0,
-                        })
+                        }
+                        if result_warnings:
+                            trace_data["result_warnings"] = result_warnings
+                        trace_steps.append(trace_data)
                     except Exception as e:
                         logger.warning(f"结果总结失败: {e}")
                         summary = ""
@@ -892,11 +1176,21 @@ def run_query(
 
 @app.get("/health")
 async def health():
+    et = agent_config.engine_type if agent_config else "nl2sql"
     return {
         "status": "ok",
-        "initialized": retriever is not None and retriever._initialized,
+        "initialized": (retriever is not None and retriever._initialized) or (knowledge_retriever is not None and knowledge_retriever._initialized),
         "agent": agent_config.agent_name if agent_config and agent_config.agent_id else None,
         "config_source": agent_config.config_source if agent_config else "none",
+        "engine_type": et,
+        "capabilities": {
+            "nl2sql": et in ("nl2sql", "hybrid"),
+            "knowledge_qa": knowledge_retriever is not None and knowledge_retriever._initialized,
+            "intent_classification": et == "hybrid",
+            "explain_validate": validator is not None,
+            "sql_execution": agent_config.enable_execute if agent_config else False,
+            "query_cache": query_cache is not None,
+        },
     }
 
 
@@ -927,12 +1221,110 @@ def _verify_admin_token(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or missing admin token")
 
 
+# ── 知识问答管道 ──
+
+async def _handle_knowledge_query(
+    req: QueryRequest,
+    config: AgentRuntimeConfig,
+    client: BaseChatModel,
+    session_id: str,
+    start_time: float,
+) -> QueryResponse:
+    """处理知识问答意图的查询。"""
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    if not knowledge_retriever or not knowledge_retriever._initialized:
+        raise HTTPException(status_code=503, detail="知识库未初始化，请先执行 /admin/sync")
+
+    try:
+        t0 = time.time()
+        trace_steps = []
+
+        # 1. 检索相关知识 chunk
+        chunks = knowledge_retriever.retrieve(req.question, top_k=5)
+        trace_steps.append({
+            "step": "knowledge_retrieval",
+            "duration_ms": int((time.time() - t0) * 1000),
+            "chunk_count": len(chunks),
+            "sources": [{"title": c["title"], "kb_name": c["kb_name"], "score": c["score"]} for c in chunks],
+        })
+
+        # 2. 组装 Prompt 并调用 LLM
+        prompt_text = knowledge_retriever.format_prompt(req.question, chunks)
+        system_prompt = "你是一个知识问答助手，请根据提供的参考文档准确回答用户问题。回答时引用来源。"
+        if config.system_prompt and "知识" in config.system_prompt:
+            system_prompt = config.system_prompt
+
+        t0 = time.time()
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt_text)]
+        resp = client.invoke(messages)
+        answer = resp.content
+        usage = getattr(resp, "usage_metadata", None)
+
+        trace_steps.append({
+            "step": "llm_generation",
+            "duration_ms": int((time.time() - t0) * 1000),
+            "model": config.llm_model,
+            "input_tokens": usage.get("input_tokens") if usage else None,
+            "output_tokens": usage.get("output_tokens") if usage else None,
+        })
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        source_docs = list({c["title"] for c in chunks if c.get("title")})
+
+        # 记录查询日志
+        log_id = None
+        if query_logger:
+            meta = req.metadata or QueryMetadata()
+            log_id = query_logger.log(
+                session_id=session_id,
+                user_query=req.question,
+                is_success=True,
+                execution_time_ms=elapsed_ms,
+                agent_id=req.agent_id,
+                scenario=meta.scenario,
+                business=meta.business,
+                caller=meta.caller,
+                user_id=meta.user_id,
+                user_name=meta.user_name,
+                trace_id=meta.trace_id,
+            )
+
+        return QueryResponse(
+            session_id=session_id,
+            question=req.question,
+            sql="",
+            raw_answer=answer,
+            matched_tables=source_docs,
+            is_success=True,
+            execution_time_ms=elapsed_ms,
+            log_id=log_id,
+            summary=answer,
+            trace={
+                "question": req.question,
+                "intent": "knowledge",
+                "steps": trace_steps,
+                "total_duration_ms": elapsed_ms,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"知识问答异常: {e}", exc_info=True)
+        return QueryResponse(
+            session_id=session_id,
+            question=req.question,
+            is_success=False,
+            execution_time_ms=elapsed_ms,
+            error=str(e),
+        )
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
     global agent_config, llm_client
-
-    if not retriever or not retriever._initialized:
-        raise HTTPException(status_code=503, detail="服务未就绪，RAG 尚未初始化")
 
     start_time = time.time()
     session_id = req.session_id or str(uuid.uuid4())[:8]
@@ -947,17 +1339,79 @@ async def query(req: QueryRequest, request: Request):
     # Token 鉴权
     _verify_token(request, config)
 
-    # enable_explain 可以在请求级别覆盖
+    # 意图分类
+    intent = intent_classifier.classify(req.question, engine_type=config.engine_type)
+    logger.info(f"意图分类: intent={intent}, engine_type={config.engine_type}")
+
+    # 知识问答管道
+    if intent == "knowledge":
+        return await _handle_knowledge_query(req, config, client, session_id, start_time)
+
+    # SQL 管道（原有逻辑）
+    if not retriever or not retriever._initialized:
+        raise HTTPException(status_code=503, detail="服务未就绪，NL2SQL RAG 尚未初始化")
+
+    # 查询缓存检查
+    if query_cache:
+        cached = query_cache.get(req.question)
+        if cached:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            return QueryResponse(
+                session_id=session_id,
+                question=req.question,
+                execution_time_ms=elapsed_ms,
+                **{k: v for k, v in cached.items() if k in QueryResponse.model_fields},
+            )
+
+    # 请求级配置覆盖
+    overrides = {}
     if req.enable_explain is not None:
-        config = AgentRuntimeConfig(**{
-            **config.__dict__,
-            "enable_explain": req.enable_explain,
-        })
+        overrides["enable_explain"] = req.enable_explain
+    if req.expand_info:
+        # expand_info 支持覆盖的 config 属性白名单
+        _EXPAND_INFO_ALLOWED = {
+            "enable_execute", "enable_summarize", "enable_explain",
+            "execute_row_limit", "execute_timeout",
+            "max_execute_fix_retries", "enable_empty_analysis",
+            "enable_enum_validate", "enable_result_check", "enable_timeout_fallback",
+        }
+        from src.retrieval.agent_config import get_expand
+        for key in req.expand_info:
+            if key in _EXPAND_INFO_ALLOWED and hasattr(config, key):
+                field_type = type(getattr(config, key))
+                cast = field_type if field_type in (int, float, bool) else None
+                val = get_expand(req.expand_info, key, default=getattr(config, key), cast=cast)
+                overrides[key] = val
+    if overrides:
+        config = AgentRuntimeConfig(**{**config.__dict__, **overrides})
 
     try:
         meta = req.metadata or QueryMetadata()
-        result = run_query(req.question, config, client, history_summary=req.history_summary, biz_line=meta.business)
+        # 构建通用 metadata_filter：优先用显式传入的 dict，否则从 scenario 字段构建
+        effective_metadata_filter = meta.metadata_filter
+        if not effective_metadata_filter and meta.scenario:
+            effective_metadata_filter = {"scenario": meta.scenario}
+        result = run_query(
+            req.question, config, client,
+            history_summary=req.history_summary,
+            biz_line=meta.business,
+            metadata_filter=effective_metadata_filter,
+        )
         elapsed_ms = int((time.time() - start_time) * 1000)
+
+        # 写入查询缓存（仅成功的 SQL 查询）
+        if query_cache and result["is_success"] and result["sql"]:
+            query_cache.put(req.question, {
+                "sql": result["sql"],
+                "raw_answer": result["raw_answer"],
+                "matched_tables": result["matched_tables"],
+                "matched_terms": result["matched_terms"],
+                "enum_hits": result["enum_hits"],
+                "is_success": True,
+                "retry_count": result["retry_count"],
+                "error": "",
+                "summary": result.get("summary", ""),
+            })
 
         # 记录查询日志
         log_id = None
@@ -1083,6 +1537,43 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
     except Exception as e:
         logger.error(f"配置重载失败: {e}", exc_info=True)
         return ConfigReloadResponse(status="error", message=str(e))
+
+
+class KnowledgeSyncRequest(BaseModel):
+    agent_id: int | None = Field(default=None, description="Agent ID，为空则同步所有启用的知识库")
+
+
+class KnowledgeSyncResponse(BaseModel):
+    status: str
+    message: str
+
+
+@app.post("/admin/sync", response_model=KnowledgeSyncResponse)
+async def knowledge_sync(req: KnowledgeSyncRequest, request: Request):
+    """触发知识库文档同步（分块 + 向量化 → Milvus）。"""
+    _verify_admin_token(request)
+    global knowledge_retriever
+
+    if knowledge_retriever is None:
+        from src.retrieval.embedding import get_embedding
+        knowledge_retriever = KnowledgeRetriever(get_embedding())
+
+    try:
+        agent_id = req.agent_id or (agent_config.agent_id if agent_config else None)
+        logger.info(f"收到知识库同步请求: agent_id={agent_id}")
+        knowledge_retriever.sync_from_db(agent_id=agent_id)
+
+        # 同步后清空查询缓存
+        if query_cache:
+            query_cache.invalidate()
+
+        return KnowledgeSyncResponse(
+            status="success",
+            message=f"知识库同步完成 (agent_id={agent_id})",
+        )
+    except Exception as e:
+        logger.error(f"知识库同步失败: {e}", exc_info=True)
+        return KnowledgeSyncResponse(status="error", message=str(e))
 
 
 @app.post("/evaluation/run", response_model=EvalRunResponse)

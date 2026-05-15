@@ -106,17 +106,17 @@ class SchemaLoader:
     # ── MySQL 语义层加载（对接 dataAgent-admin-api 的 da_* 表） ──
 
     def _load_agent_biz_database_ids(self, agent_id: int) -> list[int]:
-        """从 da_agent_ref 加载 Agent 绑定的 biz_database ID 列表。"""
+        """从 da_agent_datasource 加载 Agent 绑定的执行数据源，反查 da_biz_database 得到 ID 列表。"""
         try:
             with self.mysql_engine.connect() as conn:
                 rows = conn.execute(text(
-                    "SELECT resource_key FROM da_agent_ref "
-                    "WHERE agent_id = :agent_id AND resource_type = 'biz_database' "
-                    "ORDER BY sort_order"
+                    "SELECT DISTINCT b.id FROM da_agent_datasource ds "
+                    "JOIN da_biz_database b ON ds.database_name = b.database_name "
+                    "WHERE ds.agent_id = :agent_id AND ds.status = 1"
                 ), {"agent_id": agent_id}).fetchall()
             return [int(row[0]) for row in rows]
         except Exception as e:
-            logger.warning(f"加载 Agent biz_database 绑定失败: {e}")
+            logger.warning(f"加载 Agent 执行数据源绑定失败: {e}")
             return []
 
     @staticmethod
@@ -132,9 +132,9 @@ class SchemaLoader:
         return f" AND ({column} IN ({id_list}) OR {column} IS NULL)"
 
     def _load_table_semantics(self, biz_db_ids: list[int] | None = None) -> dict[str, dict]:
-        """从 da_table 加载表语义 → {db.table: {display_name, description, tags, query_tips}}"""
+        """从 da_table 加载表语义 → {db.table: {display_name, description, tags, query_tips, metadata}}"""
         sql = (
-            "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.biz_line "
+            "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.biz_line, b.meta_json "
             "FROM da_table t "
             "JOIN da_biz_database b ON t.biz_database_id = b.id "
             "WHERE t.status = 1 AND t.available = 1"
@@ -154,6 +154,10 @@ class SchemaLoader:
                     tags = json.loads(row[4])
                 except (json.JSONDecodeError, TypeError):
                     tags = [t.strip() for t in row[4].split(",") if t.strip()]
+            try:
+                metadata = json.loads(row[7] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
             result[full_key] = {
                 "database_name": db_name,
                 "table_name_short": row[0],
@@ -162,6 +166,7 @@ class SchemaLoader:
                 "tags": tags,
                 "query_tips": row[5] or "",
                 "biz_line": row[6] or "",
+                "metadata": metadata,
             }
 
         logger.info(f"MySQL 表语义加载: {len(result)} 张表")
@@ -243,9 +248,14 @@ class SchemaLoader:
 
     def load_glossary(self, biz_db_ids: list[int] | None = None) -> dict[str, dict]:
         """从 da_glossary 加载业务术语 → {term: info_dict}"""
-        sql = "SELECT term, definition, sql_hint, related_tables, related_columns, synonyms FROM da_glossary WHERE status = 1"
+        sql = (
+            "SELECT g.term, g.definition, g.sql_hint, g.related_tables, g.related_columns, g.synonyms, b.meta_json "
+            "FROM da_glossary g "
+            "LEFT JOIN da_biz_database b ON g.biz_database_id = b.id "
+            "WHERE g.status = 1"
+        )
         if biz_db_ids:
-            sql += self._biz_db_in_clause_nullable(biz_db_ids)
+            sql += self._biz_db_in_clause_nullable(biz_db_ids, "g.biz_database_id")
         with self.mysql_engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
 
@@ -272,6 +282,11 @@ class SchemaLoader:
                 except (json.JSONDecodeError, TypeError):
                     synonyms = [s.strip() for s in row[5].split(",") if s.strip()]
 
+            try:
+                metadata = json.loads(row[6] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
             glossary[row[0]] = {
                 "term": row[0],
                 "definition": row[1] or "",
@@ -279,18 +294,20 @@ class SchemaLoader:
                 "related_tables": related_tables,
                 "related_columns": related_columns,
                 "synonyms": synonyms,
+                "metadata": metadata,
             }
 
         logger.info(f"MySQL 业务术语加载: {len(glossary)} 条")
         return glossary
 
     def load_enums(self, biz_db_ids: list[int] | None = None) -> list[dict]:
-        """从 da_enum_def JOIN da_enum_value 加载枚举字典 → [{table_name, field_name, field_label, values: [...]}]"""
+        """从 da_enum_def JOIN da_enum_value 加载枚举字典 → [{table_name, field_name, field_label, metadata, values: [...]}]"""
         sql = (
             "SELECT d.table_name, d.field_name, d.field_label, "
-            "v.code, v.label, v.label_cn, d.biz_line "
+            "v.code, v.label, v.label_cn, d.biz_line, b.meta_json "
             "FROM da_enum_value v "
             "JOIN da_enum_def d ON v.definition_id = d.id "
+            "LEFT JOIN da_biz_database b ON d.biz_database_id = b.id "
             "WHERE 1=1"
         )
         if biz_db_ids:
@@ -303,11 +320,16 @@ class SchemaLoader:
         for row in rows:
             key = (row[0], row[1])
             if key not in groups:
+                try:
+                    metadata = json.loads(row[7] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
                 groups[key] = {
                     "table_name": row[0],
                     "field_name": row[1],
                     "field_label": row[2] or row[1],
                     "biz_line": row[6] or "",
+                    "metadata": metadata,
                     "values": [],
                 }
             groups[key]["values"].append({
@@ -326,26 +348,37 @@ class SchemaLoader:
 
         with self.mysql_engine.connect() as conn:
             # 全局 Few-shot
-            fewshot_sql = "SELECT id, question, `sql`, tables, difficulty FROM da_fewshot WHERE status = 1"
+            fewshot_sql = (
+                "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json "
+                "FROM da_fewshot f "
+                "LEFT JOIN da_biz_database b ON f.biz_database_id = b.id "
+                "WHERE f.status = 1"
+            )
             if biz_db_ids:
-                fewshot_sql += self._biz_db_in_clause_nullable(biz_db_ids)
+                fewshot_sql += self._biz_db_in_clause_nullable(biz_db_ids, "f.biz_database_id")
             rows = conn.execute(text(fewshot_sql)).fetchall()
 
             for row in rows:
                 tables = self._parse_json_list(row[3])
+                try:
+                    metadata = json.loads(row[5] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
                 examples.append({
                     "id": row[0],
                     "question": row[1],
                     "sql": row[2],
                     "tables": tables,
                     "difficulty": row[4] or "",
+                    "metadata": metadata,
                 })
 
             # 表级常见问题（也作为 Few-shot，通过 da_table 的 biz_database_id 过滤）
             query_sql = (
-                "SELECT q.question, q.`sql`, q.tables, q.difficulty "
+                "SELECT q.question, q.`sql`, q.tables, q.difficulty, b.meta_json "
                 "FROM da_table_query q "
                 "JOIN da_table t ON q.table_id = t.id "
+                "JOIN da_biz_database b ON t.biz_database_id = b.id "
                 "WHERE t.status = 1 AND t.available = 1"
             )
             if biz_db_ids:
@@ -354,11 +387,16 @@ class SchemaLoader:
 
             for row in query_rows:
                 tables = self._parse_json_list(row[2])
+                try:
+                    metadata = json.loads(row[4] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
                 examples.append({
                     "question": row[0],
                     "sql": row[1],
                     "tables": tables,
                     "difficulty": row[3] or "",
+                    "metadata": metadata,
                 })
 
         logger.info(f"MySQL Few-shot 加载: {len(examples)} 条 (全局 {len(rows)} + 表级 {len(query_rows)})")
@@ -383,6 +421,7 @@ class SchemaLoader:
             schema["tags"] = table_sem.get("tags", [])
             schema["query_tips"] = table_sem.get("query_tips", "")
             schema["biz_line"] = table_sem.get("biz_line", "")
+            schema["metadata"] = table_sem.get("metadata", {})
 
         # 关联关系
         schema["relations"] = relations or []
@@ -427,7 +466,7 @@ class SchemaLoader:
             if biz_db_ids:
                 logger.info(f"Agent {agent_id} 绑定数据源: biz_database_id={biz_db_ids}")
             else:
-                logger.warning(f"Agent {agent_id} 未绑定数据源 (da_agent_ref 无 biz_database 记录)，加载全量数据")
+                logger.warning(f"Agent {agent_id} 未绑定执行数据源 (da_agent_datasource)，加载全量数据")
                 biz_db_ids = None
 
         # 从 MySQL 加载语义层（只加载 status=1 AND available=1）

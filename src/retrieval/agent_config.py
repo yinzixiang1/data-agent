@@ -36,6 +36,59 @@ from src.retrieval.config import (
 logger = logging.getLogger(__name__)
 
 
+# ── expand 分区：校验规则 + 读取函数 ──
+
+EXPAND_VALIDATORS = {
+    "max_execute_fix_retries": lambda v: isinstance(v, int) and 0 <= v <= 5,
+    "execute_row_limit":       lambda v: isinstance(v, int) and 1 <= v <= 10000,
+    "execute_timeout":         lambda v: isinstance(v, int) and 1 <= v <= 300,
+    "max_fix_retries":         lambda v: isinstance(v, int) and 0 <= v <= 10,
+    "intent_threshold":        lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+    "max_tokens":              lambda v: isinstance(v, int) and 1 <= v <= 32768,
+    "top_p":                   lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+    "llm_temperature":         lambda v: isinstance(v, (int, float)) and 0 <= v <= 2,
+    "value_exact_match_boost": lambda v: isinstance(v, (int, float)) and v >= 0,
+    "table_search_top_k":      lambda v: isinstance(v, int) and 1 <= v <= 100,
+    "column_search_top_k":     lambda v: isinstance(v, int) and 1 <= v <= 200,
+    "recall_top_k":            lambda v: isinstance(v, int) and 1 <= v <= 100,
+    "fewshot_top_k":           lambda v: isinstance(v, int) and 1 <= v <= 50,
+    "glossary_score_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+}
+
+
+def get_expand(expand_cfg: dict, key: str, default=None, cast=None):
+    """从 expand 分区读取扩展配置，支持类型转换和校验。
+
+    Args:
+        expand_cfg: expand 分区的完整 dict
+        key: 配置键名
+        default: 默认值
+        cast: 类型转换函数（int, float, bool 等）
+    """
+    value = expand_cfg.get(key, default)
+    if value is None:
+        return default
+
+    # 类型转换
+    if cast is not None:
+        try:
+            if cast is bool:
+                value = value if isinstance(value, bool) else str(value).lower() in ("true", "1")
+            else:
+                value = cast(value)
+        except (ValueError, TypeError):
+            logger.warning(f"expand 配置 {key}={value} 类型转换失败，使用默认值 {default}")
+            return default
+
+    # 值校验
+    validator = EXPAND_VALIDATORS.get(key)
+    if validator and not validator(value):
+        logger.warning(f"expand 配置 {key}={value} 不合法，使用默认值 {default}")
+        return default
+
+    return value
+
+
 @dataclass
 class AgentRuntimeConfig:
     """Agent 运行时配置（合并 agent_config + resource + sys_config）。"""
@@ -44,6 +97,7 @@ class AgentRuntimeConfig:
     agent_id: int | None = None
     agent_name: str = ""
     agent_handle: str = ""
+    engine_type: str = "nl2sql"  # 从 da_data_source 推导: nl2sql / knowledge / hybrid
 
     # LLM 配置（来自 agent_config.model 分区 + sys_resource provider）
     llm_provider: str = ""
@@ -77,6 +131,13 @@ class AgentRuntimeConfig:
     execute_row_limit: int = 200
     execute_timeout: int = 30
     enable_summarize: bool = False
+
+    # 纠错增强配置
+    max_execute_fix_retries: int = 2
+    enable_empty_analysis: bool = True
+    enable_enum_validate: bool = True
+    enable_result_check: bool = True
+    enable_timeout_fallback: bool = False
 
     # 结构化配置（from sys_config JSON，hot-reload 可更新）
     collection_search_config: dict = field(default_factory=dict)
@@ -207,6 +268,7 @@ class AgentConfigLoader:
                 config.agent_name = agent_info.get("name", "")
                 config.agent_handle = agent_info.get("handle", "")
                 config.token = agent_info.get("token", "")
+                config.engine_type = self._derive_engine_type(agent_id)
 
                 agent_configs = self._load_agent_configs(agent_id)
                 agent_refs = self._load_agent_refs(agent_id)
@@ -249,11 +311,39 @@ class AgentConfigLoader:
                     "SELECT name, handle, status, token FROM da_agent WHERE id = :id"
                 ), {"id": agent_id}).fetchone()
             if row:
-                return {"name": row[0], "handle": row[1], "status": row[2], "token": row[3] or ""}
+                return {
+                    "name": row[0], "handle": row[1], "status": row[2],
+                    "token": row[3] or "",
+                }
             return None
         except Exception as e:
             logger.warning(f"加载 Agent 信息失败: {e}")
             return None
+
+    def _derive_engine_type(self, agent_id: int) -> str:
+        """从 da_data_source 推导引擎类型。
+
+        source_type=1 (业务库) → nl2sql 能力
+        source_type=2 (知识库) → knowledge 能力
+        两者都有 → hybrid
+        """
+        try:
+            with self.engine.connect() as conn:
+                rows = conn.execute(text(
+                    "SELECT DISTINCT source_type FROM da_data_source "
+                    "WHERE agent_id = :id AND status = 1"
+                ), {"id": agent_id}).fetchall()
+            types = {row[0] for row in rows}
+            has_db = 1 in types
+            has_kb = 2 in types
+            if has_db and has_kb:
+                return "hybrid"
+            if has_kb:
+                return "knowledge"
+            return "nl2sql"
+        except Exception as e:
+            logger.warning(f"推导 engine_type 失败: {e}，默认 nl2sql")
+            return "nl2sql"
 
     def _load_agent_configs(self, agent_id: int) -> dict[str, dict]:
         """加载 Agent 分段配置 → {section: config_dict}"""
@@ -502,9 +592,69 @@ class AgentConfigLoader:
             if "enable_summarize" in flow_cfg:
                 v = flow_cfg["enable_summarize"]
                 config.enable_summarize = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+            if "max_execute_fix_retries" in flow_cfg:
+                try:
+                    config.max_execute_fix_retries = int(flow_cfg["max_execute_fix_retries"])
+                except (ValueError, TypeError):
+                    pass
+            for bool_key in ("enable_empty_analysis", "enable_enum_validate", "enable_result_check", "enable_timeout_fallback"):
+                if bool_key in flow_cfg:
+                    v = flow_cfg[bool_key]
+                    setattr(config, bool_key, v if isinstance(v, bool) else str(v).lower() in ("true", "1"))
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)
+
+        # expand 分区（扩展配置，覆盖优先级低于显式字段）
+        expand_cfg = agent_configs.get("expand", {})
+        if expand_cfg:
+            # 收集已由 model/prompt/retrieval/flow 显式设置的属性名
+            explicit_keys: set[str] = set()
+            # model 分区: config JSON key → config 属性名（不一致的需要映射）
+            _model_key_map = {
+                "provider": "llm_provider", "model": "llm_model",
+                "temperature": "llm_temperature", "api_key": "llm_api_key",
+                "base_url": "llm_base_url",
+            }
+            model_cfg_keys = agent_configs.get("model", {})
+            for json_key, attr_name in _model_key_map.items():
+                if json_key in model_cfg_keys:
+                    explicit_keys.add(attr_name)
+            if "max_fix_retries" in model_cfg_keys:
+                explicit_keys.add("max_fix_retries")
+            # prompt/retrieval/flow 分区: key 与属性名一致，直接收集
+            for section in ("prompt", "retrieval", "flow"):
+                for k in agent_configs.get(section, {}):
+                    if hasattr(config, k):
+                        explicit_keys.add(k)
+
+            self._apply_expand(config, expand_cfg, explicit_keys)
+
+    @staticmethod
+    def _apply_expand(config: AgentRuntimeConfig, expand_cfg: dict, explicit_keys: set[str] | None = None):
+        """将 expand 分区的扩展配置应用到 AgentRuntimeConfig。
+
+        只覆盖 Agent 显式字段未设置的值（显式字段 > expand）。
+        未知 key 记 warning 但不拦截。
+
+        Args:
+            config: 运行时配置对象
+            expand_cfg: expand 分区 dict
+            explicit_keys: 已由 model/prompt/retrieval/flow 显式设置的属性名集合
+        """
+        explicit_keys = explicit_keys or set()
+        for key, value in expand_cfg.items():
+            # 显式字段优先：已由其他分区设置的 key 不被 expand 覆盖
+            if key in explicit_keys:
+                logger.debug(f"expand 配置 {key}={value} 被显式字段覆盖，已跳过")
+                continue
+            validated = get_expand(expand_cfg, key, default=None)
+            if validated is None:
+                continue
+            if hasattr(config, key):
+                setattr(config, key, validated)
+            else:
+                logger.warning(f"expand 配置 {key}={value} 无对应 AgentRuntimeConfig 字段，已忽略")
 
     def _merge_collection_overrides(
         self,
@@ -637,6 +787,7 @@ class AgentConfigLoader:
                 f"    ID:       {config.agent_id}",
                 f"    Name:     {config.agent_name}",
                 f"    Handle:   {config.agent_handle}",
+                f"    Engine:   {config.engine_type} (derived from da_data_source)",
             ]
 
         lines += [

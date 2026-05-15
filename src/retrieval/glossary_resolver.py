@@ -54,6 +54,7 @@ class GlossaryResolver:
         query: str,
         top_k: int = 5,
         score_threshold: float = GLOSSARY_SCORE_THRESHOLD,
+        metadata_filter: dict | None = None,
     ) -> dict:
         """
         通过混合检索匹配用户提问中的业务术语。
@@ -62,6 +63,7 @@ class GlossaryResolver:
             query: 用户原始查询
             top_k: 最多返回的术语数量
             score_threshold: 分数阈值比例，低于 max_score * threshold 的匹配被过滤
+            metadata_filter: 任意 KV 过滤
 
         Returns:
             dict: enriched_query, business_context, matched_terms
@@ -77,6 +79,17 @@ class GlossaryResolver:
                 "matched_terms": [],
             }
 
+        # 构建 metadata 过滤表达式
+        filter_expr = None
+        if metadata_filter:
+            parts = []
+            for key, value in metadata_filter.items():
+                parts.append(
+                    f'(metadata["{key}"] == "{value}"'
+                    f' or not exists metadata["{key}"])'
+                )
+            filter_expr = " and ".join(parts) if parts else None
+
         # 编码查询（glossary instruction）
         q_dense = self.embedding.encode_query(query, collection_type="glossary")
 
@@ -87,6 +100,7 @@ class GlossaryResolver:
             ranker=self.search_params.ranker,
             recall_k=self.search_params.recall_limit,
             output_fields=["term", "definition", "sql_hint", "related_tables", "related_columns"],
+            filter_expr=filter_expr,
             ef_search=self.ef_search,
         )
 

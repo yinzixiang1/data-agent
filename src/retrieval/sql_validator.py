@@ -237,6 +237,121 @@ class SQLValidator:
             return value.decode("utf-8", errors="replace")
         return str(value)
 
+    @staticmethod
+    def extract_where_values(sql: str) -> list[dict]:
+        """提取 WHERE/HAVING 子句中的等值条件。
+
+        Returns:
+            [{"column": "status", "operator": "=", "value": "success"}, ...]
+        """
+        conditions = []
+        # col = 'val' 或 col = "val"
+        for m in re.finditer(r"`?(\w+)`?\s*=\s*['\"]([^'\"]+)['\"]", sql):
+            conditions.append({"column": m.group(1), "operator": "=", "value": m.group(2)})
+        # col = 123 (纯数字)
+        for m in re.finditer(r"`?(\w+)`?\s*=\s*(\d+)(?!\w)", sql):
+            col = m.group(1)
+            # 排除 LIMIT/OFFSET/JOIN ON 中的数字
+            if col.upper() not in ("LIMIT", "OFFSET", "INTERVAL"):
+                conditions.append({"column": col, "operator": "=", "value": m.group(2)})
+        return conditions
+
+    @staticmethod
+    def validate_enum_values(where_values: list[dict], enum_hits: list[dict]) -> list[dict]:
+        """将 WHERE 条件中的值与枚举定义交叉校验。
+
+        enum_hits 是扁平列表，每条表示一个枚举值：
+            {"column_name": "status", "sql_value": "1", "enum_label_cn": "成功", ...}
+        需要先按 column_name 分组再校验。
+
+        Args:
+            where_values: extract_where_values 的输出
+            enum_hits: RAG 检索到的枚举信息（扁平列表）
+
+        Returns:
+            不匹配的条件列表，每条含 column, sql_value, expected_values, suggestion
+        """
+        # 按 column_name 分组
+        from collections import defaultdict
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        for e in enum_hits:
+            col = (e.get("column_name") or "").lower()
+            if col:
+                grouped[col].append(e)
+
+        mismatches = []
+        for cond in where_values:
+            col_key = cond["column"].lower()
+            if col_key not in grouped:
+                continue
+            col_enums = grouped[col_key]
+            valid_values = {str(e.get("sql_value", "")) for e in col_enums}
+            if cond["value"] in valid_values:
+                continue
+            # 尝试通过中文标签匹配
+            label_map = {e.get("enum_label_cn", ""): str(e.get("sql_value", "")) for e in col_enums if e.get("enum_label_cn")}
+            suggestion = ""
+            if cond["value"] in label_map:
+                suggestion = f"应使用 {cond['column']} = {label_map[cond['value']]} 表示'{cond['value']}'"
+            expected_str = ", ".join(f"{e.get('sql_value', '')}={e.get('enum_label_cn', '')}" for e in col_enums[:10])
+            mismatches.append({
+                "column": cond["column"],
+                "sql_value": cond["value"],
+                "expected_values": expected_str,
+                "suggestion": suggestion,
+            })
+        return mismatches
+
+    @staticmethod
+    def check_result_anomalies(question: str, sql: str, columns: list[str], rows: list[list]) -> list[str]:
+        """规则型预检：快速发现查询结果中的明显异常。
+
+        Returns:
+            list[str]: 异常描述列表，无异常时为空
+        """
+        warnings = []
+
+        # 1. 聚合列出现负数
+        for i, col in enumerate(columns):
+            if any(kw in col.lower() for kw in ("count", "sum", "total", "amount")):
+                for row in rows:
+                    try:
+                        if row[i] not in (None, "") and float(row[i]) < 0:
+                            warnings.append(f"列 {col} 存在负数值，聚合结果可能有误")
+                            break
+                    except (ValueError, TypeError):
+                        pass
+
+        # 2. 问时间范围但 SQL 无时间条件
+        time_keywords = ["本月", "今天", "本周", "今日", "当月", "昨天", "昨日"]
+        if any(kw in question for kw in time_keywords):
+            if not re.search(r"WHERE.*(?:date|time|created|updated|create_time|complete_time)", sql, re.IGNORECASE):
+                warnings.append("问题涉及时间范围，但 SQL 未包含时间条件")
+
+        # 3. 预期多行但只有 1 行
+        multi_keywords = [r"排名", r"top\s*\d", r"分组", r"按.*统计", r"各", r"每"]
+        if len(rows) == 1 and any(re.search(kw, question, re.IGNORECASE) for kw in multi_keywords):
+            warnings.append("预期多行结果但仅返回 1 行，聚合粒度可能有误")
+
+        return warnings
+
+    @staticmethod
+    def simplify_sql_for_timeout(sql: str, level: int) -> str | None:
+        """按级别逐步简化 SQL 以应对超时。
+
+        level 1: 缩小 LIMIT 到 50
+        level 2: 移除 ORDER BY（保留 LIMIT）
+        level 3: 返回 None（需 LLM 介入）
+        """
+        if level == 1:
+            if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
+                return re.sub(r"\bLIMIT\s+\d+", "LIMIT 50", sql, flags=re.IGNORECASE)
+            return sql.rstrip().rstrip(";") + " LIMIT 50"
+        if level == 2:
+            simplified = re.sub(r"\bORDER\s+BY\s+.+?(?=\bLIMIT\b|\bUNION\b|;|\s*$)", "", sql, flags=re.IGNORECASE | re.DOTALL)
+            return simplified.strip() if simplified.strip() != sql.strip() else None
+        return None
+
     def validate(self, llm_response: str) -> dict:
         """
         从 LLM 回复中提取 SQL 并执行 EXPLAIN 校验（extract_sql + explain 的组合）。

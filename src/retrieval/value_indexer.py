@@ -63,6 +63,7 @@ class ValueIndexer:
                 "table_name": d["table_name"],
                 "column_name": d["column_name"],
                 "biz_line": d.get("biz_line", ""),
+                "metadata": d.get("metadata", {}),
                 "enum_code": d["enum_code"],
                 "enum_label_cn": d["enum_label_cn"],
                 "sql_value": d["sql_value"],
@@ -115,6 +116,7 @@ class ValueIndexer:
         query: str,
         top_k_per_entity: int = 3,
         biz_line: str | None = None,
+        metadata_filter: dict | None = None,
     ) -> list[dict]:
         """
         对 query 中的候选实体做 BM25 匹配。
@@ -123,6 +125,7 @@ class ValueIndexer:
             query: 用户原始查询
             top_k_per_entity: 每个候选实体最多返回的匹配数
             biz_line: 业务线过滤，为空则不过滤
+            metadata_filter: 任意 KV 过滤
 
         Returns:
             list[dict]: 按 score 降序，每条包含:
@@ -137,7 +140,16 @@ class ValueIndexer:
         if not candidates:
             return []
 
-        filter_expr = f'biz_line == "{biz_line}" or biz_line == "sys"' if biz_line else None
+        parts = []
+        if biz_line:
+            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys")')
+        if metadata_filter:
+            for key, value in metadata_filter.items():
+                parts.append(
+                    f'(metadata["{key}"] == "{value}"'
+                    f' or not exists metadata["{key}"])'
+                )
+        filter_expr = " and ".join(parts) if parts else None
         results = []
         seen: set[tuple] = set()
 

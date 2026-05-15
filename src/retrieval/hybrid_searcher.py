@@ -74,13 +74,21 @@ class HybridSearcher:
     def _ef_search(self) -> int:
         return self.config.index_build_config.get("hnsw", {}).get("ef_search", 64)
 
-    def _biz_filter(self, biz_line: str | None) -> str | None:
-        """生成 biz_line 过滤表达式，sys 业务线的数据不被过滤。"""
-        if not biz_line:
-            return None
-        return f'biz_line == "{biz_line}" or biz_line == "sys"'
+    @staticmethod
+    def _build_filter(biz_line: str = "", metadata_filter: dict | None = None) -> str | None:
+        """构建 Milvus 过滤表达式，支持 biz_line + 任意 metadata KV 组合过滤。"""
+        parts = []
+        if biz_line:
+            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys")')
+        if metadata_filter:
+            for key, value in metadata_filter.items():
+                parts.append(
+                    f'(metadata["{key}"] == "{value}"'
+                    f' or not exists metadata["{key}"])'
+                )
+        return " and ".join(parts) if parts else None
 
-    def search(self, query: str, top_k: int = 5, biz_line: str | None = None) -> list[dict]:
+    def search(self, query: str, top_k: int = 5, biz_line: str | None = None, metadata_filter: dict | None = None) -> list[dict]:
         """
         表级 + 列级混合检索，融合枚举反哺和关联表补全。
 
@@ -100,7 +108,7 @@ class HybridSearcher:
                 hit_by_column, schema
         """
         csc = self.config.collection_search_config
-        filter_expr = self._biz_filter(biz_line)
+        filter_expr = self._build_filter(biz_line or "", metadata_filter)
 
         # ── 表级混合检索 ──
         table_params = get_search_params(csc, "table")
@@ -260,7 +268,7 @@ class HybridSearcher:
             table_scores[exchange_table] = max_score * 0.8
             logger.info(f"汇率表意图检测({trigger}): 注入 {exchange_table} (score={max_score * 0.8:.4f})")
 
-    def search_enums(self, query: str, top_k: int = 8, biz_line: str | None = None) -> list[dict]:
+    def search_enums(self, query: str, top_k: int = 8, biz_line: str | None = None, metadata_filter: dict | None = None) -> list[dict]:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
 
@@ -268,6 +276,7 @@ class HybridSearcher:
             query: 用户原始查询
             top_k: 返回的最大枚举命中数
             biz_line: 业务线过滤，为空则不过滤
+            metadata_filter: 任意 KV 过滤
 
         Returns:
             list[dict]: table_name, column_name, enum_label_cn, sql_value, score
@@ -277,7 +286,7 @@ class HybridSearcher:
 
         enum_params = get_search_params(self.config.collection_search_config, "enum")
         q_dense = self.embedding.encode_query(query, "enum")
-        filter_expr = self._biz_filter(biz_line)
+        filter_expr = self._build_filter(biz_line or "", metadata_filter)
 
         results = self.enum_index.hybrid_search(
             q_dense,

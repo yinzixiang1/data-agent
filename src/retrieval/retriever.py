@@ -224,6 +224,7 @@ class SchemaRetriever:
         fewshot_k: int | None = None,
         glossary_score_threshold: float | None = None,
         biz_line: str | None = None,
+        metadata_filter: dict | None = None,
     ) -> RetrievalResult:
         """
         完整 RAG 检索流程。
@@ -266,19 +267,19 @@ class SchemaRetriever:
         resolve_kwargs = {}
         if glossary_score_threshold is not None:
             resolve_kwargs["score_threshold"] = glossary_score_threshold
-        glossary_result = self.glossary_resolver.resolve(user_query, **resolve_kwargs)
+        glossary_result = self.glossary_resolver.resolve(user_query, metadata_filter=metadata_filter, **resolve_kwargs)
         enriched_query = glossary_result["enriched_query"]
         business_context = glossary_result["business_context"]
 
         # 2. Value 匹配 (Schema Linking)
         value_hits = []
         if self.value_indexer:
-            value_hits = self.value_indexer.match_values(user_query, biz_line=biz_line)
+            value_hits = self.value_indexer.match_values(user_query, biz_line=biz_line, metadata_filter=metadata_filter)
 
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
         rerank_k = table_params.rerank_top_n if cfg.enable_reranker and table_params.rerank else top_k
-        candidates = self.searcher.search(enriched_query, top_k=max(rerank_k, top_k), biz_line=biz_line)
+        candidates = self.searcher.search(enriched_query, top_k=max(rerank_k, top_k), biz_line=biz_line, metadata_filter=metadata_filter)
 
         # 4. Reranker 精排
         reranker = get_reranker()
@@ -304,7 +305,7 @@ class SchemaRetriever:
                     logger.info(f"Reranker 后补回关联表: {related}")
 
         # 6. 枚举值检索
-        enum_hits = self.searcher.search_enums(user_query, biz_line=biz_line)
+        enum_hits = self.searcher.search_enums(user_query, biz_line=biz_line, metadata_filter=metadata_filter)
 
         # 7. Few-shot 示例检索
         hit_tables = [c["table_name"] for c in candidates]
@@ -312,6 +313,7 @@ class SchemaRetriever:
             query=user_query,
             tables=hit_tables,
             top_k=fewshot_k,
+            metadata_filter=metadata_filter,
         )
 
         # 8. Prompt 组装

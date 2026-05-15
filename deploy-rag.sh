@@ -4,7 +4,7 @@
 #   --rebuild     启动后全量重建向量索引（修改了语义层数据时使用）
 #   --sync-deps   同步依赖（pyproject.toml 变更时使用，uv pip install）
 #
-# 流程: rsync 源码 → (可选)安装依赖 → 停止旧进程 → 启动新进程
+# 流程: 打包源码 → S3 上传 → node2 S3 下载 → 解压 → (可选)安装依赖 → 停止旧进程 → 启动新进程
 #
 # 环境: node2 使用 uv + .venv 管理 Python 依赖
 
@@ -17,6 +17,9 @@ BASTION="rocky@13.228.165.213"
 NODE="ec2-user@10.2.2.16"
 REMOTE_DIR="data-agen"
 PROXY_CMD="ssh -o StrictHostKeyChecking=no -i $BASTION_KEY -W %h:%p $BASTION"
+
+S3_BUCKET="sg-risk-bucket-sandbox"
+S3_KEY="lumen-deploy/data-agen-deploy.tar.gz"
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -34,55 +37,58 @@ do_ssh() {
   ssh -o StrictHostKeyChecking=no -o "ProxyCommand=$PROXY_CMD" -i "$NODE_KEY" "$NODE" "$@"
 }
 
-do_rsync() {
-  rsync -avz --delete \
-    -e "ssh -o StrictHostKeyChecking=no -o 'ProxyCommand=$PROXY_CMD' -i $NODE_KEY" \
-    --exclude '__pycache__/' \
-    --exclude '*.pyc' \
-    --exclude '.git/' \
-    --exclude '.idea/' \
-    --exclude '.vscode/' \
-    --exclude '.DS_Store' \
-    --exclude '.env' \
-    --exclude '.env.*' \
-    --exclude 'milvus/' \
-    --exclude 'index_store/' \
-    --exclude 'config/' \
-    --exclude '*.egg-info/' \
-    --exclude 'dist/' \
-    --exclude 'build/' \
-    --exclude '*.bin' \
-    --exclude '*.safetensors' \
-    --exclude 'logs/' \
-    --exclude 'venv/' \
-    --exclude '.venv/' \
-    --exclude 'models/' \
-    "$@"
-}
+echo "=== 1. 打包源码 ==="
+tar czf /tmp/data-agen-deploy.tar.gz \
+  --no-xattrs \
+  --exclude='.env*' \
+  --exclude='__pycache__' \
+  --exclude='.venv' \
+  --exclude='logs' \
+  --exclude='.git' \
+  --exclude='*.pyc' \
+  --exclude='milvus' \
+  --exclude='index_store' \
+  --exclude='config' \
+  --exclude='*.egg-info' \
+  --exclude='dist' \
+  --exclude='build' \
+  --exclude='*.bin' \
+  --exclude='*.safetensors' \
+  --exclude='models' \
+  --exclude='.idea' \
+  --exclude='.vscode' \
+  --exclude='.DS_Store' \
+  -C "$PROJECT_DIR" .
+echo "包大小: $(du -h /tmp/data-agen-deploy.tar.gz | cut -f1)"
 
-echo "=== 1. 同步源码到 node2 ==="
-do_rsync "$PROJECT_DIR/" "$NODE:~/$REMOTE_DIR/"
+echo ""
+echo "=== 2. 上传到 S3 ==="
+aws s3 cp /tmp/data-agen-deploy.tar.gz "s3://$S3_BUCKET/$S3_KEY"
+rm -f /tmp/data-agen-deploy.tar.gz
+
+echo ""
+echo "=== 3. node2 从 S3 拉取并解压 ==="
+do_ssh "aws s3 cp s3://$S3_BUCKET/$S3_KEY /tmp/data-agen-deploy.tar.gz && cd ~/$REMOTE_DIR && tar xzf /tmp/data-agen-deploy.tar.gz --exclude='.env*' && rm -f /tmp/data-agen-deploy.tar.gz && echo '源码已更新'"
 
 # 可选: 同步依赖
 if [ "$SYNC_DEPS" = true ]; then
   echo ""
-  echo "=== 2.5 安装/更新依赖 (uv) ==="
+  echo "=== 3.5 安装/更新依赖 (uv) ==="
   do_ssh "export PATH=\$HOME/.local/bin:\$PATH && cd ~/$REMOTE_DIR && uv pip install --python .venv/bin/python . pymilvus langchain langchain-openai langchain-anthropic anthropic"
 fi
 
 echo ""
-echo "=== 3. 停止旧进程 ==="
+echo "=== 4. 停止旧进程 ==="
 do_ssh "PID=\$(lsof -ti :9090 2>/dev/null); if [ -n \"\$PID\" ]; then kill \$PID && echo \"已停止旧进程 (PID: \$PID)\"; else echo '无运行中的进程'; fi" || true
 sleep 3
 
 echo ""
-echo "=== 4. 启动 RAG 引擎 ==="
-# nohup + setsid + stdin 重定向 /dev/null，确保 SSH 退出后进程不受影响
+echo "=== 5. 启动 RAG 引擎 ==="
 do_ssh "bash -c 'mkdir -p ~/$REMOTE_DIR/logs && cd ~/$REMOTE_DIR && export NL2SQL_ENV=prod CONFIG_SOURCE=mysql CONFIG_PROFILE=1 $REBUILD && nohup setsid .venv/bin/uvicorn app:app --host 0.0.0.0 --port 9090 > logs/app.log 2>&1 < /dev/null & disown'"
 sleep 5
 
 echo ""
-echo "=== 5. 验证启动 ==="
+echo "=== 6. 验证启动 ==="
 do_ssh "lsof -i :9090 2>/dev/null | head -3 && echo '' && tail -10 ~/$REMOTE_DIR/logs/app.log 2>/dev/null" || echo "启动可能失败，请检查日志"
 
 if [ -n "$REBUILD" ]; then
