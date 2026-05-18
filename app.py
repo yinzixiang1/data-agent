@@ -483,12 +483,11 @@ app.add_middleware(
 # ── 请求/响应模型 ──
 
 class QueryMetadata(BaseModel):
-    business: str = Field(default="", description="业务线: banking/issuing/acquiring/payment")
     caller: str = Field(default="", description="调用方标识")
     user_id: str = Field(default="", description="外部用户唯一标识")
     user_name: str = Field(default="", description="外部用户显示名")
     trace_id: str = Field(default="", description="链路追踪 ID")
-    metadata_filter: dict | None = Field(default=None, description="通用 KV 过滤 (如 {\"scenario\":\"bi\"}), 用于语义层 + 执行层隔离")
+    filter: dict | None = Field(default=None, description="通用 KV 过滤 (如 {\"business\":\"banking\",\"scenario\":\"bi\"}), 用于语义层 + 执行层隔离")
 
 
 class QueryRequest(BaseModel):
@@ -1284,14 +1283,15 @@ async def _handle_knowledge_query(
         log_id = None
         if query_logger:
             meta = req.metadata or QueryMetadata()
+            _kf = meta.filter or {}
             log_id = query_logger.log(
                 session_id=session_id,
                 user_query=req.question,
                 is_success=True,
                 execution_time_ms=elapsed_ms,
                 agent_id=req.agent_id,
-                scenario=(meta.metadata_filter or {}).get("scenario", ""),
-                business=meta.business,
+                scenario=_kf.get("scenario", ""),
+                business=_kf.get("business", ""),
                 caller=meta.caller,
                 user_id=meta.user_id,
                 user_name=meta.user_name,
@@ -1361,8 +1361,9 @@ async def query(req: QueryRequest, request: Request):
 
     meta = req.metadata or QueryMetadata()
 
-    # 查询缓存检查（context_key = biz_line + metadata_filter，不同上下文互不命中）
-    _cache_ctx = f"{meta.business}|{json.dumps(meta.metadata_filter, sort_keys=True) if meta.metadata_filter else ''}"
+    # 查询缓存检查（context_key = filter，不同上下文互不命中）
+    _filter = meta.filter or {}
+    _cache_ctx = f"{json.dumps(_filter, sort_keys=True) if _filter else ''}"
     if query_cache:
         cached = query_cache.get(req.question, context_key=_cache_ctx)
         if cached:
@@ -1394,8 +1395,8 @@ async def query(req: QueryRequest, request: Request):
         result = run_query(
             req.question, config, client,
             history_summary=req.history_summary,
-            biz_line=meta.business,
-            metadata_filter=meta.metadata_filter,
+            biz_line=_filter.get("business", ""),
+            metadata_filter=_filter or None,
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -1426,8 +1427,8 @@ async def query(req: QueryRequest, request: Request):
                 execution_time_ms=elapsed_ms,
                 retry_count=result["retry_count"],
                 agent_id=req.agent_id,
-                scenario=(meta.metadata_filter or {}).get("scenario", ""),
-                business=meta.business,
+                scenario=_filter.get("scenario", ""),
+                business=_filter.get("business", ""),
                 caller=meta.caller,
                 user_id=meta.user_id,
                 user_name=meta.user_name,
@@ -1462,6 +1463,7 @@ async def query(req: QueryRequest, request: Request):
         # 异常也记录日志
         log_id = None
         meta = req.metadata or QueryMetadata()
+        _ef = meta.filter or {}
         if query_logger:
             log_id = query_logger.log(
                 session_id=session_id,
@@ -1469,8 +1471,8 @@ async def query(req: QueryRequest, request: Request):
                 is_success=False,
                 execution_time_ms=elapsed_ms,
                 agent_id=req.agent_id,
-                scenario=(meta.metadata_filter or {}).get("scenario", ""),
-                business=meta.business,
+                scenario=_ef.get("scenario", ""),
+                business=_ef.get("business", ""),
                 caller=meta.caller,
                 user_id=meta.user_id,
                 user_name=meta.user_name,
