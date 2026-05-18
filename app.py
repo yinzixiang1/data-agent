@@ -450,6 +450,12 @@ async def lifespan(app: FastAPI):
     if CONFIG_SOURCE == "mysql" and CONFIG_PROFILE:
         _register_engine_url(int(CONFIG_PROFILE))
 
+    # 初始化请求参数（注册到 admin DB / 从 admin DB 拉取）
+    if CONFIG_SOURCE == "mysql":
+        from src.request_params import init_request_params
+        param_source = os.getenv("PARAM_SOURCE", "local")
+        init_request_params(param_source, agent_id=int(CONFIG_PROFILE) if CONFIG_PROFILE else None)
+
     logger.info("NL2SQL Data Agent 服务启动完成")
 
     yield
@@ -1373,16 +1379,10 @@ async def query(req: QueryRequest, request: Request):
     if req.enable_explain is not None:
         overrides["enable_explain"] = req.enable_explain
     if req.expand_info:
-        # expand_info 支持覆盖的 config 属性白名单
-        _EXPAND_INFO_ALLOWED = {
-            "enable_execute", "enable_summarize", "enable_explain",
-            "execute_row_limit", "execute_timeout",
-            "max_execute_fix_retries", "enable_empty_analysis",
-            "enable_enum_validate", "enable_result_check", "enable_timeout_fallback",
-        }
+        from src.request_params import ALLOWED_KEYS
         from src.retrieval.agent_config import get_expand
         for key in req.expand_info:
-            if key in _EXPAND_INFO_ALLOWED and hasattr(config, key):
+            if key in ALLOWED_KEYS and hasattr(config, key):
                 field_type = type(getattr(config, key))
                 cast = field_type if field_type in (int, float, bool) else None
                 val = get_expand(req.expand_info, key, default=getattr(config, key), cast=cast)
