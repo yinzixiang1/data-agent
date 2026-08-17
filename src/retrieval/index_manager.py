@@ -27,6 +27,7 @@ import logging
 from pymilvus import DataType
 
 from src.retrieval.document_builder import DocumentBuilder
+from src.retrieval.collection_names import agent_collection_name
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.fewshot_selector import FewShotSelector
@@ -114,6 +115,12 @@ class IndexManager:
     索引构建管理器 — 全量构建 6 个 Milvus Collection。
     """
 
+    def __init__(self, agent_id: int | None = None):
+        self.agent_id = agent_id
+
+    def _name(self, base_name: str) -> str:
+        return agent_collection_name(base_name, self.agent_id)
+
     def build(
         self,
         schemas: list[dict],
@@ -151,7 +158,7 @@ class IndexManager:
         )
 
         # 2. 表级索引
-        table_index = MilvusIndex(TABLE_COLLECTION, dim=dim)
+        table_index = MilvusIndex(self._name(TABLE_COLLECTION), dim=dim)
         table_index.create(TABLE_FIELDS, index_config=idx_cfg)
         if table_docs:
             table_texts = [d["text"] for d in table_docs]
@@ -176,7 +183,7 @@ class IndexManager:
         table_biz_map = {s["table_name"]: s.get("biz_line", "") for s in schemas}
         table_db_map = {s["table_name"]: s.get("database", "") for s in schemas}
         table_meta_map = {s["table_name"]: s.get("metadata", {}) for s in schemas}
-        column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
+        column_index = MilvusIndex(self._name(COLUMN_COLLECTION), dim=dim)
         column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
         if column_docs:
             column_texts = [d["text"] for d in column_docs]
@@ -199,7 +206,7 @@ class IndexManager:
             column_index.insert(dense_vecs, column_texts, column_rows)
 
         # 4. 枚举值索引
-        enum_index = MilvusIndex(ENUM_COLLECTION, dim=dim)
+        enum_index = MilvusIndex(self._name(ENUM_COLLECTION), dim=dim)
         enum_index.create(ENUM_FIELDS, index_config=idx_cfg)
         if enum_docs:
             enum_texts = [d["text"] for d in enum_docs]
@@ -221,18 +228,18 @@ class IndexManager:
             enum_index.insert(dense_vecs, enum_texts, enum_rows)
 
         # 5. 值级索引 (BM25-only)
-        value_index = MilvusIndex(VALUE_COLLECTION, has_dense=False)
+        value_index = MilvusIndex(self._name(VALUE_COLLECTION), has_dense=False)
         value_index.create(VALUE_FIELDS, index_config=idx_cfg)
         value_idx = ValueIndexer(value_index)
         value_idx.build_index(value_docs)
 
         # 6. Few-shot 索引
-        fewshot_index = MilvusIndex(FEWSHOT_COLLECTION, dim=dim)
+        fewshot_index = MilvusIndex(self._name(FEWSHOT_COLLECTION), dim=dim)
         fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
         fewshot.build_index(fewshot_examples or [], index_config=idx_cfg)
 
         # 7. 术语索引 (Dense + BM25 分离编码)
-        glossary_index = MilvusIndex(GLOSSARY_COLLECTION, dim=dim)
+        glossary_index = MilvusIndex(self._name(GLOSSARY_COLLECTION), dim=dim)
         glossary_index.create(GLOSSARY_FIELDS, index_config=idx_cfg)
         if glossary:
             dense_texts = []
@@ -293,15 +300,15 @@ class IndexManager:
         """
         dim = embedding.dim
 
-        table_index = MilvusIndex(TABLE_COLLECTION, dim=dim)
-        column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
-        enum_index = MilvusIndex(ENUM_COLLECTION, dim=dim)
-        value_index = MilvusIndex(VALUE_COLLECTION, has_dense=False)
+        table_index = MilvusIndex(self._name(TABLE_COLLECTION), dim=dim)
+        column_index = MilvusIndex(self._name(COLUMN_COLLECTION), dim=dim)
+        enum_index = MilvusIndex(self._name(ENUM_COLLECTION), dim=dim)
+        value_index = MilvusIndex(self._name(VALUE_COLLECTION), has_dense=False)
         value_idx = ValueIndexer(value_index)
-        glossary_index = MilvusIndex(GLOSSARY_COLLECTION, dim=dim)
+        glossary_index = MilvusIndex(self._name(GLOSSARY_COLLECTION), dim=dim)
 
         # FewShotSelector 需要内存中的 examples + embeddings 用于 MMR
-        fewshot_index = MilvusIndex(FEWSHOT_COLLECTION, dim=dim)
+        fewshot_index = MilvusIndex(self._name(FEWSHOT_COLLECTION), dim=dim)
         fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
         examples = fewshot_examples or []
         if examples:
@@ -313,9 +320,18 @@ class IndexManager:
 
         table_schemas = {s["table_name"]: s for s in schemas}
 
-        counts = {name: MilvusIndex(name, dim=dim).count
-                  for name in [TABLE_COLLECTION, COLUMN_COLLECTION, ENUM_COLLECTION,
-                               VALUE_COLLECTION, FEWSHOT_COLLECTION, GLOSSARY_COLLECTION]}
+        collection_names = [
+            self._name(name)
+            for name in [
+                TABLE_COLLECTION,
+                COLUMN_COLLECTION,
+                ENUM_COLLECTION,
+                VALUE_COLLECTION,
+                FEWSHOT_COLLECTION,
+                GLOSSARY_COLLECTION,
+            ]
+        ]
+        counts = {name: MilvusIndex(name, dim=dim).count for name in collection_names}
         logger.info(f"已连接现有 Collection: {counts}")
 
         return {
@@ -358,7 +374,7 @@ class IndexManager:
             table_biz_map = {s["table_name"]: s.get("biz_line", "") for s in schemas}
             table_db_map = {s["table_name"]: s.get("database", "") for s in schemas}
 
-            table_index = MilvusIndex(TABLE_COLLECTION, dim=dim)
+            table_index = MilvusIndex(self._name(TABLE_COLLECTION), dim=dim)
             table_index.create(TABLE_FIELDS, index_config=idx_cfg)
             if table_docs:
                 table_texts = [d["text"] for d in table_docs]
@@ -379,7 +395,7 @@ class IndexManager:
                 table_index.insert(dense_vecs, table_texts, table_rows)
             result["table_index"] = table_index
 
-            column_index = MilvusIndex(COLUMN_COLLECTION, dim=dim)
+            column_index = MilvusIndex(self._name(COLUMN_COLLECTION), dim=dim)
             column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
             table_meta_map = {s["table_name"]: s.get("metadata", {}) for s in schemas}
             if column_docs:
@@ -408,7 +424,7 @@ class IndexManager:
         if "enum" in collections:
             logger.info("重建 enum 索引...")
             _, _, enum_docs = builder.build_all(schemas, enums)
-            enum_index = MilvusIndex(ENUM_COLLECTION, dim=dim)
+            enum_index = MilvusIndex(self._name(ENUM_COLLECTION), dim=dim)
             enum_index.create(ENUM_FIELDS, index_config=idx_cfg)
             if enum_docs:
                 enum_texts = [d["text"] for d in enum_docs]
@@ -434,7 +450,7 @@ class IndexManager:
         if "value" in collections:
             logger.info("重建 value 索引...")
             value_docs = builder.build_value_documents(enums or [])
-            value_index = MilvusIndex(VALUE_COLLECTION, has_dense=False)
+            value_index = MilvusIndex(self._name(VALUE_COLLECTION), has_dense=False)
             value_index.create(VALUE_FIELDS, index_config=idx_cfg)
             value_idx = ValueIndexer(value_index)
             value_idx.build_index(value_docs)
@@ -443,7 +459,7 @@ class IndexManager:
 
         if "fewshot" in collections:
             logger.info("重建 fewshot 索引...")
-            fewshot_index = MilvusIndex(FEWSHOT_COLLECTION, dim=dim)
+            fewshot_index = MilvusIndex(self._name(FEWSHOT_COLLECTION), dim=dim)
             fewshot = FewShotSelector(embedding, milvus_index=fewshot_index)
             fewshot.build_index(fewshot_examples or [], index_config=idx_cfg)
             result["fewshot_selector"] = fewshot
@@ -451,7 +467,7 @@ class IndexManager:
 
         if "glossary" in collections:
             logger.info("重建 glossary 索引...")
-            glossary_index = MilvusIndex(GLOSSARY_COLLECTION, dim=dim)
+            glossary_index = MilvusIndex(self._name(GLOSSARY_COLLECTION), dim=dim)
             glossary_index.create(GLOSSARY_FIELDS, index_config=idx_cfg)
             if glossary:
                 dense_texts = []

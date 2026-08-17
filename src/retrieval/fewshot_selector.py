@@ -20,7 +20,6 @@ Few-shot 示例检索 — Dense 检索 + 表重叠度加权 + MMR 多样性选�
     )
 """
 
-import json
 import logging
 
 import numpy as np
@@ -28,6 +27,7 @@ from pymilvus import DataType
 
 from src.retrieval.config import FEWSHOT_TOP_K, MMR_LAMBDA
 from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.embedding import Qwen3Embedding
 
 logger = logging.getLogger(__name__)
@@ -119,16 +119,7 @@ class FewShotSelector:
         if not self.examples:
             return []
 
-        # 构建 metadata 过滤表达式
-        filter_expr = None
-        if metadata_filter:
-            parts = []
-            for key, value in metadata_filter.items():
-                parts.append(
-                    f'(metadata["{key}"] == "{value}"'
-                    f' or not exists metadata["{key}"])'
-                )
-            filter_expr = " and ".join(parts) if parts else None
+        filter_expr = build_metadata_filter(metadata_filter=metadata_filter)
 
         # Dense 检索候选池
         q_dense = self.embedding.encode_query(query, collection_type="fewshot")

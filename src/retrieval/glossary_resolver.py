@@ -21,6 +21,7 @@ import logging
 from src.retrieval.config import GLOSSARY_SCORE_THRESHOLD
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.ranker_strategy import CollectionSearchParams
 
 logger = logging.getLogger(__name__)
@@ -79,16 +80,7 @@ class GlossaryResolver:
                 "matched_terms": [],
             }
 
-        # 构建 metadata 过滤表达式
-        filter_expr = None
-        if metadata_filter:
-            parts = []
-            for key, value in metadata_filter.items():
-                parts.append(
-                    f'(metadata["{key}"] == "{value}"'
-                    f' or not exists metadata["{key}"])'
-                )
-            filter_expr = " and ".join(parts) if parts else None
+        filter_expr = build_metadata_filter(metadata_filter=metadata_filter)
 
         # 编码查询（glossary instruction）
         q_dense = self.embedding.encode_query(query, collection_type="glossary")

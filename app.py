@@ -19,6 +19,7 @@ import time
 import logging
 import uuid
 import os
+import secrets
 import signal
 from datetime import date as _date
 
@@ -203,7 +204,7 @@ def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = No
             对于每个 key，meta_json 中不含该 key 的行视为公共数据（始终通过）。
     """
     if not agent_id:
-        return set()
+        raise RuntimeError("执行 SQL 必须绑定 Agent")
     try:
         eng = _get_mysql_engine()
         with eng.connect() as conn:
@@ -235,8 +236,8 @@ def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = No
         logger.info(f"Agent {agent_id} 授权数据库: {result}" + (f" (filter={metadata_filter})" if metadata_filter else ""))
         return result
     except Exception as e:
-        logger.warning(f"加载 Agent 授权数据库失败: {e}")
-        return set()
+        logger.error(f"加载 Agent 授权数据库失败: agent_id={agent_id}, error={e}")
+        raise RuntimeError("无法确认 Agent 的数据库授权范围") from e
 
 
 def load_doris_config(agent_id: int | None) -> dict:
@@ -366,6 +367,11 @@ async def lifespan(app: FastAPI):
             agent_id=int(profile) if profile else None
         )
 
+    if CONFIG_SOURCE == "mysql" and not agent_config.agent_id:
+        raise SystemExit(
+            "启动中止: mysql 配置模式必须通过 CONFIG_PROFILE 或 DEFAULT_AGENT_ID 绑定 Agent"
+        )
+
     # 打印基础设施配置（含 Agent 绑定的 Milvus 信息）
     print_infra_config(agent_config)
 
@@ -426,7 +432,10 @@ async def lifespan(app: FastAPI):
     # 初始化知识库检索器（knowledge / hybrid 模式）
     if engine_type in ("knowledge", "hybrid"):
         from src.retrieval.embedding import get_embedding
-        knowledge_retriever = KnowledgeRetriever(get_embedding())
+        knowledge_retriever = KnowledgeRetriever(
+            get_embedding(),
+            agent_id=agent_config.agent_id,
+        )
         knowledge_retriever.connect()
         logger.info(f"知识库检索器已就绪 (engine_type={engine_type})")
 
@@ -846,6 +855,17 @@ def run_query(
 
     final_sql = SQLValidator.extract_sql(answer) or ""
 
+    if final_sql:
+        read_only, read_only_error = SQLValidator.validate_read_only(final_sql)
+        if not read_only:
+            is_success = False
+            error_msg = read_only_error
+            trace_steps.append({
+                "step": "sql_read_only_guard",
+                "success": False,
+                "error": read_only_error,
+            })
+
     # NEED_CLARIFY: 模型认为问题模糊，需要澄清
     if not final_sql and clarify_msg:
         is_success = False
@@ -913,22 +933,35 @@ def run_query(
     summary = ""
 
     if final_sql and is_success and config.enable_execute and not _param_mode and validator:
-        # 授权数据库校验
-        referenced_dbs = SQLValidator.extract_databases(final_sql)
-        authorized_dbs = load_agent_databases(config.agent_id, metadata_filter=metadata_filter)
+        # 授权信息无法确认时必须拒绝执行，不能回退到环境变量权限。
+        referenced_dbs: set[str] = set()
+        authorized_dbs: set[str] = set()
+        try:
+            authorized_dbs = load_agent_databases(
+                config.agent_id,
+                metadata_filter=metadata_filter,
+            )
+            access_allowed, access_error, referenced_dbs = (
+                SQLValidator.validate_database_access(final_sql, authorized_dbs)
+            )
+            if not access_allowed:
+                execution_error = f"安全拦截: {access_error}"
+        except RuntimeError as e:
+            execution_error = f"安全拦截: {e}"
 
-        if authorized_dbs and referenced_dbs:
-            unauthorized = referenced_dbs - authorized_dbs
-            if unauthorized:
-                execution_error = f"安全拦截: 数据库 {', '.join(unauthorized)} 未在当前 Agent 的授权范围内"
-                logger.warning(f"数据库授权校验失败: 未授权={unauthorized}, 已授权={authorized_dbs}")
-                trace_steps.append({
-                    "step": "sql_execution",
-                    "success": False,
-                    "error": execution_error,
-                    "database": ", ".join(referenced_dbs),
-                    "duration_ms": 0,
-                })
+        if execution_error:
+            logger.warning(
+                f"数据库授权校验拒绝执行: agent_id={config.agent_id}, "
+                f"referenced={referenced_dbs}, authorized={authorized_dbs}, "
+                f"reason={execution_error}"
+            )
+            trace_steps.append({
+                "step": "sql_execution",
+                "success": False,
+                "error": execution_error,
+                "database": ", ".join(sorted(referenced_dbs)),
+                "duration_ms": 0,
+            })
 
         if not execution_error:
             t0 = _time.monotonic()
@@ -986,6 +1019,21 @@ def run_query(
                             break
 
                     # EXPLAIN 校验简化后的 SQL
+                    access_allowed, access_error, simplified_dbs = (
+                        SQLValidator.validate_database_access(simplified, authorized_dbs)
+                    )
+                    if not access_allowed:
+                        trace_steps.append({
+                            "step": "timeout_fallback",
+                            "level": level,
+                            "simplified_sql": simplified,
+                            "success": False,
+                            "error": f"安全拦截: {access_error}",
+                            "database": ", ".join(sorted(simplified_dbs)),
+                            "duration_ms": _elapsed_ms(t0),
+                        })
+                        break
+
                     simp_check = validator.explain(simplified)
                     if not simp_check["valid"]:
                         continue
@@ -1043,9 +1091,17 @@ def run_query(
                         break
 
                     # 白名单校验
-                    new_dbs = SQLValidator.extract_databases(new_sql)
-                    if authorized_dbs and (new_dbs - authorized_dbs):
-                        trace_steps.append({"step": "execution_fix", "attempt": exec_fix_i + 1, "success": False, "reason": "数据库未授权"})
+                    access_allowed, access_error, new_dbs = (
+                        SQLValidator.validate_database_access(new_sql, authorized_dbs)
+                    )
+                    if not access_allowed:
+                        trace_steps.append({
+                            "step": "execution_fix",
+                            "attempt": exec_fix_i + 1,
+                            "success": False,
+                            "reason": f"安全拦截: {access_error}",
+                            "database": ", ".join(sorted(new_dbs)),
+                        })
                         break
 
                     # EXPLAIN 校验
@@ -1261,7 +1317,7 @@ def _verify_token(request: Request, config: AgentRuntimeConfig):
     if not expected:
         raise HTTPException(status_code=401, detail="Agent token not configured")
     token = _extract_bearer_token(request)
-    if token != expected:
+    if not secrets.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing API token")
 
 
@@ -1270,7 +1326,7 @@ def _verify_admin_token(request: Request):
     if not DEFAULT_AGENT_TOKEN:
         raise HTTPException(status_code=401, detail="Admin token not configured")
     token = _extract_bearer_token(request)
-    if token != DEFAULT_AGENT_TOKEN:
+    if not secrets.compare_digest(token, DEFAULT_AGENT_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid or missing admin token")
 
 
@@ -1335,7 +1391,7 @@ async def _handle_knowledge_query(
                 user_query=req.question,
                 is_success=True,
                 execution_time_ms=elapsed_ms,
-                agent_id=req.agent_id,
+                agent_id=config.agent_id,
                 scenario=_kf.get("scenario", ""),
                 business=_kf.get("business", ""),
                 caller=meta.caller,
@@ -1378,17 +1434,23 @@ async def _handle_knowledge_query(
 
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
-    global agent_config, llm_client
-
     start_time = time.time()
     session_id = req.session_id or str(uuid.uuid4())[:8]
 
-    # 如果请求指定了 agent_id，动态加载该 Agent 的配置
+    if not agent_config or not llm_client:
+        raise HTTPException(status_code=503, detail="服务尚未完成初始化")
+
+    if req.agent_id is not None and req.agent_id != agent_config.agent_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"当前引擎绑定 Agent {agent_config.agent_id}，"
+                f"不能处理 Agent {req.agent_id} 的请求"
+            ),
+        )
+
     config = agent_config
     client = llm_client
-    if req.agent_id and (not agent_config or req.agent_id != agent_config.agent_id):
-        config = load_agent_config(agent_id=req.agent_id)
-        client = create_llm_client(config)
 
     # Token 鉴权
     _verify_token(request, config)
@@ -1407,9 +1469,21 @@ async def query(req: QueryRequest, request: Request):
 
     meta = req.metadata or QueryMetadata()
 
-    # 查询缓存检查（context_key = filter，不同上下文互不命中）
+    # 所有会影响回答的请求上下文都必须参与缓存隔离。
     _filter = meta.filter or {}
-    _cache_ctx = f"{json.dumps(_filter, sort_keys=True) if _filter else ''}"
+    _cache_ctx = json.dumps(
+        {
+            "agent_id": config.agent_id,
+            "filter": _filter,
+            "history_summary": req.history_summary,
+            "metadata_context": meta.context or {},
+            "expand_info": req.expand_info or {},
+            "enable_explain": req.enable_explain,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     if query_cache:
         cached = query_cache.get(req.question, context_key=_cache_ctx)
         if cached:
@@ -1458,7 +1532,12 @@ async def query(req: QueryRequest, request: Request):
                 "is_success": True,
                 "retry_count": result["retry_count"],
                 "error": "",
+                "context_summary": result.get("context_summary", ""),
                 "summary": result.get("summary", ""),
+                "query_result": result.get("query_result"),
+                "execution_error": result.get("execution_error", ""),
+                "script": result.get("script", ""),
+                "placeholder": result.get("placeholder", ""),
             }, context_key=_cache_ctx)
 
         # 记录查询日志
@@ -1473,7 +1552,7 @@ async def query(req: QueryRequest, request: Request):
                 is_success=result["is_success"],
                 execution_time_ms=elapsed_ms,
                 retry_count=result["retry_count"],
-                agent_id=req.agent_id,
+                agent_id=config.agent_id,
                 scenario=_filter.get("scenario", ""),
                 business=_filter.get("business", ""),
                 caller=meta.caller,
@@ -1521,7 +1600,7 @@ async def query(req: QueryRequest, request: Request):
                 user_query=req.question,
                 is_success=False,
                 execution_time_ms=elapsed_ms,
-                agent_id=req.agent_id,
+                agent_id=config.agent_id,
                 scenario=_ef.get("scenario", ""),
                 business=_ef.get("business", ""),
                 caller=meta.caller,
@@ -1578,7 +1657,14 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
     global agent_config, llm_client
 
     try:
-        agent_config = load_agent_config(agent_id=req.agent_id)
+        if req.agent_id is not None and agent_config and req.agent_id != agent_config.agent_id:
+            raise ValueError(
+                f"当前引擎绑定 Agent {agent_config.agent_id}，不能加载 Agent {req.agent_id}"
+            )
+        target_agent_id = req.agent_id
+        if target_agent_id is None and agent_config:
+            target_agent_id = agent_config.agent_id
+        agent_config = load_agent_config(agent_id=target_agent_id)
         llm_client = create_llm_client(agent_config)
 
         # 同步更新 retriever 和 searcher 的运行时配置
@@ -1586,6 +1672,8 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
             retriever.config = agent_config
             if retriever.searcher:
                 retriever.searcher.config = agent_config
+        if query_cache:
+            query_cache.invalidate()
 
         return ConfigReloadResponse(
             status="success",
@@ -1599,7 +1687,7 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
 
 
 class KnowledgeSyncRequest(BaseModel):
-    agent_id: int | None = Field(default=None, description="Agent ID，为空则同步所有启用的知识库")
+    agent_id: int | None = Field(default=None, description="Agent ID，为空则同步当前绑定 Agent")
 
 
 class KnowledgeSyncResponse(BaseModel):
@@ -1613,9 +1701,21 @@ async def knowledge_sync(req: KnowledgeSyncRequest, request: Request):
     _verify_admin_token(request)
     global knowledge_retriever
 
+    if req.agent_id is not None and agent_config and req.agent_id != agent_config.agent_id:
+        return KnowledgeSyncResponse(
+            status="error",
+            message=(
+                f"当前引擎绑定 Agent {agent_config.agent_id}，"
+                f"不能同步 Agent {req.agent_id}"
+            ),
+        )
+
     if knowledge_retriever is None:
         from src.retrieval.embedding import get_embedding
-        knowledge_retriever = KnowledgeRetriever(get_embedding())
+        knowledge_retriever = KnowledgeRetriever(
+            get_embedding(),
+            agent_id=agent_config.agent_id if agent_config else None,
+        )
 
     try:
         agent_id = req.agent_id or (agent_config.agent_id if agent_config else None)

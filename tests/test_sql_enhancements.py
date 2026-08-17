@@ -19,7 +19,154 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 from src.retrieval.sql_validator import SQLValidator
-from src.retrieval.agent_config import get_expand, EXPAND_VALIDATORS, AgentRuntimeConfig, AgentConfigLoader
+from src.retrieval.agent_config import get_expand, AgentRuntimeConfig, AgentConfigLoader
+from src.retrieval.collection_names import agent_collection_name
+from src.retrieval.milvus_filter import build_metadata_filter
+from src.retrieval.query_cache import QueryCache
+from src.retrieval.schema_loader import SchemaLoader
+
+
+# ════════════════════════════════════════════
+# security guards
+# ════════════════════════════════════════════
+
+class _NoConnectionEngine:
+    def connect(self):
+        raise AssertionError("unsafe SQL must be rejected before opening a database connection")
+
+
+class TestReadOnlySQLGuard:
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM analytics.orders",
+            "WITH recent AS (SELECT * FROM analytics.orders) SELECT * FROM recent",
+            "SELECT 'DELETE FROM users' AS example",
+            "SELECT 1 /* UPDATE users SET role = 'admin' */",
+        ],
+    )
+    def test_allows_read_only_queries(self, sql):
+        assert SQLValidator.validate_read_only(sql) == (True, "")
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "UPDATE analytics.orders SET status = 1",
+            "DELETE FROM analytics.orders",
+            "SELECT 1; DROP TABLE analytics.orders",
+            "SELECT * FROM analytics.orders INTO OUTFILE '/tmp/orders.csv'",
+            "SELECT status INTO @last_status FROM analytics.orders",
+            "SELECT * FROM analytics.orders FOR UPDATE",
+            "WITH changed AS (DELETE FROM analytics.orders RETURNING *) SELECT * FROM changed",
+        ],
+    )
+    def test_rejects_unsafe_queries(self, sql):
+        allowed, reason = SQLValidator.validate_read_only(sql)
+        assert allowed is False
+        assert reason
+
+    def test_execute_and_explain_fail_before_connecting(self):
+        validator = SQLValidator(_NoConnectionEngine())
+        assert validator.execute("DELETE FROM analytics.orders")["success"] is False
+        assert validator.explain("UPDATE analytics.orders SET status = 1")["valid"] is False
+
+
+class TestDatabaseAccessGuard:
+    AUTHORIZED = {"analytics", "shared"}
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM analytics.orders",
+            "SELECT * FROM `analytics`.`orders` a JOIN shared.users u ON a.user_id = u.id",
+            "WITH recent AS (SELECT * FROM analytics.orders) SELECT * FROM recent",
+            "WITH recent(id) AS (SELECT id FROM analytics.orders) SELECT * FROM recent",
+            "WITH RECURSIVE tree AS (SELECT * FROM analytics.nodes) SELECT * FROM tree",
+            "SELECT * FROM /* generated */ analytics.orders",
+        ],
+    )
+    def test_allows_only_authorized_qualified_tables(self, sql):
+        allowed, reason, databases = SQLValidator.validate_database_access(
+            sql,
+            self.AUTHORIZED,
+        )
+        assert allowed is True, reason
+        assert databases <= self.AUTHORIZED
+
+    @pytest.mark.parametrize(
+        ("sql", "expected_message"),
+        [
+            ("SELECT * FROM secret.orders", "未在当前 Agent"),
+            (
+                "SELECT * FROM analytics.orders a JOIN unqualified_users u ON a.user_id = u.id",
+                "数据库限定名",
+            ),
+            ("SELECT * FROM analytics.orders, secret.users", "显式 JOIN"),
+            (
+                "WITH recent AS (SELECT * FROM analytics.orders) SELECT * FROM local_orders",
+                "数据库限定名",
+            ),
+            ("SELECT * FROM information_schema.tables", "未在当前 Agent"),
+        ],
+    )
+    def test_rejects_unverifiable_or_unauthorized_tables(self, sql, expected_message):
+        allowed, reason, _ = SQLValidator.validate_database_access(sql, self.AUTHORIZED)
+        assert allowed is False
+        assert expected_message in reason
+
+
+class TestMilvusFilterGuard:
+    def test_escapes_values_and_supports_scalars(self):
+        expression = build_metadata_filter(
+            'retail" or true or "',
+            {"scenario": 'x" or true or "', "enabled": True, "level": 2},
+        )
+        assert 'retail\\" or true or \\"' in expression
+        assert 'x\\" or true or \\"' in expression
+        assert 'metadata["enabled"] == true' in expression
+        assert 'metadata["level"] == 2' in expression
+
+    @pytest.mark.parametrize(
+        ("metadata", "expected_message"),
+        [
+            ({'bad"] or true or metadata["x': "value"}, "非法 metadata filter key"),
+            ({"valid_key": {"nested": "value"}}, "不支持"),
+            ({"valid_key": float("nan")}, "NaN"),
+        ],
+    )
+    def test_rejects_unsafe_filter_inputs(self, metadata, expected_message):
+        with pytest.raises(ValueError, match=expected_message):
+            build_metadata_filter(metadata_filter=metadata)
+
+
+def test_schema_loader_fails_closed_without_agent_datasources(monkeypatch):
+    loader = SchemaLoader.__new__(SchemaLoader)
+    monkeypatch.setattr(loader, "_load_agent_exec_db_ids", lambda agent_id: [])
+
+    with pytest.raises(RuntimeError, match="拒绝加载全量语义层"):
+        loader.load_all(agent_id=42)
+
+
+class _StaticEmbedding:
+    def encode(self, texts):
+        return [[1.0, 0.0] for _ in texts]
+
+
+def test_query_cache_isolates_contexts():
+    cache = QueryCache(_StaticEmbedding())
+    cache.put("订单数量", {"sql": "SELECT 1"}, context_key='{"agent_id":1}')
+
+    assert cache.get("订单数量", context_key='{"agent_id":1}') == {"sql": "SELECT 1"}
+    assert cache.get("订单数量", context_key='{"agent_id":2}') is None
+
+
+def test_milvus_collection_names_are_agent_scoped():
+    assert agent_collection_name("nl2sql_table", None) == "nl2sql_table_agent_local"
+    assert agent_collection_name("nl2sql_table", 7) == "nl2sql_table_agent_7"
+    assert agent_collection_name("nl2sql_table", 8) != agent_collection_name(
+        "nl2sql_table",
+        7,
+    )
 
 
 # ════════════════════════════════════════════

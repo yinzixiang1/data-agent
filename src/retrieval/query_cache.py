@@ -10,10 +10,10 @@
     hit = cache.get("本月的交易总额多少")  # 命中
 """
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
@@ -98,8 +98,9 @@ class QueryCache:
 
         if best_sim >= self.threshold and best_entry is not None:
             best_entry.hit_count += 1
+            context_digest = hashlib.sha256(context_key.encode()).hexdigest()[:12]
             logger.info(
-                f"缓存命中: sim={best_sim:.4f}, ctx='{context_key}', "
+                f"缓存命中: sim={best_sim:.4f}, ctx_hash={context_digest}, "
                 f"cached='{best_entry.query[:50]}', query='{query[:50]}'"
             )
             return best_entry.result

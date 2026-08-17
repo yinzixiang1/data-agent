@@ -100,6 +100,114 @@ class SQLValidator:
 
     _PLACEHOLDER_RE = re.compile(r"PLACEHOLDER\s*[:：]\s*(.+)", re.IGNORECASE)
 
+    _WRITE_KEYWORDS_RE = re.compile(
+        r"\b(?:INSERT|UPDATE|DELETE|MERGE|UPSERT|REPLACE|CREATE|ALTER|DROP|"
+        r"TRUNCATE|RENAME|GRANT|REVOKE|CALL|SET|USE|LOAD|EXPORT|BACKUP|"
+        r"RESTORE|KILL|LOCK|UNLOCK)\b",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _strip_literals_and_comments(
+        sql: str,
+        preserve_quoted_identifiers: bool = False,
+    ) -> str:
+        """移除字符串、引用标识符和注释，保留 SQL 结构用于安全检查。"""
+        output: list[str] = []
+        i = 0
+        state = "normal"
+        while i < len(sql):
+            char = sql[i]
+            next_char = sql[i + 1] if i + 1 < len(sql) else ""
+
+            if state == "normal":
+                if char == "'":
+                    state = "single_quote"
+                    output.append(" ")
+                elif char == '"':
+                    state = "double_quote"
+                    output.append(" ")
+                elif char == "`":
+                    state = "backtick"
+                    output.append(char if preserve_quoted_identifiers else " ")
+                elif char == "-" and next_char == "-":
+                    state = "line_comment"
+                    output.extend((" ", " "))
+                    i += 1
+                elif char == "#":
+                    state = "line_comment"
+                    output.append(" ")
+                elif char == "/" and next_char == "*":
+                    state = "block_comment"
+                    output.extend((" ", " "))
+                    i += 1
+                else:
+                    output.append(char)
+            elif state == "single_quote":
+                output.append("\n" if char == "\n" else " ")
+                if char == "\\" and next_char:
+                    output.append(" ")
+                    i += 1
+                elif char == "'":
+                    if next_char == "'":
+                        output.append(" ")
+                        i += 1
+                    else:
+                        state = "normal"
+            elif state == "double_quote":
+                output.append("\n" if char == "\n" else " ")
+                if char == '"':
+                    if next_char == '"':
+                        output.append(" ")
+                        i += 1
+                    else:
+                        state = "normal"
+            elif state == "backtick":
+                output.append(char if preserve_quoted_identifiers else ("\n" if char == "\n" else " "))
+                if char == "`":
+                    state = "normal"
+            elif state == "line_comment":
+                output.append("\n" if char == "\n" else " ")
+                if char == "\n":
+                    state = "normal"
+            elif state == "block_comment":
+                output.append("\n" if char == "\n" else " ")
+                if char == "*" and next_char == "/":
+                    output.append(" ")
+                    i += 1
+                    state = "normal"
+            i += 1
+
+        return "".join(output)
+
+    @classmethod
+    def validate_read_only(cls, sql: str) -> tuple[bool, str]:
+        """只允许单条 SELECT/WITH 查询，拒绝写操作和导出语句。"""
+        if not sql or "\x00" in sql:
+            return False, "SQL 为空或包含非法字符"
+
+        structural_sql = cls._strip_literals_and_comments(sql)
+        statements = [part.strip() for part in structural_sql.split(";") if part.strip()]
+        if len(statements) != 1:
+            return False, "只允许执行一条 SQL"
+
+        statement = statements[0]
+        if not re.match(r"^(?:SELECT|WITH)\b", statement, re.IGNORECASE):
+            return False, "只允许 SELECT/WITH 只读查询"
+        if cls._WRITE_KEYWORDS_RE.search(statement):
+            return False, "SQL 包含写入或管理语句"
+        if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", statement, re.IGNORECASE):
+            return False, "不允许通过 SQL 导出文件"
+        if re.search(r"\bINTO\b", statement, re.IGNORECASE):
+            return False, "不允许 SELECT INTO"
+        if re.search(r"\bFOR\s+UPDATE\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", statement, re.IGNORECASE):
+            return False, "不允许锁定读取"
+        if re.match(r"^WITH\b", statement, re.IGNORECASE) and not re.search(
+            r"\bSELECT\b", statement, re.IGNORECASE
+        ):
+            return False, "WITH 查询必须包含 SELECT"
+        return True, ""
+
     @classmethod
     def extract_placeholder(cls, llm_response: str) -> str:
         """从 LLM 回复中提取 PLACEHOLDER 声明。
@@ -127,6 +235,10 @@ class SQLValidator:
                 - "error" (str | None): 语法错误信息（valid=True 时为 None）
                 - "plan" (str | None): 完整执行计划文本（valid=False 时为 None）
         """
+        read_only, reason = self.validate_read_only(sql)
+        if not read_only:
+            return {"valid": False, "error": reason, "plan": None}
+
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text(f"EXPLAIN {sql}")).fetchall()
@@ -165,12 +277,90 @@ class SQLValidator:
         Returns:
             set[str]: 数据库名集合（小写）
         """
-        # 匹配 `db`.`table` 或 db.table（支持反引号和不带引号两种形式）
+        structural_sql = SQLValidator._strip_literals_and_comments(
+            sql,
+            preserve_quoted_identifiers=True,
+        )
         pattern = r'(?:FROM|JOIN)\s+`?(\w+)`?\s*\.\s*`?\w+`?'
-        matches = re.findall(pattern, sql, re.IGNORECASE)
-        # 排除 information_schema 等系统库
-        system_dbs = {"information_schema", "mysql", "performance_schema"}
-        return {m.lower() for m in matches if m.lower() not in system_dbs}
+        return {match.lower() for match in re.findall(pattern, structural_sql, re.IGNORECASE)}
+
+    @classmethod
+    def validate_database_access(
+        cls,
+        sql: str,
+        authorized_databases: set[str],
+    ) -> tuple[bool, str, set[str]]:
+        """要求所有物理表使用库限定名，且数据库均在 Agent 白名单内。"""
+        if not authorized_databases:
+            return False, "当前 Agent 没有匹配的授权数据库", set()
+
+        structural_sql = cls._strip_literals_and_comments(
+            sql,
+            preserve_quoted_identifiers=True,
+        )
+        cte_names = {
+            match.lower()
+            for match in re.findall(
+                r'(?:\bWITH(?:\s+RECURSIVE)?|,)\s*`?(\w+)`?'
+                r'(?:\s*\([^)]*\))?\s+AS\s*\(',
+                structural_sql,
+                re.IGNORECASE,
+            )
+        }
+        relation_pattern = re.compile(
+            r'\b(?:FROM|JOIN)\s+(?!\s*\()'
+            r'(?P<first>`?\w+`?)'
+            r'(?:\s*\.\s*(?P<second>`?\w+`?))?',
+            re.IGNORECASE,
+        )
+        referenced_databases: set[str] = set()
+        unqualified_tables: set[str] = set()
+        for match in relation_pattern.finditer(structural_sql):
+            first = match.group("first").strip("`").lower()
+            if match.group("second"):
+                referenced_databases.add(first)
+            elif first not in cte_names:
+                unqualified_tables.add(first)
+
+        if cls._has_implicit_comma_join(structural_sql):
+            return False, "不允许使用逗号连接表，请使用显式 JOIN", referenced_databases
+        if unqualified_tables:
+            tables = ", ".join(sorted(unqualified_tables))
+            return False, f"SQL 中的物理表必须使用数据库限定名: {tables}", referenced_databases
+        if not referenced_databases:
+            return False, "SQL 未引用可验证的数据库限定表", set()
+
+        authorized = {database.lower() for database in authorized_databases}
+        unauthorized = referenced_databases - authorized
+        if unauthorized:
+            databases = ", ".join(sorted(unauthorized))
+            return False, f"数据库 {databases} 未在当前 Agent 的授权范围内", referenced_databases
+        return True, "", referenced_databases
+
+    @staticmethod
+    def _has_implicit_comma_join(structural_sql: str) -> bool:
+        """检测每个 FROM 子句顶层的逗号连接，避免遗漏后续表。"""
+        terminator = re.compile(
+            r'\b(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|EXCEPT|INTERSECT|QUALIFY|WINDOW)\b',
+            re.IGNORECASE,
+        )
+        for from_match in re.finditer(r"\bFROM\b", structural_sql, re.IGNORECASE):
+            depth = 0
+            index = from_match.end()
+            while index < len(structural_sql):
+                char = structural_sql[index]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif char == "," and depth == 0:
+                    return True
+                elif depth == 0 and terminator.match(structural_sql, index):
+                    break
+                index += 1
+        return False
 
     def execute(self, sql: str, row_limit: int = 200, timeout: int = 30) -> dict:
         """
@@ -190,6 +380,17 @@ class SQLValidator:
                 - "truncated" (bool): 是否截断
                 - "error" (str | None)
         """
+        read_only, reason = self.validate_read_only(sql)
+        if not read_only:
+            return {
+                "success": False,
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "truncated": False,
+                "error": reason,
+            }
+
         try:
             # 添加 LIMIT 防止返回过多数据（仅对 SELECT 生效）
             exec_sql = sql.rstrip().rstrip(";")
@@ -391,7 +592,7 @@ class SQLValidator:
                 "plan": None,
             }
 
-        print(f"\n[EXPLAIN 校验] 待校验 SQL:")
+        print("\n[EXPLAIN 校验] 待校验 SQL:")
         print("-" * 40)
         print(sql)
         print("-" * 40)

@@ -99,6 +99,7 @@ class SchemaRetriever:
             config = loader.load()
             loader.print_config(config)
         self.config = config
+        self.index_manager = IndexManager(agent_id=config.agent_id)
 
         # 初始化 Embedding
         embedding = get_embedding(config.embedding_config)

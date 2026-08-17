@@ -11,7 +11,7 @@ services:
       - NL2SQL_ENV=prod
       - DENSE_DEVICE=cuda
       - CONFIG_SOURCE=mysql
-      - CONFIG_PROFILE=1
+      - CONFIG_PROFILE=${CONFIG_PROFILE:?CONFIG_PROFILE is required}
       - REBUILD_INDEX_ON_STARTUP=true
     volumes:
       - model-cache:/root/.cache

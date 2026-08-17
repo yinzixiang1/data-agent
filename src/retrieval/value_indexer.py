@@ -27,6 +27,7 @@ import logging
 import re
 
 from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.milvus_filter import build_metadata_filter
 
 logger = logging.getLogger(__name__)
 
@@ -140,16 +141,7 @@ class ValueIndexer:
         if not candidates:
             return []
 
-        parts = []
-        if biz_line:
-            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys" or biz_line == "")')
-        if metadata_filter:
-            for key, value in metadata_filter.items():
-                parts.append(
-                    f'(metadata["{key}"] == "{value}"'
-                    f' or not exists metadata["{key}"])'
-                )
-        filter_expr = " and ".join(parts) if parts else None
+        filter_expr = build_metadata_filter(biz_line or "", metadata_filter)
         results = []
         seen: set[tuple] = set()
 

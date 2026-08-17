@@ -29,6 +29,7 @@ from pymilvus import DataType, RRFRanker
 
 from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.embedding import BaseEmbedding
+from src.retrieval.collection_names import agent_collection_name
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +99,17 @@ class KnowledgeRetriever:
     提供文档同步、检索和 Prompt 组装功能。
     """
 
-    def __init__(self, embedding: BaseEmbedding):
+    def __init__(self, embedding: BaseEmbedding, agent_id: int | None = None):
         self.embedding = embedding
+        self.agent_id = agent_id
+        self.collection_name = agent_collection_name(COLLECTION_NAME, agent_id)
         self.index: MilvusIndex | None = None
         self._initialized = False
 
     def _ensure_index(self):
         """确保 Milvus index 已初始化。"""
         if self.index is None:
-            self.index = MilvusIndex(COLLECTION_NAME, dim=self.embedding.dim)
+            self.index = MilvusIndex(self.collection_name, dim=self.embedding.dim)
         return self.index
 
     def connect(self):
@@ -114,9 +117,9 @@ class KnowledgeRetriever:
         idx = self._ensure_index()
         if idx.exists():
             self._initialized = True
-            logger.info(f"知识库 Collection 已连接: {COLLECTION_NAME} ({idx.count} 条)")
+            logger.info(f"知识库 Collection 已连接: {self.collection_name} ({idx.count} 条)")
         else:
-            logger.info(f"知识库 Collection 不存在: {COLLECTION_NAME}，等待同步")
+            logger.info(f"知识库 Collection 不存在: {self.collection_name}，等待同步")
 
     def sync_from_db(self, agent_id: int | None = None):
         """
@@ -125,6 +128,13 @@ class KnowledgeRetriever:
         Args:
             agent_id: Agent ID，用于过滤绑定的知识库 (is_public=1 + Agent 绑定的)
         """
+        if self.agent_id is not None:
+            if agent_id is not None and agent_id != self.agent_id:
+                raise ValueError(
+                    f"知识检索器绑定 Agent {self.agent_id}，不能同步 Agent {agent_id}"
+                )
+            agent_id = self.agent_id
+
         from sqlalchemy import create_engine, text as sql_text
         from src.retrieval.config import (
             MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
@@ -233,7 +243,7 @@ class KnowledgeRetriever:
 
             idx.insert(dense_vecs, all_texts, rows)
             self._initialized = True
-            logger.info(f"知识库同步完成: {len(all_chunks)} 个 chunk 已写入 {COLLECTION_NAME}")
+            logger.info(f"知识库同步完成: {len(all_chunks)} 个 chunk 已写入 {self.collection_name}")
 
             # 更新 MySQL 文档状态
             with engine.connect() as conn:

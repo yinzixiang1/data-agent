@@ -20,6 +20,7 @@ import logging
 
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.agent_config import AgentRuntimeConfig
 
@@ -76,16 +77,7 @@ class HybridSearcher:
     @staticmethod
     def _build_filter(biz_line: str = "", metadata_filter: dict | None = None) -> str | None:
         """构建 Milvus 过滤表达式，支持 biz_line + 任意 metadata KV 组合过滤。"""
-        parts = []
-        if biz_line:
-            parts.append(f'(biz_line == "{biz_line}" or biz_line == "sys" or biz_line == "")')
-        if metadata_filter:
-            for key, value in metadata_filter.items():
-                parts.append(
-                    f'(metadata["{key}"] == "{value}"'
-                    f' or not exists metadata["{key}"])'
-                )
-        return " and ".join(parts) if parts else None
+        return build_metadata_filter(biz_line, metadata_filter)
 
     def search(
         self,
@@ -329,8 +321,12 @@ class HybridSearcher:
             })
 
         if enum_hits:
+            top_hits = [
+                f"{item['enum_label_cn']}->{item['column_name']}={item['sql_value']}"
+                for item in enum_hits[:3]
+            ]
             logger.info(
                 f"枚举检索: {len(enum_hits)} 条命中, "
-                f"top={[f'{e['enum_label_cn']}->{e['column_name']}={e['sql_value']}' for e in enum_hits[:3]]}"
+                f"top={top_hits}"
             )
         return enum_hits

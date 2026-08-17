@@ -475,8 +475,9 @@ class SchemaLoader:
             if exec_db_ids:
                 logger.info(f"Agent {agent_id} 绑定执行数据库: exec_db_id={exec_db_ids}")
             else:
-                logger.warning(f"Agent {agent_id} 未绑定执行数据库 (da_agent_exec_db)，加载全量数据")
-                exec_db_ids = None
+                raise RuntimeError(
+                    f"Agent {agent_id} 未绑定可用执行数据库，拒绝加载全量语义层"
+                )
 
         # 从 MySQL 加载语义层（只加载 status=1 AND available=1）
         table_semantics = self._load_table_semantics(exec_db_ids)
