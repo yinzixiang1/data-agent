@@ -142,6 +142,7 @@ class ApiEmbedding(BaseEmbedding):
         self.api_model_name = cfg.get("api_model_name", cfg.get("model", ""))
         self.batch_size = cfg.get("batch_size", 64)
         self.max_length = cfg.get("max_seq_length", 8192)
+        self.send_dimensions = cfg.get("send_dimensions", False)
 
         if not self.base_url:
             raise ValueError("API Embedding 需要 base_url 配置")
@@ -170,7 +171,7 @@ class ApiEmbedding(BaseEmbedding):
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
             body = {"model": self.api_model_name, "input": batch}
-            if self.dim:
+            if self.dim and self.send_dimensions:
                 body["dimensions"] = self.dim
 
             resp = httpx.post(url, json=body, headers=headers, timeout=60)

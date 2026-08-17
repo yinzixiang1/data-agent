@@ -248,7 +248,7 @@ class SchemaLoader:
     def load_glossary(self, exec_db_ids: list[int] | None = None) -> dict[str, dict]:
         """从 da_semantic_glossary 加载业务术语 → {term: info_dict}"""
         sql = (
-            "SELECT g.term, g.definition, g.sql_hint, g.related_tables, g.related_columns, g.synonyms, b.meta_json "
+            "SELECT g.term, g.definition, g.sql_hint, g.related_tables, g.related_columns, g.synonyms, b.meta_json, b.business_line "
             "FROM da_semantic_glossary g "
             "LEFT JOIN da_agent_exec_db b ON g.exec_db_id = b.id "
             "WHERE g.status = 1"
@@ -285,6 +285,10 @@ class SchemaLoader:
                 metadata = json.loads(row[6] or "{}")
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
+            # 将 business_line 写入 metadata，使 Milvus 过滤 business 字段生效
+            biz_line = row[7] if len(row) > 7 else None
+            if biz_line:
+                metadata["business"] = biz_line
 
             glossary[row[0]] = {
                 "term": row[0],
@@ -348,7 +352,7 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             # 全局 Few-shot
             fewshot_sql = (
-                "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json "
+                "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json, b.business_line "
                 "FROM da_semantic_fewshot f "
                 "LEFT JOIN da_agent_exec_db b ON f.exec_db_id = b.id "
                 "WHERE f.status = 1"
@@ -363,6 +367,9 @@ class SchemaLoader:
                     metadata = json.loads(row[5] or "{}")
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+                biz_line = row[6] if len(row) > 6 else None
+                if biz_line:
+                    metadata["business"] = biz_line
                 examples.append({
                     "id": row[0],
                     "question": row[1],
@@ -374,7 +381,7 @@ class SchemaLoader:
 
             # 表级常见问题（也作为 Few-shot，通过 da_semantic_table 的 exec_db_id 过滤）
             query_sql = (
-                "SELECT q.question, q.`sql`, q.tables, q.difficulty, b.meta_json "
+                "SELECT q.question, q.`sql`, q.tables, q.difficulty, b.meta_json, b.business_line "
                 "FROM da_semantic_query q "
                 "JOIN da_semantic_table t ON q.table_id = t.id "
                 "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
@@ -390,6 +397,9 @@ class SchemaLoader:
                     metadata = json.loads(row[4] or "{}")
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+                biz_line = row[5] if len(row) > 5 else None
+                if biz_line:
+                    metadata["business"] = biz_line
                 examples.append({
                     "question": row[0],
                     "sql": row[1],

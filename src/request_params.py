@@ -121,18 +121,6 @@ REQUEST_PARAMS: list[dict[str, Any]] = [
         "scope": ["nl2sql", "hybrid"],
     },
 
-    # ═══ 模式控制 ═══
-    {
-        "key": "param_mode",
-        "type": "boolean",
-        "default": False,
-        "label": "参数化模式",
-        "hint": "启用后生成 SQL 模板（{{占位符}}），而非具体 SQL",
-        "group": "模式控制",
-        "section": "flow",
-        "scope": ["nl2sql", "hybrid"],
-    },
-
     # ═══ SQL 生成 ═══
     {
         "key": "max_fix_retries",

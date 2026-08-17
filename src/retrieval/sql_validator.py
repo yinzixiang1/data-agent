@@ -98,6 +98,22 @@ class SQLValidator:
             return match.group(1).strip()
         return None
 
+    _PLACEHOLDER_RE = re.compile(r"PLACEHOLDER\s*[:：]\s*(.+)", re.IGNORECASE)
+
+    @classmethod
+    def extract_placeholder(cls, llm_response: str) -> str:
+        """从 LLM 回复中提取 PLACEHOLDER 声明。
+
+        格式: PLACEHOLDER: field1;field2;field3
+
+        Returns:
+            str: 分号分隔的占位符字段名，未找到时返回空字符串
+        """
+        match = cls._PLACEHOLDER_RE.search(llm_response)
+        if match:
+            return match.group(1).strip()
+        return ""
+
     def explain(self, sql: str) -> dict:
         """
         执行 EXPLAIN 校验（不会真正执行 SQL）。

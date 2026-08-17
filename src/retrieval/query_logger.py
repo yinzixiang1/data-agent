@@ -62,6 +62,8 @@ class QueryLogger:
         user_name: str = "",
         trace_id: str = "",
         matched_fewshot: list[dict] | None = None,
+        enum_hits: list[dict] | None = None,
+        trace_detail: dict | None = None,
     ) -> int | None:
         """
         写入一条查询日志。
@@ -73,6 +75,8 @@ class QueryLogger:
             matched_tables_json = json.dumps(matched_tables or [], ensure_ascii=False)
             matched_terms_json = json.dumps(matched_terms or [], ensure_ascii=False)
             matched_fewshot_json = json.dumps(matched_fewshot or [], ensure_ascii=False)
+            enum_hits_json = json.dumps(enum_hits or [], ensure_ascii=False)
+            trace_detail_json = json.dumps(trace_detail, ensure_ascii=False) if trace_detail else None
             if isinstance(execution_result, dict):
                 execution_result = json.dumps(execution_result, ensure_ascii=False)
 
@@ -82,11 +86,13 @@ class QueryLogger:
                     "(session_id, user_query, intent, matched_tables, matched_terms, "
                     "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
                     "user_feedback, feedback_score, feedback_comment, "
-                    "agent_id, scenario, business, caller, user_id, user_name, trace_id, matched_fewshot) "
+                    "agent_id, scenario, business, caller, user_id, user_name, trace_id, "
+                    "matched_fewshot, enum_hits, trace_detail) "
                     "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
                     ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
                     "'', 0, '', "
-                    ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, :matched_fewshot)"
+                    ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, "
+                    ":matched_fewshot, :enum_hits, :trace_detail)"
                 ), {
                     "session_id": session_id,
                     "user_query": user_query,
@@ -106,6 +112,8 @@ class QueryLogger:
                     "user_name": user_name,
                     "trace_id": trace_id,
                     "matched_fewshot": matched_fewshot_json,
+                    "enum_hits": enum_hits_json,
+                    "trace_detail": trace_detail_json,
                 })
                 conn.commit()
                 log_id = result.lastrowid

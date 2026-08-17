@@ -30,6 +30,36 @@ logger = logging.getLogger(__name__)
 _instance: Optional["BaseReranker"] = None
 
 
+def _extract_text(candidate: dict) -> str:
+    """从候选项提取用于精排的文本，优先 doc.text，fallback 到 schema。"""
+    text = candidate.get("doc", {}).get("text", "")
+    if text:
+        return text
+    schema = candidate.get("schema")
+    if not schema:
+        return candidate.get("table_name", "")
+    parts = []
+    short = schema.get("table_name_short", schema.get("table_name", ""))
+    if schema.get("display_name"):
+        parts.append(f"{short} {schema['display_name']}")
+    else:
+        parts.append(short)
+    if schema.get("description"):
+        parts.append(schema["description"])
+    for col in schema.get("columns", []):
+        if col.get("is_skip_index") or col.get("is_sensitive"):
+            continue
+        display = col.get("display_name") or col.get("comment", "")
+        if display:
+            parts.append(f"{col['name']}({display})")
+    for rel in schema.get("relations", []):
+        target = rel.get("target_table", "")
+        if target:
+            desc = rel.get("description", "")
+            parts.append(f"关联:{target}" + (f"({desc})" if desc else ""))
+    return "\n".join(parts)
+
+
 class BaseReranker:
     """Reranker 基类，定义统一接口。"""
 
@@ -61,7 +91,7 @@ class SchemaReranker(BaseReranker):
         if not candidates:
             return []
 
-        pairs = [(query, c.get("doc", {}).get("text", "")) for c in candidates]
+        pairs = [(query, _extract_text(c)) for c in candidates]
         scores = self.model.predict(pairs)
 
         for i, c in enumerate(candidates):
@@ -128,7 +158,7 @@ class ApiReranker(BaseReranker):
         if not candidates:
             return []
 
-        documents = [c.get("doc", {}).get("text", "") for c in candidates]
+        documents = [_extract_text(c) for c in candidates]
         top_n = min(top_k, len(candidates))
 
         headers = {"Content-Type": "application/json"}

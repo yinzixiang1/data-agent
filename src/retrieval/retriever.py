@@ -279,18 +279,32 @@ class SchemaRetriever:
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
         rerank_k = table_params.rerank_top_n if cfg.enable_reranker and table_params.rerank else top_k
-        candidates = self.searcher.search(enriched_query, top_k=max(rerank_k, top_k), biz_line=biz_line, metadata_filter=metadata_filter)
+        candidates = self.searcher.search(
+            enriched_query,
+            top_k=max(rerank_k, top_k),
+            biz_line=biz_line,
+            metadata_filter=metadata_filter,
+            pinned_rules=cfg.pinned_rules,
+        )
 
         # 4. Reranker 精排
         reranker = get_reranker()
         all_search_candidates = {c["table_name"]: c for c in candidates}
+        pinned_candidates = [c for c in candidates if c.get("pinned")]
         if reranker and cfg.enable_reranker and table_params.rerank and len(candidates) > top_k:
             candidates = reranker.rerank(user_query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
 
-        # 5. Reranker 后关联表补回
+        # 4b. 补回被 Reranker 砍掉的 pinned 表（如汇率表）
         hit_names = {c["table_name"] for c in candidates}
+        for pc in pinned_candidates:
+            if pc["table_name"] not in hit_names:
+                candidates.append(pc)
+                hit_names.add(pc["table_name"])
+                logger.info(f"Reranker 后补回 pinned 表: {pc['table_name']}")
+
+        # 5. Reranker 后关联表补回
         for c in list(candidates):
             schema = c.get("schema", {})
             for rel in schema.get("relations", []):

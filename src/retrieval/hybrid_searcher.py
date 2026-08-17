@@ -17,7 +17,6 @@
 """
 
 import logging
-import re
 
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
@@ -88,24 +87,27 @@ class HybridSearcher:
                 )
         return " and ".join(parts) if parts else None
 
-    def search(self, query: str, top_k: int = 5, biz_line: str | None = None, metadata_filter: dict | None = None) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        biz_line: str | None = None,
+        metadata_filter: dict | None = None,
+        pinned_rules: list[dict] | None = None,
+    ) -> list[dict]:
         """
-        表级 + 列级混合检索，融合枚举反哺和关联表补全。
-
-        评分规则:
-            - 表级检索: ranker 融合基础分
-            - 列级命中: +0.01（列所属的表）
-            - 枚举反哺: +0.02（枚举值关联的表）
-            - 关联补全: +parent_score x 0.1（top 表的关联表）
+        表级 + 列级混合检索，融合枚举反哺、关联表补全和强制召回规则。
 
         Args:
             query: 用户查询（可能已经过术语增强）
             top_k: 最终返回的表数量
             biz_line: 业务线过滤，为空则不过滤
+            metadata_filter: 任意 KV 过滤
+            pinned_rules: 强制召回规则列表（从 Agent 配置读取）
 
         Returns:
             list[dict]: 按 score 降序，每个元素含 table_name, score, source,
-                hit_by_column, schema
+                hit_by_column, pinned, schema
         """
         csc = self.config.collection_search_config
         filter_expr = self._build_filter(biz_line or "", metadata_filter)
@@ -194,13 +196,18 @@ class HybridSearcher:
         if relation_boosted:
             logger.info(f"关联补全: {relation_boosted}")
 
-        # ── 币种转换意图检测 → 强制注入汇率表 ──
-        self._inject_exchange_rate_table(query, table_scores)
+        # ── 强制召回规则 ──
+        pinned_tables = self._apply_pinned_rules(query, table_scores, pinned_rules or [])
 
-        # 按分数排序
+        # 按分数排序，pinned 表不受 top_k 截断
         sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        top_names = {t[0] for t in sorted_tables}
+        for pt in pinned_tables:
+            if pt not in top_names:
+                sorted_tables.append((pt, table_scores[pt]))
 
         # 组装结果
+        pinned_set = set(pinned_tables)
         results = []
         for table_name, score in sorted_tables:
             schema = self.table_schemas.get(table_name, {})
@@ -209,6 +216,7 @@ class HybridSearcher:
                 "score": score,
                 "source": "hybrid",
                 "hit_by_column": table_name in column_hit_tables,
+                "pinned": table_name in pinned_set,
                 "schema": schema,
             })
 
@@ -220,53 +228,65 @@ class HybridSearcher:
         )
         return results
 
-    # 常见法币/加密货币代码（3 位大写字母）
-    _CURRENCY_CODES = {
-        "USD", "EUR", "GBP", "JPY", "CNY", "CNH", "HKD", "SGD", "AUD", "CAD",
-        "CHF", "NZD", "KRW", "TWD", "THB", "MYR", "IDR", "PHP", "VND", "INR",
-        "AED", "SAR", "BRL", "MXN", "ZAR", "TRY", "RUB", "PLN", "SEK", "NOK",
-        "DKK", "CZK", "HUF", "ILS", "CLP", "ARS", "PEN", "COP", "NGN", "KES",
-        "BTC", "ETH", "USDT", "USDC",
-    }
-    _CONVERT_KEYWORDS = re.compile(r"转|换|兑|换算|转换|折算|convert", re.IGNORECASE)
-    _EXCHANGE_RATE_KEYWORDS = re.compile(r"汇率|exchange\s*rate|FX", re.IGNORECASE)
+    def _apply_pinned_rules(
+        self,
+        query: str,
+        table_scores: dict[str, float],
+        rules: list[dict],
+    ) -> list[str]:
+        """根据可配置规则检测意图，命中时将指定表强制注入候选。
 
-    def _inject_exchange_rate_table(self, query: str, table_scores: dict[str, float]):
-        """检测币种/汇率意图，命中时将汇率表注入候选。
+        规则触发逻辑（OR 关系）:
+            路径1: keywords 中任一词出现在 query 中 → 直接触发
+            路径2: entities 中任一词出现在 query 中 且 entity_keywords 中任一词也出现 → 组合触发
 
-        触发路径（OR 关系）:
-            1. 直接提及: query 含 "汇率" / "exchange rate" / "FX"
-            2. 币种 + 转换: query 含币种代码(SGD/USD...) + 转换关键词(转/换/兑...)
+        Args:
+            query: 用户查询文本
+            table_scores: 当前表分数字典（就地修改）
+            rules: 规则列表，每条含 name, table, keywords, entities, entity_keywords, min_score_ratio
+
+        Returns:
+            命中的 pinned 表名列表
         """
-        # 路径1: 直接提及汇率
-        direct_hit = bool(self._EXCHANGE_RATE_KEYWORDS.search(query))
+        pinned: list[str] = []
+        query_upper = query.upper()
 
-        # 路径2: 币种代码 + 转换关键词
-        found_currencies: set[str] = set()
-        if not direct_hit:
-            found_currencies = {m.group().upper() for m in re.finditer(r"[A-Za-z]{3,5}", query)} & self._CURRENCY_CODES
-            if not found_currencies or not self._CONVERT_KEYWORDS.search(query):
-                return
+        for rule in rules:
+            table = rule.get("table", "")
+            if not table or table not in self.table_schemas:
+                continue
 
-        # 从 table_schemas 中查找含 exchange_rate 的表
-        exchange_table = None
-        for full_name in self.table_schemas:
-            short = full_name.split(".", 1)[1] if "." in full_name else full_name
-            if "exchange_rate" in short and "source" not in short:
-                exchange_table = full_name
-                break
+            # 路径1: keywords 直接命中
+            keywords = rule.get("keywords", [])
+            direct_hit = any(kw.upper() in query_upper for kw in keywords) if keywords else False
 
-        if not exchange_table:
-            return
+            # 路径2: entities + entity_keywords 组合命中
+            combo_hit = False
+            if not direct_hit:
+                entities = rule.get("entities", [])
+                entity_keywords = rule.get("entity_keywords", [])
+                has_entity = any(e.upper() in query_upper for e in entities) if entities else False
+                has_keyword = any(kw in query for kw in entity_keywords) if entity_keywords else False
+                combo_hit = has_entity and has_keyword
 
-        trigger = "汇率关键词" if direct_hit else f"币种{found_currencies}"
-        max_score = max(table_scores.values()) if table_scores else 0.5
-        if exchange_table in table_scores:
-            table_scores[exchange_table] += 0.02
-            logger.info(f"汇率表意图检测({trigger}): 加分 {exchange_table}")
-        else:
-            table_scores[exchange_table] = max_score * 0.8
-            logger.info(f"汇率表意图检测({trigger}): 注入 {exchange_table} (score={max_score * 0.8:.4f})")
+            if not direct_hit and not combo_hit:
+                continue
+
+            # 命中：保底分注入
+            ratio = rule.get("min_score_ratio", 0.8)
+            max_score = max(table_scores.values()) if table_scores else 0.5
+            min_score = max_score * ratio
+            old_score = table_scores.get(table, 0)
+            table_scores[table] = max(old_score, min_score)
+            pinned.append(table)
+
+            trigger = "关键词" if direct_hit else "实体+动词"
+            logger.info(
+                f"强制召回[{rule.get('name', table)}]({trigger}): "
+                f"{table} score={old_score:.4f}->{table_scores[table]:.4f}"
+            )
+
+        return pinned
 
     def search_enums(self, query: str, top_k: int = 8, biz_line: str | None = None, metadata_filter: dict | None = None) -> list[dict]:
         """

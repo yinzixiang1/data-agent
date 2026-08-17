@@ -142,6 +142,9 @@ class AgentRuntimeConfig:
     enable_result_check: bool = True
     enable_timeout_fallback: bool = False
 
+    # 强制召回规则（from retrieval.pinned_rules）
+    pinned_rules: list[dict] = field(default_factory=list)
+
     # 结构化配置（from sys_config JSON，hot-reload 可更新）
     collection_search_config: dict = field(default_factory=dict)
     embedding_config: dict = field(default_factory=dict)
@@ -575,6 +578,10 @@ class AgentConfigLoader:
             if "enable_explain" in retrieval_cfg:
                 v = retrieval_cfg["enable_explain"]
                 config.enable_explain = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+            if "pinned_rules" in retrieval_cfg:
+                rules = retrieval_cfg["pinned_rules"]
+                if isinstance(rules, list):
+                    config.pinned_rules = rules
 
         # flow 分区（SQL 执行 & 结果总结）
         flow_cfg = agent_configs.get("flow", {})

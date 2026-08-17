@@ -20,6 +20,7 @@ import logging
 import uuid
 import os
 import signal
+from datetime import date as _date
 
 from contextlib import asynccontextmanager
 
@@ -488,6 +489,7 @@ class QueryMetadata(BaseModel):
     user_name: str = Field(default="", description="外部用户显示名")
     trace_id: str = Field(default="", description="链路追踪 ID")
     filter: dict | None = Field(default=None, description="通用 KV 过滤 (如 {\"business\":\"banking\",\"scenario\":\"bi\"}), 用于语义层 + 执行层隔离")
+    context: dict | None = Field(default=None, description="场景专属元数据 (如 {\"param_mode\":true, \"placeholder_fields\":[...]})")
 
 
 class QueryRequest(BaseModel):
@@ -518,6 +520,8 @@ class QueryResponse(BaseModel):
     summary: str = Field(default="", description="LLM 对执行结果的自然语言总结")
     query_result: dict | None = Field(default=None, description="SQL 执行结果: {columns, rows, row_count, truncated}")
     execution_error: str = Field(default="", description="SQL 执行错误信息")
+    script: str = Field(default="", description="参数化 SQL 模板（? 占位符），仅 param_mode 时返回")
+    placeholder: str = Field(default="", description="占位符字段声明（分号分隔），按 ? 出现顺序对应")
 
 
 class IndexRebuildRequest(BaseModel):
@@ -567,6 +571,7 @@ def run_query(
     history_summary: str = "",
     biz_line: str = "",
     metadata_filter: dict | None = None,
+    metadata_context: dict | None = None,
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
@@ -657,7 +662,12 @@ def run_query(
         trace_steps.append({
             "step": "enum_lookup",
             "hits": [
-                {"column": e.get("column", ""), "value": e.get("value", "")}
+                {
+                    "table_name": e.get("table_name", ""),
+                    "column_name": e.get("column_name", ""),
+                    "label": e.get("enum_label_cn", ""),
+                    "sql_value": e.get("sql_value", ""),
+                }
                 for e in result.enum_hits[:10]
             ],
             "count": len(result.enum_hits),
@@ -676,10 +686,32 @@ def run_query(
             "count": len(fewshot_details),
         })
 
-    # 构建对话
+    # param_mode: 从 metadata.context 读取，替换输出规则生成 ? 占位符 SQL
+    _ctx = metadata_context or {}
+    _param_mode = _ctx.get("param_mode", False)
+    _placeholder_fields = _ctx.get("placeholder_fields", [])
+
+    prompt_text = result.prompt_text
+    if _param_mode and _placeholder_fields:
+        fields_str = ", ".join(_placeholder_fields)
+        param_mode_rules = (
+            "【输出要求】\n"
+            f"1. 生成参数化 SQL 模板，对以下字段使用 ? 位置占位符（JDBC 风格）：{fields_str}\n"
+            "2. 除上述字段外，其他条件使用具体值（枚举码、时间函数等）\n"
+            "3. SQL 用 ```sql ``` 包裹\n"
+            "4. SQL 之后另起一行输出占位符声明，格式：PLACEHOLDER: field1;field2（按 ? 在 SQL 中出现的顺序，分号分隔）\n"
+            "5. 使用 Schema 中的精确列名和表名\n"
+            "6. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值\n"
+            "7. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）\n"
+            "8. 如果问题过于模糊导致无法生成精确 SQL，输出：NEED_CLARIFY: <你的澄清问题>"
+        )
+        prompt_text = re.sub(r"【输出要求】.*", param_mode_rules, prompt_text, flags=re.DOTALL)
+
+    # 构建对话（注入当前日期，避免 LLM 因知识截止而误判年份）
+    _system_content = f"{config.system_prompt}\n\n当前日期: {_date.today().isoformat()}"
     messages = [
-        {"role": "system", "content": config.system_prompt},
-        {"role": "user", "content": result.prompt_text},
+        {"role": "system", "content": _system_content},
+        {"role": "user", "content": prompt_text},
     ]
 
     def _to_lc_messages(msgs):
@@ -733,9 +765,9 @@ def run_query(
         messages.append({"role": "assistant", "content": answer})
         extracted_sql = SQLValidator.extract_sql(answer)
 
-    # EXPLAIN 校验
+    # EXPLAIN 校验（param_mode 下跳过，? 占位符无法通过 EXPLAIN）
     explain_details = []
-    if extracted_sql and config.enable_explain and validator:
+    if extracted_sql and config.enable_explain and validator and not _param_mode:
         syntax_ok = False
         check = None
         for attempt in range(config.max_fix_retries):
@@ -819,8 +851,8 @@ def run_query(
         is_success = False
         error_msg = f"NEED_CLARIFY: {clarify_msg}"
 
-    # ── P2: 枚举值预校验 ──
-    if final_sql and is_success and config.enable_enum_validate and result.enum_hits:
+    # ── P2: 枚举值预校验（param_mode 跳过）──
+    if final_sql and is_success and config.enable_enum_validate and result.enum_hits and not _param_mode:
         where_values = SQLValidator.extract_where_values(final_sql)
         if where_values:
             enum_mismatches = SQLValidator.validate_enum_values(where_values, result.enum_hits)
@@ -863,12 +895,24 @@ def run_query(
                     "duration_ms": _elapsed_ms(t0),
                 })
 
-    # SQL 执行 & 结果总结
+    # ── param_mode: 提取 script + placeholder，跳过执行 ──
+    script_text = ""
+    placeholder_text = ""
+    if _param_mode and _placeholder_fields and final_sql:
+        script_text = final_sql
+        placeholder_text = SQLValidator.extract_placeholder(answer) or ";".join(_placeholder_fields)
+        trace_steps.append({
+            "step": "param_mode",
+            "script": script_text,
+            "placeholder": placeholder_text,
+        })
+
+    # SQL 执行 & 结果总结（param_mode 下跳过执行，? 占位符无法直接执行）
     query_result_data = None
     execution_error = ""
     summary = ""
 
-    if final_sql and is_success and config.enable_execute and validator:
+    if final_sql and is_success and config.enable_execute and not _param_mode and validator:
         # 授权数据库校验
         referenced_dbs = SQLValidator.extract_databases(final_sql)
         authorized_dbs = load_agent_databases(config.agent_id, metadata_filter=metadata_filter)
@@ -1176,6 +1220,8 @@ def run_query(
         "summary": summary,
         "query_result": query_result_data,
         "execution_error": execution_error,
+        "script": script_text,
+        "placeholder": placeholder_text,
     }
 
 
@@ -1397,6 +1443,7 @@ async def query(req: QueryRequest, request: Request):
             history_summary=req.history_summary,
             biz_line=_filter.get("business", ""),
             metadata_filter=_filter or None,
+            metadata_context=meta.context,
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -1434,6 +1481,8 @@ async def query(req: QueryRequest, request: Request):
                 user_name=meta.user_name,
                 trace_id=meta.trace_id,
                 matched_fewshot=result.get("matched_fewshot"),
+                enum_hits=result.get("enum_hits"),
+                trace_detail=result.get("trace"),
             )
 
         return QueryResponse(
@@ -1454,6 +1503,8 @@ async def query(req: QueryRequest, request: Request):
             summary=result.get("summary", ""),
             query_result=result.get("query_result"),
             execution_error=result.get("execution_error", ""),
+            script=result.get("script", ""),
+            placeholder=result.get("placeholder", ""),
         )
 
     except Exception as e:
@@ -1529,6 +1580,12 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
     try:
         agent_config = load_agent_config(agent_id=req.agent_id)
         llm_client = create_llm_client(agent_config)
+
+        # 同步更新 retriever 和 searcher 的运行时配置
+        if retriever and retriever._initialized:
+            retriever.config = agent_config
+            if retriever.searcher:
+                retriever.searcher.config = agent_config
 
         return ConfigReloadResponse(
             status="success",
