@@ -29,14 +29,14 @@ _PROVIDER_MAP = {
     "anthropic": "anthropic",
     "claude": "anthropic",
     "openai": "openai",
-    "deepseek": "openai",      # DeepSeek 兼容 OpenAI 协议
-    "qwen": "openai",          # 通义千问（dashscope 兼容模式）
-    "zhipu": "openai",         # 智谱 GLM
-    "moonshot": "openai",      # Kimi
-    "volcengine": "openai",    # 火山引擎（豆包）
-    "baichuan": "openai",      # 百川
-    "minimax": "openai",       # MiniMax
-    "cohere": "openai",        # Cohere
+    "deepseek": "openai",  # DeepSeek 兼容 OpenAI 协议
+    "qwen": "openai",  # 通义千问（dashscope 兼容模式）
+    "zhipu": "openai",  # 智谱 GLM
+    "moonshot": "openai",  # Kimi
+    "volcengine": "openai",  # 火山引擎（豆包）
+    "baichuan": "openai",  # 百川
+    "minimax": "openai",  # MiniMax
+    "cohere": "openai",  # Cohere
 }
 
 

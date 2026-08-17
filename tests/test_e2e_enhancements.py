@@ -19,7 +19,6 @@
 """
 
 import argparse
-import json
 import sys
 import time
 import requests
@@ -53,9 +52,9 @@ def log_skip(name, reason=""):
 
 
 def log_section(name):
-    print(f"\n{CYAN}{'='*60}")
+    print(f"\n{CYAN}{'=' * 60}")
     print(f"  {name}")
-    print(f"{'='*60}{RESET}")
+    print(f"{'=' * 60}{RESET}")
 
 
 class E2ETest:
@@ -72,7 +71,9 @@ class E2ETest:
     def api(self, method, path, json_data=None, timeout=30, use_auth=False):
         url = f"{self.base_url}{path}"
         headers = self.headers if use_auth else self.admin_headers
-        resp = requests.request(method, url, json=json_data, headers=headers, timeout=timeout)
+        resp = requests.request(
+            method, url, json=json_data, headers=headers, timeout=timeout
+        )
         return resp
 
     # ────────────────────────────────────────
@@ -82,17 +83,27 @@ class E2ETest:
     def test_create_agent(self):
         log_section("Phase 1: 创建测试 Agent")
 
-        resp = self.api("POST", "/api/v1/agents", {
-            "name": "E2E-Test-Agent",
-            "handle": f"e2e-test-{int(time.time())}",
-            "description": "集成测试专用 Agent，测试完后删除",
-            "engine_type": "nl2sql",
-            "status": "live",
-        })
+        resp = self.api(
+            "POST",
+            "/api/v1/agents",
+            {
+                "name": "E2E-Test-Agent",
+                "handle": f"e2e-test-{int(time.time())}",
+                "description": "集成测试专用 Agent，测试完后删除",
+                "engine_type": "nl2sql",
+                "status": "live",
+            },
+        )
         ok = resp.status_code in (200, 201)
         data = resp.json() if ok else {}
         self.agent_id = data.get("id")
-        log_test("创建 Agent", ok, f"id={self.agent_id}" if ok else f"status={resp.status_code} {resp.text[:100]}")
+        log_test(
+            "创建 Agent",
+            ok,
+            f"id={self.agent_id}"
+            if ok
+            else f"status={resp.status_code} {resp.text[:100]}",
+        )
         return ok
 
     # ────────────────────────────────────────
@@ -106,60 +117,86 @@ class E2ETest:
             return False
 
         # model 分区
-        resp = self.api("PUT", f"/api/v1/agents/{self.agent_id}/config/model", {
-            "config_json": {
-                "provider": "dashscope",
-                "model": "qwen3-coder-plus",
-                "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-                "temperature": 0.0,
-            }
-        })
-        log_test("model 分区配置", resp.status_code == 200, resp.text[:80] if resp.status_code != 200 else "")
+        resp = self.api(
+            "PUT",
+            f"/api/v1/agents/{self.agent_id}/config/model",
+            {
+                "config_json": {
+                    "provider": "dashscope",
+                    "model": "qwen3-coder-plus",
+                    "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "temperature": 0.0,
+                }
+            },
+        )
+        log_test(
+            "model 分区配置",
+            resp.status_code == 200,
+            resp.text[:80] if resp.status_code != 200 else "",
+        )
 
         # prompt 分区
-        resp = self.api("PUT", f"/api/v1/agents/{self.agent_id}/config/prompt", {
-            "config_json": {
-                "system_prompt": "你是一个专业的 Apache Doris 数据分析专家。",
-            }
-        })
+        resp = self.api(
+            "PUT",
+            f"/api/v1/agents/{self.agent_id}/config/prompt",
+            {
+                "config_json": {
+                    "system_prompt": "你是一个专业的 Apache Doris 数据分析专家。",
+                }
+            },
+        )
         log_test("prompt 分区配置", resp.status_code == 200)
 
         # flow 分区（启用执行 + 纠错增强）
-        resp = self.api("PUT", f"/api/v1/agents/{self.agent_id}/config/flow", {
-            "config_json": {
-                "enable_execute": True,
-                "enable_summarize": True,
-                "execute_row_limit": 100,
-                "execute_timeout": 30,
-                "max_execute_fix_retries": 2,
-                "enable_empty_analysis": True,
-                "enable_enum_validate": True,
-                "enable_result_check": True,
-                "enable_timeout_fallback": False,
-            }
-        })
+        resp = self.api(
+            "PUT",
+            f"/api/v1/agents/{self.agent_id}/config/flow",
+            {
+                "config_json": {
+                    "enable_execute": True,
+                    "enable_summarize": True,
+                    "execute_row_limit": 100,
+                    "execute_timeout": 30,
+                    "max_execute_fix_retries": 2,
+                    "enable_empty_analysis": True,
+                    "enable_enum_validate": True,
+                    "enable_result_check": True,
+                    "enable_timeout_fallback": False,
+                }
+            },
+        )
         log_test("flow 分区配置", resp.status_code == 200)
 
         # expand 分区
-        resp = self.api("PUT", f"/api/v1/agents/{self.agent_id}/config/expand", {
-            "config_json": {
-                "max_tokens": 4096,
-                "top_p": 0.9,
-                "value_exact_match_boost": 2.0,
-            }
-        })
+        resp = self.api(
+            "PUT",
+            f"/api/v1/agents/{self.agent_id}/config/expand",
+            {
+                "config_json": {
+                    "max_tokens": 4096,
+                    "top_p": 0.9,
+                    "value_exact_match_boost": 2.0,
+                }
+            },
+        )
         log_test("expand 分区配置", resp.status_code == 200)
 
         # 读回验证
         resp = self.api("GET", f"/api/v1/agents/{self.agent_id}/config/flow")
         data = resp.json()
         cfg = data.get("config_json", {})
-        log_test("flow 分区读回", cfg.get("max_execute_fix_retries") == 2 and cfg.get("enable_empty_analysis") is True)
+        log_test(
+            "flow 分区读回",
+            cfg.get("max_execute_fix_retries") == 2
+            and cfg.get("enable_empty_analysis") is True,
+        )
 
         resp = self.api("GET", f"/api/v1/agents/{self.agent_id}/config/expand")
         data = resp.json()
         cfg = data.get("config_json", {})
-        log_test("expand 分区读回", cfg.get("max_tokens") == 4096 and cfg.get("top_p") == 0.9)
+        log_test(
+            "expand 分区读回", cfg.get("max_tokens") == 4096 and cfg.get("top_p") == 0.9
+        )
 
         return True
 
@@ -175,28 +212,40 @@ class E2ETest:
 
         # flow 中已设置 execute_timeout=30，expand 中设置 execute_timeout=10
         # 预期: flow 优先 → 最终应为 30
-        resp = self.api("PUT", f"/api/v1/agents/{self.agent_id}/config/expand", {
-            "config_json": {
-                "execute_timeout": 10,
-                "max_tokens": 4096,
-            }
-        })
+        resp = self.api(
+            "PUT",
+            f"/api/v1/agents/{self.agent_id}/config/expand",
+            {
+                "config_json": {
+                    "execute_timeout": 10,
+                    "max_tokens": 4096,
+                }
+            },
+        )
         log_test("expand 设置 execute_timeout=10", resp.status_code == 200)
 
         # 重新读取 flow 确认 execute_timeout 仍然是 30
         resp = self.api("GET", f"/api/v1/agents/{self.agent_id}/config/flow")
         flow_cfg = resp.json().get("config_json", {})
-        log_test("flow 分区 execute_timeout 保持 30", flow_cfg.get("execute_timeout") == 30,
-                 f"actual={flow_cfg.get('execute_timeout')}")
+        log_test(
+            "flow 分区 execute_timeout 保持 30",
+            flow_cfg.get("execute_timeout") == 30,
+            f"actual={flow_cfg.get('execute_timeout')}",
+        )
 
         # expand 自己应该存的是 10
         resp = self.api("GET", f"/api/v1/agents/{self.agent_id}/config/expand")
         expand_cfg = resp.json().get("config_json", {})
-        log_test("expand 分区 execute_timeout 存储为 10", expand_cfg.get("execute_timeout") == 10,
-                 f"actual={expand_cfg.get('execute_timeout')}")
+        log_test(
+            "expand 分区 execute_timeout 存储为 10",
+            expand_cfg.get("execute_timeout") == 10,
+            f"actual={expand_cfg.get('execute_timeout')}",
+        )
 
-        print(f"\n  {YELLOW}NOTE{RESET}: data-agen 侧优先级 (flow > expand) 在 _apply_expand 中实现，")
-        print(f"        需要通过实际查询 trace 验证最终生效值。")
+        print(
+            f"\n  {YELLOW}NOTE{RESET}: data-agen 侧优先级 (flow > expand) 在 _apply_expand 中实现，"
+        )
+        print("        需要通过实际查询 trace 验证最终生效值。")
 
     # ────────────────────────────────────────
     # Phase 4: 数据源绑定
@@ -215,16 +264,27 @@ class E2ETest:
             log_skip("数据源绑定", "无可用 biz_database")
             return False
 
-        log_test(f"可用数据源", True, f"{len(dbs)} 个: {[d.get('database_name', d.get('name', '?')) for d in dbs[:4]]}")
+        log_test(
+            "可用数据源",
+            True,
+            f"{len(dbs)} 个: {[d.get('database_name', d.get('name', '?')) for d in dbs[:4]]}",
+        )
 
         # 绑定第一个数据源
         db_id = dbs[0].get("id")
-        resp = self.api("POST", f"/api/v1/agents/{self.agent_id}/refs", {
-            "resource_type": "biz_database",
-            "resource_key": str(db_id),
-        })
-        log_test(f"绑定 biz_database id={db_id}", resp.status_code in (200, 201, 409),
-                 f"status={resp.status_code}")
+        resp = self.api(
+            "POST",
+            f"/api/v1/agents/{self.agent_id}/refs",
+            {
+                "resource_type": "biz_database",
+                "resource_key": str(db_id),
+            },
+        )
+        log_test(
+            f"绑定 biz_database id={db_id}",
+            resp.status_code in (200, 201, 409),
+            f"status={resp.status_code}",
+        )
         return True
 
     # ────────────────────────────────────────
@@ -246,7 +306,9 @@ class E2ETest:
         self.agent_token = agent_data.get("token", "")
         if not self.agent_token:
             # 尝试用系统默认 token
-            self.agent_token = self.headers.get("Authorization", "").replace("Bearer ", "")
+            self.agent_token = self.headers.get("Authorization", "").replace(
+                "Bearer ", ""
+            )
             log_test("Agent Token", True, "使用系统默认 Token")
         else:
             log_test("Agent Token", True, f"token={self.agent_token[:16]}...")
@@ -262,10 +324,15 @@ class E2ETest:
             log_skip("基础查询", "Agent 未创建")
             return None
 
-        resp = self.api("POST", f"/api/v1/agents/{self.agent_id}/query", {
-            "question": "查询账户总数",
-            "enable_explain": False,
-        }, timeout=120)
+        resp = self.api(
+            "POST",
+            f"/api/v1/agents/{self.agent_id}/query",
+            {
+                "question": "查询账户总数",
+                "enable_explain": False,
+            },
+            timeout=120,
+        )
 
         if resp.status_code != 200:
             log_test("基础查询", False, f"status={resp.status_code} {resp.text[:200]}")
@@ -274,13 +341,19 @@ class E2ETest:
         data = resp.json()
         log_test("返回 SQL", bool(data.get("sql")), f"sql={data.get('sql', '')[:80]}")
         log_test("is_success", data.get("is_success", False))
-        log_test("matched_tables 非空", len(data.get("matched_tables", [])) > 0,
-                 f"tables={data.get('matched_tables', [])}")
+        log_test(
+            "matched_tables 非空",
+            len(data.get("matched_tables", [])) > 0,
+            f"tables={data.get('matched_tables', [])}",
+        )
 
         if data.get("query_result"):
             qr = data["query_result"]
-            log_test("query_result 有数据", qr.get("row_count", 0) > 0,
-                     f"rows={qr.get('row_count')}, cols={qr.get('columns')}")
+            log_test(
+                "query_result 有数据",
+                qr.get("row_count", 0) > 0,
+                f"rows={qr.get('row_count')}, cols={qr.get('columns')}",
+            )
         else:
             log_skip("query_result", "enable_execute 可能未生效（引擎未 reload）")
 
@@ -298,14 +371,19 @@ class E2ETest:
             return
 
         # 用 expand_info 禁用执行，验证结果中不含 query_result
-        resp = self.api("POST", f"/api/v1/agents/{self.agent_id}/query", {
-            "question": "查询账户总数",
-            "enable_explain": False,
-            "expand_info": {
-                "enable_execute": False,
-                "enable_summarize": False,
-            }
-        }, timeout=120)
+        resp = self.api(
+            "POST",
+            f"/api/v1/agents/{self.agent_id}/query",
+            {
+                "question": "查询账户总数",
+                "enable_explain": False,
+                "expand_info": {
+                    "enable_execute": False,
+                    "enable_summarize": False,
+                },
+            },
+            timeout=120,
+        )
 
         if resp.status_code != 200:
             log_test("expand_info 查询", False, f"status={resp.status_code}")
@@ -313,12 +391,16 @@ class E2ETest:
 
         data = resp.json()
         log_test("expand_info 查询成功", data.get("is_success", False))
-        log_test("expand_info enable_execute=false → 无 query_result",
-                 data.get("query_result") is None,
-                 f"query_result={'有' if data.get('query_result') else '无'}")
-        log_test("expand_info enable_summarize=false → 无 summary",
-                 not data.get("summary"),
-                 f"summary={'有' if data.get('summary') else '无'}")
+        log_test(
+            "expand_info enable_execute=false → 无 query_result",
+            data.get("query_result") is None,
+            f"query_result={'有' if data.get('query_result') else '无'}",
+        )
+        log_test(
+            "expand_info enable_summarize=false → 无 summary",
+            not data.get("summary"),
+            f"summary={'有' if data.get('summary') else '无'}",
+        )
 
     # ────────────────────────────────────────
     # Phase 8: Open API 通道测试
@@ -346,17 +428,23 @@ class E2ETest:
         )
 
         if resp.status_code == 401:
-            log_skip("Open API chat", f"Token 鉴权失败 (可能是管理后台内部 token)")
+            log_skip("Open API chat", "Token 鉴权失败 (可能是管理后台内部 token)")
             return
 
         if resp.status_code != 200:
-            log_test("Open API chat", False, f"status={resp.status_code} {resp.text[:200]}")
+            log_test(
+                "Open API chat", False, f"status={resp.status_code} {resp.text[:200]}"
+            )
             return
 
         data = resp.json()
         log_test("Open API 返回 sql", bool(data.get("sql")))
         log_test("Open API 返回 session_id", bool(data.get("session_id")))
-        log_test("ChatResponse 含 summary 字段", "summary" in data, f"keys={list(data.keys())[:10]}")
+        log_test(
+            "ChatResponse 含 summary 字段",
+            "summary" in data,
+            f"keys={list(data.keys())[:10]}",
+        )
         log_test("ChatResponse 含 query_result 字段", "query_result" in data)
         log_test("ChatResponse 含 execution_error 字段", "execution_error" in data)
 
@@ -371,10 +459,15 @@ class E2ETest:
             return
 
         # 带执行的查询，检查 trace
-        resp = self.api("POST", f"/api/v1/agents/{self.agent_id}/query", {
-            "question": "查询最近7天交易总金额",
-            "enable_explain": False,
-        }, timeout=120)
+        resp = self.api(
+            "POST",
+            f"/api/v1/agents/{self.agent_id}/query",
+            {
+                "question": "查询最近7天交易总金额",
+                "enable_explain": False,
+            },
+            timeout=120,
+        )
 
         if resp.status_code != 200:
             log_test("Trace 查询", False, f"status={resp.status_code}")
@@ -402,8 +495,11 @@ class E2ETest:
                 sum_step = next(s for s in steps if s["step"] == "result_summarize")
                 # 如果 enable_result_check，trace 中可能有 result_warnings
                 if "result_warnings" in sum_step:
-                    log_test("result_summarize 含 result_warnings", True,
-                             f"warnings={sum_step['result_warnings']}")
+                    log_test(
+                        "result_summarize 含 result_warnings",
+                        True,
+                        f"warnings={sum_step['result_warnings']}",
+                    )
 
             if "empty_analysis" in step_names:
                 log_test("trace 含 empty_analysis 步骤（空结果分析）", True)
@@ -427,18 +523,21 @@ class E2ETest:
             return
 
         resp = self.api("DELETE", f"/api/v1/agents/{self.agent_id}")
-        log_test(f"删除 Agent {self.agent_id}", resp.status_code in (200, 204),
-                 f"status={resp.status_code}")
+        log_test(
+            f"删除 Agent {self.agent_id}",
+            resp.status_code in (200, 204),
+            f"status={resp.status_code}",
+        )
 
     # ────────────────────────────────────────
     # 运行全部
     # ────────────────────────────────────────
 
     def run_all(self):
-        print(f"\n{CYAN}{'#'*60}")
-        print(f"  E2E 集成测试 — SQL 纠错增强全流程")
+        print(f"\n{CYAN}{'#' * 60}")
+        print("  E2E 集成测试 — SQL 纠错增强全流程")
         print(f"  Target: {self.base_url}")
-        print(f"{'#'*60}{RESET}")
+        print(f"{'#' * 60}{RESET}")
 
         try:
             if not self.test_create_agent():
@@ -452,7 +551,9 @@ class E2ETest:
 
             # 查询测试前先等待引擎加载（如果是新 Agent 可能需要 reload）
             print(f"\n  {YELLOW}NOTE{RESET}: 新 Agent 需要引擎 reload 才能生效。")
-            print(f"        当前测试使用已有引擎配置，部分执行功能可能因引擎未 reload 而 SKIP。")
+            print(
+                "        当前测试使用已有引擎配置，部分执行功能可能因引擎未 reload 而 SKIP。"
+            )
 
             self.test_basic_query()
             self.test_expand_info_override()
@@ -463,9 +564,11 @@ class E2ETest:
 
         # 汇总
         total = passed + failed + skipped
-        print(f"\n{CYAN}{'='*60}")
-        print(f"  测试结果: {GREEN}{passed} passed{RESET}, {RED}{failed} failed{RESET}, {YELLOW}{skipped} skipped{RESET} / {total} total")
-        print(f"{'='*60}{RESET}\n")
+        print(f"\n{CYAN}{'=' * 60}")
+        print(
+            f"  测试结果: {GREEN}{passed} passed{RESET}, {RED}{failed} failed{RESET}, {YELLOW}{skipped} skipped{RESET} / {total} total"
+        )
+        print(f"{'=' * 60}{RESET}\n")
 
         if failed > 0:
             sys.exit(1)
@@ -473,8 +576,12 @@ class E2ETest:
 
 def main():
     parser = argparse.ArgumentParser(description="E2E 集成测试")
-    parser.add_argument("--base-url", default="http://localhost:8090", help="Admin API 地址")
-    parser.add_argument("--token", default="", help="系统默认 Token（DEFAULT_AGENT_TOKEN）")
+    parser.add_argument(
+        "--base-url", default="http://localhost:8090", help="Admin API 地址"
+    )
+    parser.add_argument(
+        "--token", default="", help="系统默认 Token（DEFAULT_AGENT_TOKEN）"
+    )
     args = parser.parse_args()
 
     test = E2ETest(args.base_url, args.token)

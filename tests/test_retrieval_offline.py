@@ -11,7 +11,9 @@ from pathlib import Path
 # 项目根目录加入 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -27,39 +29,162 @@ def build_mock_schemas() -> list[dict]:
             "tags": ["账户", "商户", "KYC", "风险", "支付", "开户"],
             "query_tips": "查询时需带 is_delete=0 过滤已删除记录",
             "columns": [
-                {"name": "paid", "type": "INT", "key": "UNI", "comment": "", "display_name": "账户主键ID"},
-                {"name": "customer_id", "type": "VARCHAR(108)", "key": "", "comment": "客户ID", "display_name": "客户ID"},
-                {"name": "account_type", "type": "INT", "key": "", "comment": "账户类型",
-                 "display_name": "账户类型",
-                 "enum_values": [{"value": 1000, "label": "普通账户"}, {"value": 2000, "label": "LPSP"}, {"value": 2001, "label": "TPSP"}, {"value": 3000, "label": "RPSP"}]},
-                {"name": "account_name", "type": "VARCHAR(765)", "key": "", "comment": "商户短名", "display_name": "商户名称"},
-                {"name": "legal_entity_type", "type": "INT", "key": "", "comment": "法人实体类型",
-                 "display_name": "法人实体类型",
-                 "enum_values": [{"value": 1000, "label": "个人"}, {"value": 2000, "label": "企业"}]},
-                {"name": "risk_rating_level", "type": "VARCHAR(72)", "key": "", "comment": "风险等级",
-                 "display_name": "风险等级",
-                 "enum_values": ["LOW", "MEDIUM", "HIGH", "VERY_HIGH"]},
-                {"name": "risk_score", "type": "INT", "key": "", "comment": "风险评分", "display_name": "风险评分"},
-                {"name": "country", "type": "VARCHAR(9)", "key": "", "comment": "", "display_name": "国家"},
-                {"name": "monthly_revenue", "type": "VARCHAR(288)", "key": "", "comment": "月收入/营业额", "display_name": "月营业额"},
-                {"name": "verification_status", "type": "TINYINT", "key": "", "comment": "KYC/KYB认证状态",
-                 "display_name": "KYC/KYB认证状态",
-                 "enum_values": [{"value": -1, "label": "拒绝"}, {"value": 1, "label": "已通过"}, {"value": 2, "label": "审核中"}]},
-                {"name": "account_status", "type": "TINYINT", "key": "", "comment": "账户状态",
-                 "display_name": "账户状态",
-                 "enum_values": [{"value": 0, "label": "默认"}, {"value": 1, "label": "活跃"}, {"value": 2, "label": "停用"}]},
-                {"name": "white_label_status", "type": "TINYINT", "key": "", "comment": "白标状态",
-                 "display_name": "白标状态",
-                 "enum_values": [{"value": 0, "label": "未开通"}, {"value": 1, "label": "已开通"}]},
-                {"name": "create_time", "type": "DATETIME", "key": "", "comment": "创建时间", "display_name": "创建时间"},
-                {"name": "main_email", "type": "VARCHAR(360)", "key": "", "comment": "开户邮箱", "display_name": "开户邮箱"},
-                {"name": "is_delete", "type": "INT", "key": "", "comment": "是否删除", "display_name": "是否删除",
-                 "enum_values": [{"value": 0, "label": "未删除"}, {"value": 1, "label": "已删除"}]},
-                {"name": "metadata", "type": "STRING", "key": "", "comment": "元数据", "is_skip_index": True},
-                {"name": "identification_value", "type": "VARCHAR(144)", "key": "", "comment": "", "is_sensitive": True},
+                {
+                    "name": "paid",
+                    "type": "INT",
+                    "key": "UNI",
+                    "comment": "",
+                    "display_name": "账户主键ID",
+                },
+                {
+                    "name": "customer_id",
+                    "type": "VARCHAR(108)",
+                    "key": "",
+                    "comment": "客户ID",
+                    "display_name": "客户ID",
+                },
+                {
+                    "name": "account_type",
+                    "type": "INT",
+                    "key": "",
+                    "comment": "账户类型",
+                    "display_name": "账户类型",
+                    "enum_values": [
+                        {"value": 1000, "label": "普通账户"},
+                        {"value": 2000, "label": "LPSP"},
+                        {"value": 2001, "label": "TPSP"},
+                        {"value": 3000, "label": "RPSP"},
+                    ],
+                },
+                {
+                    "name": "account_name",
+                    "type": "VARCHAR(765)",
+                    "key": "",
+                    "comment": "商户短名",
+                    "display_name": "商户名称",
+                },
+                {
+                    "name": "legal_entity_type",
+                    "type": "INT",
+                    "key": "",
+                    "comment": "法人实体类型",
+                    "display_name": "法人实体类型",
+                    "enum_values": [
+                        {"value": 1000, "label": "个人"},
+                        {"value": 2000, "label": "企业"},
+                    ],
+                },
+                {
+                    "name": "risk_rating_level",
+                    "type": "VARCHAR(72)",
+                    "key": "",
+                    "comment": "风险等级",
+                    "display_name": "风险等级",
+                    "enum_values": ["LOW", "MEDIUM", "HIGH", "VERY_HIGH"],
+                },
+                {
+                    "name": "risk_score",
+                    "type": "INT",
+                    "key": "",
+                    "comment": "风险评分",
+                    "display_name": "风险评分",
+                },
+                {
+                    "name": "country",
+                    "type": "VARCHAR(9)",
+                    "key": "",
+                    "comment": "",
+                    "display_name": "国家",
+                },
+                {
+                    "name": "monthly_revenue",
+                    "type": "VARCHAR(288)",
+                    "key": "",
+                    "comment": "月收入/营业额",
+                    "display_name": "月营业额",
+                },
+                {
+                    "name": "verification_status",
+                    "type": "TINYINT",
+                    "key": "",
+                    "comment": "KYC/KYB认证状态",
+                    "display_name": "KYC/KYB认证状态",
+                    "enum_values": [
+                        {"value": -1, "label": "拒绝"},
+                        {"value": 1, "label": "已通过"},
+                        {"value": 2, "label": "审核中"},
+                    ],
+                },
+                {
+                    "name": "account_status",
+                    "type": "TINYINT",
+                    "key": "",
+                    "comment": "账户状态",
+                    "display_name": "账户状态",
+                    "enum_values": [
+                        {"value": 0, "label": "默认"},
+                        {"value": 1, "label": "活跃"},
+                        {"value": 2, "label": "停用"},
+                    ],
+                },
+                {
+                    "name": "white_label_status",
+                    "type": "TINYINT",
+                    "key": "",
+                    "comment": "白标状态",
+                    "display_name": "白标状态",
+                    "enum_values": [
+                        {"value": 0, "label": "未开通"},
+                        {"value": 1, "label": "已开通"},
+                    ],
+                },
+                {
+                    "name": "create_time",
+                    "type": "DATETIME",
+                    "key": "",
+                    "comment": "创建时间",
+                    "display_name": "创建时间",
+                },
+                {
+                    "name": "main_email",
+                    "type": "VARCHAR(360)",
+                    "key": "",
+                    "comment": "开户邮箱",
+                    "display_name": "开户邮箱",
+                },
+                {
+                    "name": "is_delete",
+                    "type": "INT",
+                    "key": "",
+                    "comment": "是否删除",
+                    "display_name": "是否删除",
+                    "enum_values": [
+                        {"value": 0, "label": "未删除"},
+                        {"value": 1, "label": "已删除"},
+                    ],
+                },
+                {
+                    "name": "metadata",
+                    "type": "STRING",
+                    "key": "",
+                    "comment": "元数据",
+                    "is_skip_index": True,
+                },
+                {
+                    "name": "identification_value",
+                    "type": "VARCHAR(144)",
+                    "key": "",
+                    "comment": "",
+                    "is_sensitive": True,
+                },
             ],
             "relations": [
-                {"column": "customer_id", "target_table": "dim_customer", "target_column": "customer_id", "join_type": "LEFT JOIN"},
+                {
+                    "column": "customer_id",
+                    "target_table": "dim_customer",
+                    "target_column": "customer_id",
+                    "join_type": "LEFT JOIN",
+                },
             ],
         },
         {
@@ -70,18 +195,64 @@ def build_mock_schemas() -> list[dict]:
             "description": "记录所有支付交易的明细流水，包含交易金额、币种、状态、渠道等信息",
             "tags": ["交易", "支付", "流水", "收款"],
             "columns": [
-                {"name": "txn_id", "type": "BIGINT", "key": "UNI", "comment": "交易ID", "display_name": "交易ID"},
-                {"name": "paid", "type": "INT", "key": "", "comment": "账户ID", "display_name": "账户ID"},
-                {"name": "amount", "type": "DECIMAL(18,2)", "key": "", "comment": "交易金额", "display_name": "交易金额"},
-                {"name": "currency", "type": "VARCHAR(10)", "key": "", "comment": "币种", "display_name": "币种"},
-                {"name": "txn_status", "type": "VARCHAR(20)", "key": "", "comment": "交易状态",
-                 "display_name": "交易状态",
-                 "enum_values": ["SUCCESS", "FAILED", "PENDING", "CANCELLED"]},
-                {"name": "channel", "type": "VARCHAR(50)", "key": "", "comment": "交易渠道", "display_name": "交易渠道"},
-                {"name": "create_time", "type": "DATETIME", "key": "", "comment": "交易时间", "display_name": "交易时间"},
+                {
+                    "name": "txn_id",
+                    "type": "BIGINT",
+                    "key": "UNI",
+                    "comment": "交易ID",
+                    "display_name": "交易ID",
+                },
+                {
+                    "name": "paid",
+                    "type": "INT",
+                    "key": "",
+                    "comment": "账户ID",
+                    "display_name": "账户ID",
+                },
+                {
+                    "name": "amount",
+                    "type": "DECIMAL(18,2)",
+                    "key": "",
+                    "comment": "交易金额",
+                    "display_name": "交易金额",
+                },
+                {
+                    "name": "currency",
+                    "type": "VARCHAR(10)",
+                    "key": "",
+                    "comment": "币种",
+                    "display_name": "币种",
+                },
+                {
+                    "name": "txn_status",
+                    "type": "VARCHAR(20)",
+                    "key": "",
+                    "comment": "交易状态",
+                    "display_name": "交易状态",
+                    "enum_values": ["SUCCESS", "FAILED", "PENDING", "CANCELLED"],
+                },
+                {
+                    "name": "channel",
+                    "type": "VARCHAR(50)",
+                    "key": "",
+                    "comment": "交易渠道",
+                    "display_name": "交易渠道",
+                },
+                {
+                    "name": "create_time",
+                    "type": "DATETIME",
+                    "key": "",
+                    "comment": "交易时间",
+                    "display_name": "交易时间",
+                },
             ],
             "relations": [
-                {"column": "paid", "target_table": "pmt_account", "target_column": "paid", "join_type": "INNER JOIN"},
+                {
+                    "column": "paid",
+                    "target_table": "pmt_account",
+                    "target_column": "paid",
+                    "join_type": "INNER JOIN",
+                },
             ],
         },
     ]
@@ -126,13 +297,13 @@ def build_mock_fewshot() -> list[dict]:
     return [
         {
             "question": "目前有多少活跃商户",
-            "sql": "SELECT COUNT(*) AS \"活跃商户数\" FROM dwd_banking.pmt_account WHERE account_status = 1 AND is_delete = 0",
+            "sql": 'SELECT COUNT(*) AS "活跃商户数" FROM dwd_banking.pmt_account WHERE account_status = 1 AND is_delete = 0',
             "tables": ["pmt_account"],
             "difficulty": "easy",
         },
         {
             "question": "各国家的商户数量分布",
-            "sql": "SELECT country AS \"国家\", COUNT(*) AS \"商户数\" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY country ORDER BY COUNT(*) DESC",
+            "sql": 'SELECT country AS "国家", COUNT(*) AS "商户数" FROM dwd_banking.pmt_account WHERE is_delete = 0 GROUP BY country ORDER BY COUNT(*) DESC',
             "tables": ["pmt_account"],
             "difficulty": "easy",
         },
@@ -146,7 +317,11 @@ def main():
     from src.retrieval.reranker import get_reranker
     from src.retrieval.glossary_resolver import GlossaryResolver
     from src.retrieval.schema_formatter import SchemaFormatter
-    from src.retrieval.config import RERANK_INPUT_TOP_K, TABLE_SEARCH_TOP_K, ENABLE_RERANKER
+    from src.retrieval.config import (
+        RERANK_INPUT_TOP_K,
+        TABLE_SEARCH_TOP_K,
+        ENABLE_RERANKER,
+    )
 
     # 1. 准备数据
     schemas = build_mock_schemas()
@@ -216,12 +391,16 @@ def main():
             print(f"    - {c['table_name']}: {score_key}={c.get(score_key, 0):.4f}")
 
         # Few-shot
-        examples = fewshot.select(query, tables=[c["table_name"] for c in candidates], top_k=3)
+        examples = fewshot.select(
+            query, tables=[c["table_name"] for c in candidates], top_k=3
+        )
         if examples:
             print(f"  Few-shot: {[ex['question'][:30] for ex in examples]}")
 
         # Prompt 预览
-        prompt = formatter.format_all(candidates, examples, g_result["business_context"])
+        prompt = formatter.format_all(
+            candidates, examples, g_result["business_context"]
+        )
         print(f"  Prompt 长度: {len(prompt)} 字符")
 
     print(f"\n{'=' * 80}")

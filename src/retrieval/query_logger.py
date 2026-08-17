@@ -25,7 +25,11 @@ import logging
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
+    MYSQL_HOST,
+    MYSQL_PORT,
+    MYSQL_USER,
+    MYSQL_PASSWORD_URL,
+    MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +44,9 @@ class QueryLogger:
                 f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                 f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
             )
-        self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)
+        self.engine = create_engine(
+            mysql_connection_string, pool_size=2, pool_recycle=3600
+        )
 
     def log(
         self,
@@ -76,45 +82,50 @@ class QueryLogger:
             matched_terms_json = json.dumps(matched_terms or [], ensure_ascii=False)
             matched_fewshot_json = json.dumps(matched_fewshot or [], ensure_ascii=False)
             enum_hits_json = json.dumps(enum_hits or [], ensure_ascii=False)
-            trace_detail_json = json.dumps(trace_detail, ensure_ascii=False) if trace_detail else None
+            trace_detail_json = (
+                json.dumps(trace_detail, ensure_ascii=False) if trace_detail else None
+            )
             if isinstance(execution_result, dict):
                 execution_result = json.dumps(execution_result, ensure_ascii=False)
 
             with self.engine.connect() as conn:
-                result = conn.execute(text(
-                    "INSERT INTO sys_query_log "
-                    "(session_id, user_query, intent, matched_tables, matched_terms, "
-                    "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
-                    "user_feedback, feedback_score, feedback_comment, "
-                    "agent_id, scenario, business, caller, user_id, user_name, trace_id, "
-                    "matched_fewshot, enum_hits, trace_detail) "
-                    "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
-                    ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
-                    "'', 0, '', "
-                    ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, "
-                    ":matched_fewshot, :enum_hits, :trace_detail)"
-                ), {
-                    "session_id": session_id,
-                    "user_query": user_query,
-                    "intent": intent,
-                    "matched_tables": matched_tables_json,
-                    "matched_terms": matched_terms_json,
-                    "generated_sql": generated_sql,
-                    "execution_result": execution_result or "",
-                    "execution_time_ms": execution_time_ms,
-                    "retry_count": retry_count,
-                    "is_success": 1 if is_success else 0,
-                    "agent_id": agent_id,
-                    "scenario": scenario,
-                    "business": business,
-                    "caller": caller,
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    "trace_id": trace_id,
-                    "matched_fewshot": matched_fewshot_json,
-                    "enum_hits": enum_hits_json,
-                    "trace_detail": trace_detail_json,
-                })
+                result = conn.execute(
+                    text(
+                        "INSERT INTO sys_query_log "
+                        "(session_id, user_query, intent, matched_tables, matched_terms, "
+                        "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
+                        "user_feedback, feedback_score, feedback_comment, "
+                        "agent_id, scenario, business, caller, user_id, user_name, trace_id, "
+                        "matched_fewshot, enum_hits, trace_detail) "
+                        "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
+                        ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
+                        "'', 0, '', "
+                        ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, "
+                        ":matched_fewshot, :enum_hits, :trace_detail)"
+                    ),
+                    {
+                        "session_id": session_id,
+                        "user_query": user_query,
+                        "intent": intent,
+                        "matched_tables": matched_tables_json,
+                        "matched_terms": matched_terms_json,
+                        "generated_sql": generated_sql,
+                        "execution_result": execution_result or "",
+                        "execution_time_ms": execution_time_ms,
+                        "retry_count": retry_count,
+                        "is_success": 1 if is_success else 0,
+                        "agent_id": agent_id,
+                        "scenario": scenario,
+                        "business": business,
+                        "caller": caller,
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "trace_id": trace_id,
+                        "matched_fewshot": matched_fewshot_json,
+                        "enum_hits": enum_hits_json,
+                        "trace_detail": trace_detail_json,
+                    },
+                )
                 conn.commit()
                 log_id = result.lastrowid
                 logger.info(f"查询日志已记录: id={log_id}, success={is_success}")

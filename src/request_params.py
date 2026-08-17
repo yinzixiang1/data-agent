@@ -66,7 +66,6 @@ REQUEST_PARAMS: list[dict[str, Any]] = [
         "scope": ["nl2sql", "hybrid"],
         "depends_on": {"key": "enable_execute", "value": True},
     },
-
     # ═══ 纠错增强 ═══
     {
         "key": "max_execute_fix_retries",
@@ -120,7 +119,6 @@ REQUEST_PARAMS: list[dict[str, Any]] = [
         "section": "flow",
         "scope": ["nl2sql", "hybrid"],
     },
-
     # ═══ SQL 生成 ═══
     {
         "key": "max_fix_retries",
@@ -134,7 +132,6 @@ REQUEST_PARAMS: list[dict[str, Any]] = [
         "min": 0,
         "max": 10,
     },
-
     # ═══ 检索增强 ═══
     {
         "key": "exchange_rate_injection",
@@ -188,7 +185,8 @@ def init_request_params(mode: str, agent_id: int | None = None):
 
     logger.info(
         "请求参数初始化完成: mode=%s, allowed_keys=%d",
-        mode, len(ALLOWED_KEYS),
+        mode,
+        len(ALLOWED_KEYS),
     )
 
 
@@ -240,14 +238,21 @@ def _init_admin(agent_id: int | None):
     # 构建运行时（跳过 is_active=0 的）
     active = [p for p in merged if p.get("is_active", 1)]
     ALLOWED_KEYS = frozenset(p["key"] for p in active)
-    PARAM_DEFAULTS = {p["key"]: p.get("default", p.get("default_value")) for p in active}
+    PARAM_DEFAULTS = {
+        p["key"]: p.get("default", p.get("default_value")) for p in active
+    }
 
 
 def _get_db_engine():
     """创建临时 DB 连接引擎。"""
-    import os
     from sqlalchemy import create_engine
-    from src.retrieval.config import MYSQL_USER, MYSQL_PASSWORD_URL, MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE
+    from src.retrieval.config import (
+        MYSQL_USER,
+        MYSQL_PASSWORD_URL,
+        MYSQL_HOST,
+        MYSQL_PORT,
+        MYSQL_DATABASE,
+    )
 
     url = (
         f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
@@ -267,7 +272,9 @@ def _register_to_db(params: list[dict]):
 
             for i, p in enumerate(params):
                 row = conn.execute(
-                    text("SELECT id, source FROM sys_config_param WHERE `key` = :key AND section = :section"),
+                    text(
+                        "SELECT id, source FROM sys_config_param WHERE `key` = :key AND section = :section"
+                    ),
                     {"key": p["key"], "section": p.get("section", "flow")},
                 ).fetchone()
 
@@ -384,10 +391,14 @@ def _param_to_row(p: dict, sort_idx: int) -> dict:
         "section": p.get("section", "flow"),
         "level": "request",
         "scope": json.dumps(p.get("scope", []), ensure_ascii=False),
-        "depends_on": json.dumps(p["depends_on"], ensure_ascii=False) if p.get("depends_on") else None,
+        "depends_on": json.dumps(p["depends_on"], ensure_ascii=False)
+        if p.get("depends_on")
+        else None,
         "min_val": p.get("min"),
         "max_val": p.get("max"),
-        "options": json.dumps(p["options"], ensure_ascii=False) if p.get("options") else None,
+        "options": json.dumps(p["options"], ensure_ascii=False)
+        if p.get("options")
+        else None,
         "sort_order": sort_idx * 10,
     }
 

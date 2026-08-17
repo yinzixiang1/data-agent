@@ -75,7 +75,11 @@ class Qwen3Embedding(BaseEmbedding):
         self.max_length = cfg.get("max_length", 512)
 
         dtype_str = cfg.get("dtype", "float16")
-        dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
         torch_dtype = dtype_map.get(dtype_str, torch.float16)
 
         logger.info(
@@ -109,7 +113,7 @@ class Qwen3Embedding(BaseEmbedding):
 
         # MRL: 截断到目标维度
         if vecs.shape[1] > self.dim:
-            vecs = vecs[:, :self.dim]
+            vecs = vecs[:, : self.dim]
 
         # MRL 重归一化: L2 normalize 截断后的向量
         if self.mrl_renormalize:
@@ -186,7 +190,7 @@ class ApiEmbedding(BaseEmbedding):
         result = np.array(all_vecs, dtype=np.float32)
         # 截断到目标维度（兼容 API 不支持 dimensions 参数的情况）
         if result.shape[1] > self.dim:
-            result = result[:, :self.dim]
+            result = result[:, : self.dim]
 
         return result
 

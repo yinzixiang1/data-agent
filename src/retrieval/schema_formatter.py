@@ -18,7 +18,6 @@ Prompt 格式化 — 析言风格，M-Schema + 【】结构化标记。
     )
 """
 
-
 OUTPUT_RULES = """【输出要求】
 1. 输出可执行的 SQL，用 ```sql ``` 包裹，不要任何多余解释
 2. 使用 Schema 中的精确列名和表名
@@ -73,7 +72,7 @@ class SchemaFormatter:
         parts = ["【枚举映射】"]
         for e in enum_hits:
             parts.append(
-                f"- \"{e['enum_label_cn']}\" -> {e['table_name']}.{e['column_name']} = {e['sql_value']}"
+                f'- "{e["enum_label_cn"]}" -> {e["table_name"]}.{e["column_name"]} = {e["sql_value"]}'
             )
 
         return "\n".join(parts)
@@ -86,7 +85,7 @@ class SchemaFormatter:
         parts = []
         for v in value_hits:
             parts.append(
-                f"- \"{v['enum_label_cn']}\" -> {v['table_name']}.{v['column_name']} = {v['sql_value']}"
+                f'- "{v["enum_label_cn"]}" -> {v["table_name"]}.{v["column_name"]} = {v["sql_value"]}'
             )
 
         return "\n".join(parts)

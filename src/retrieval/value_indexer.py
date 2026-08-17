@@ -100,7 +100,7 @@ class ValueIndexer:
             candidates.add(m.group(1).strip())
 
         # 大写英文词（>=2字符）：币种代码、协议名等
-        for m in re.finditer(r'[A-Z]{2,}', query):
+        for m in re.finditer(r"[A-Z]{2,}", query):
             candidates.add(m.group())
 
         # jieba 词性标注: 保留名词类 + 未登录词 + 英文词
@@ -149,7 +149,12 @@ class ValueIndexer:
             hits = self.milvus_index.bm25_search(
                 entity,
                 top_k=top_k_per_entity,
-                output_fields=["table_name", "column_name", "enum_label_cn", "sql_value"],
+                output_fields=[
+                    "table_name",
+                    "column_name",
+                    "enum_label_cn",
+                    "sql_value",
+                ],
                 filter_expr=filter_expr,
             )
             for doc_id, score, ent in hits:
@@ -162,14 +167,16 @@ class ValueIndexer:
                     continue
                 seen.add(key)
 
-                results.append({
-                    "table_name": ent["table_name"],
-                    "column_name": ent["column_name"],
-                    "enum_label_cn": ent.get("enum_label_cn", ""),
-                    "sql_value": ent["sql_value"],
-                    "matched_entity": entity,
-                    "score": score,
-                })
+                results.append(
+                    {
+                        "table_name": ent["table_name"],
+                        "column_name": ent["column_name"],
+                        "enum_label_cn": ent.get("enum_label_cn", ""),
+                        "sql_value": ent["sql_value"],
+                        "matched_entity": entity,
+                        "score": score,
+                    }
+                )
 
         results.sort(key=lambda x: x["score"], reverse=True)
 

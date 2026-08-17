@@ -26,22 +26,61 @@ logger = logging.getLogger(__name__)
 
 # 数据查询意图关键词（倾向 SQL）
 _SQL_PATTERNS = [
-    r"多少", r"几个", r"几条", r"数量", r"总[额量数]", r"合计", r"汇总",
-    r"统计", r"平均", r"最[大小高低]", r"排[名行序]", r"top\s?\d",
-    r"占比", r"比例", r"环比", r"同比", r"趋势", r"增长",
-    r"查[询一下]", r"列[出举]", r"展示", r"看[看一下]",
-    r"本[月周日年]", r"上[月周日年]", r"近\d+[天日月周年]",
-    r"哪[些个].*最", r"按.*分组", r"group\s*by",
+    r"多少",
+    r"几个",
+    r"几条",
+    r"数量",
+    r"总[额量数]",
+    r"合计",
+    r"汇总",
+    r"统计",
+    r"平均",
+    r"最[大小高低]",
+    r"排[名行序]",
+    r"top\s?\d",
+    r"占比",
+    r"比例",
+    r"环比",
+    r"同比",
+    r"趋势",
+    r"增长",
+    r"查[询一下]",
+    r"列[出举]",
+    r"展示",
+    r"看[看一下]",
+    r"本[月周日年]",
+    r"上[月周日年]",
+    r"近\d+[天日月周年]",
+    r"哪[些个].*最",
+    r"按.*分组",
+    r"group\s*by",
 ]
 
 # 知识问答意图关键词（倾向文档检索）
 _KNOWLEDGE_PATTERNS = [
-    r"什么是", r"是什么", r"解释.*一下", r"介绍.*一下",
-    r"如何", r"怎么[办做样]", r"为什么", r"为啥",
-    r"流程", r"步骤", r"规则", r"规范", r"标准",
-    r"文档", r"说明", r"指南", r"手册",
-    r"区别", r"差异", r"对比",
-    r"含义", r"意思", r"定义",
+    r"什么是",
+    r"是什么",
+    r"解释.*一下",
+    r"介绍.*一下",
+    r"如何",
+    r"怎么[办做样]",
+    r"为什么",
+    r"为啥",
+    r"流程",
+    r"步骤",
+    r"规则",
+    r"规范",
+    r"标准",
+    r"文档",
+    r"说明",
+    r"指南",
+    r"手册",
+    r"区别",
+    r"差异",
+    r"对比",
+    r"含义",
+    r"意思",
+    r"定义",
 ]
 
 
@@ -91,7 +130,9 @@ class IntentClassifier:
         sql_score = _score_patterns(query, _SQL_PATTERNS)
         kb_score = _score_patterns(query, _KNOWLEDGE_PATTERNS)
 
-        logger.info(f"意图分类: sql_score={sql_score}, kb_score={kb_score}, query='{query}'")
+        logger.info(
+            f"意图分类: sql_score={sql_score}, kb_score={kb_score}, query='{query}'"
+        )
 
         if kb_score > sql_score and kb_score >= 2:
             return "knowledge"

@@ -47,7 +47,12 @@ GLOSSARY_COLLECTION = "nl2sql_glossary"
 
 TABLE_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
-    {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {
+        "name": "table_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "metadata", "dtype": DataType.JSON},
     {"name": "table_cn_name", "dtype": DataType.VARCHAR, "max_length": 256},
@@ -58,7 +63,12 @@ TABLE_FIELDS = [
 
 COLUMN_FIELDS = [
     {"name": "db_name", "dtype": DataType.VARCHAR, "max_length": 128},
-    {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {
+        "name": "table_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "metadata", "dtype": DataType.JSON},
     {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128},
@@ -70,8 +80,18 @@ COLUMN_FIELDS = [
 ]
 
 ENUM_FIELDS = [
-    {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
-    {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {
+        "name": "table_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
+    {
+        "name": "column_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "metadata", "dtype": DataType.JSON},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -82,8 +102,18 @@ ENUM_FIELDS = [
 ]
 
 VALUE_FIELDS = [
-    {"name": "table_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
-    {"name": "column_name", "dtype": DataType.VARCHAR, "max_length": 128, "inverted": True},
+    {
+        "name": "table_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
+    {
+        "name": "column_name",
+        "dtype": DataType.VARCHAR,
+        "max_length": 128,
+        "inverted": True,
+    },
     {"name": "biz_line", "dtype": DataType.VARCHAR, "max_length": 64, "inverted": True},
     {"name": "metadata", "dtype": DataType.JSON},
     {"name": "enum_code", "dtype": DataType.VARCHAR, "max_length": 64},
@@ -162,7 +192,9 @@ class IndexManager:
         table_index.create(TABLE_FIELDS, index_config=idx_cfg)
         if table_docs:
             table_texts = [d["text"] for d in table_docs]
-            dense_vecs = embedding.encode(table_texts, instruction=embedding.instructions.get("table", ""))
+            dense_vecs = embedding.encode(
+                table_texts, instruction=embedding.instructions.get("table", "")
+            )
             table_rows = [
                 {
                     "db_name": d["schema"].get("database", ""),
@@ -187,7 +219,9 @@ class IndexManager:
         column_index.create(COLUMN_FIELDS, index_config=idx_cfg)
         if column_docs:
             column_texts = [d["text"] for d in column_docs]
-            dense_vecs = embedding.encode(column_texts, instruction=embedding.instructions.get("column", ""))
+            dense_vecs = embedding.encode(
+                column_texts, instruction=embedding.instructions.get("column", "")
+            )
             column_rows = [
                 {
                     "db_name": table_db_map.get(d["table_name"], ""),
@@ -210,7 +244,9 @@ class IndexManager:
         enum_index.create(ENUM_FIELDS, index_config=idx_cfg)
         if enum_docs:
             enum_texts = [d["text"] for d in enum_docs]
-            dense_vecs = embedding.encode(enum_texts, instruction=embedding.instructions.get("enum", ""))
+            dense_vecs = embedding.encode(
+                enum_texts, instruction=embedding.instructions.get("enum", "")
+            )
             enum_rows = [
                 {
                     "table_name": d["table_name"],
@@ -250,18 +286,30 @@ class IndexManager:
                 synonyms = info.get("synonyms", [])
                 dense_texts.append(f"{term}: {definition}" if definition else term)
                 bm25_texts.append(" ".join([term] + synonyms))
-                glossary_rows.append({
-                    "term": term,
-                    "definition": (definition or "")[:2048],
-                    "sql_hint": (info.get("sql_hint", "") or "")[:2048],
-                    "related_tables": json.dumps(info.get("related_tables", []), ensure_ascii=False)[:2048],
-                    "related_columns": json.dumps(info.get("related_columns", []), ensure_ascii=False)[:2048],
-                    "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
-                    "metadata": info.get("metadata", {}),
-                })
-            dense_vecs = embedding.encode(dense_texts, instruction=embedding.instructions.get("glossary", ""))
-            glossary_index.insert(dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts)
-            logger.info(f"术语索引构建: {len(glossary_rows)} 条 (Dense=完整文本, BM25=术语名)")
+                glossary_rows.append(
+                    {
+                        "term": term,
+                        "definition": (definition or "")[:2048],
+                        "sql_hint": (info.get("sql_hint", "") or "")[:2048],
+                        "related_tables": json.dumps(
+                            info.get("related_tables", []), ensure_ascii=False
+                        )[:2048],
+                        "related_columns": json.dumps(
+                            info.get("related_columns", []), ensure_ascii=False
+                        )[:2048],
+                        "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
+                        "metadata": info.get("metadata", {}),
+                    }
+                )
+            dense_vecs = embedding.encode(
+                dense_texts, instruction=embedding.instructions.get("glossary", "")
+            )
+            glossary_index.insert(
+                dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts
+            )
+            logger.info(
+                f"术语索引构建: {len(glossary_rows)} 条 (Dense=完整文本, BM25=术语名)"
+            )
 
         # 8. table_name -> schema 映射
         table_schemas = {s["table_name"]: s for s in schemas}
@@ -378,7 +426,9 @@ class IndexManager:
             table_index.create(TABLE_FIELDS, index_config=idx_cfg)
             if table_docs:
                 table_texts = [d["text"] for d in table_docs]
-                dense_vecs = embedding.encode(table_texts, instruction=embedding.instructions.get("table", ""))
+                dense_vecs = embedding.encode(
+                    table_texts, instruction=embedding.instructions.get("table", "")
+                )
                 table_rows = [
                     {
                         "db_name": d["schema"].get("database", ""),
@@ -388,7 +438,9 @@ class IndexManager:
                         "table_cn_name": d["schema"].get("display_name", ""),
                         "table_comment": (d["schema"].get("description") or "")[:4096],
                         "business_domain": ", ".join(d["schema"].get("tags", [])),
-                        "schema_json": json.dumps(d["schema"], ensure_ascii=False)[:65535],
+                        "schema_json": json.dumps(d["schema"], ensure_ascii=False)[
+                            :65535
+                        ],
                     }
                     for d in table_docs
                 ]
@@ -400,7 +452,9 @@ class IndexManager:
             table_meta_map = {s["table_name"]: s.get("metadata", {}) for s in schemas}
             if column_docs:
                 column_texts = [d["text"] for d in column_docs]
-                dense_vecs = embedding.encode(column_texts, instruction=embedding.instructions.get("column", ""))
+                dense_vecs = embedding.encode(
+                    column_texts, instruction=embedding.instructions.get("column", "")
+                )
                 column_rows = [
                     {
                         "db_name": table_db_map.get(d["table_name"], ""),
@@ -419,7 +473,9 @@ class IndexManager:
                 column_index.insert(dense_vecs, column_texts, column_rows)
             result["column_index"] = column_index
             result["table_schemas"] = {s["table_name"]: s for s in schemas}
-            logger.info(f"table + column 索引重建完成: {len(table_docs)} 表, {len(column_docs)} 列")
+            logger.info(
+                f"table + column 索引重建完成: {len(table_docs)} 表, {len(column_docs)} 列"
+            )
 
         if "enum" in collections:
             logger.info("重建 enum 索引...")
@@ -428,7 +484,9 @@ class IndexManager:
             enum_index.create(ENUM_FIELDS, index_config=idx_cfg)
             if enum_docs:
                 enum_texts = [d["text"] for d in enum_docs]
-                dense_vecs = embedding.encode(enum_texts, instruction=embedding.instructions.get("enum", ""))
+                dense_vecs = embedding.encode(
+                    enum_texts, instruction=embedding.instructions.get("enum", "")
+                )
                 enum_rows = [
                     {
                         "table_name": d["table_name"],
@@ -478,17 +536,27 @@ class IndexManager:
                     synonyms = info.get("synonyms", [])
                     dense_texts.append(f"{term}: {definition}" if definition else term)
                     bm25_texts.append(" ".join([term] + synonyms))
-                    glossary_rows.append({
-                        "term": term,
-                        "definition": (definition or "")[:2048],
-                        "sql_hint": (info.get("sql_hint", "") or "")[:2048],
-                        "related_tables": json.dumps(info.get("related_tables", []), ensure_ascii=False)[:2048],
-                        "related_columns": json.dumps(info.get("related_columns", []), ensure_ascii=False)[:2048],
-                        "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
-                        "metadata": info.get("metadata", {}),
-                    })
-                dense_vecs = embedding.encode(dense_texts, instruction=embedding.instructions.get("glossary", ""))
-                glossary_index.insert(dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts)
+                    glossary_rows.append(
+                        {
+                            "term": term,
+                            "definition": (definition or "")[:2048],
+                            "sql_hint": (info.get("sql_hint", "") or "")[:2048],
+                            "related_tables": json.dumps(
+                                info.get("related_tables", []), ensure_ascii=False
+                            )[:2048],
+                            "related_columns": json.dumps(
+                                info.get("related_columns", []), ensure_ascii=False
+                            )[:2048],
+                            "synonyms": json.dumps(synonyms, ensure_ascii=False)[:2048],
+                            "metadata": info.get("metadata", {}),
+                        }
+                    )
+                dense_vecs = embedding.encode(
+                    dense_texts, instruction=embedding.instructions.get("glossary", "")
+                )
+                glossary_index.insert(
+                    dense_vecs, dense_texts, glossary_rows, bm25_texts=bm25_texts
+                )
             result["glossary_index"] = glossary_index
             logger.info(f"glossary 索引重建完成: {len(glossary or {})} 条")
 

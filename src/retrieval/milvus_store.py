@@ -37,11 +37,15 @@ from pymilvus import (
     Function,
     FunctionType,
     AnnSearchRequest,
-    RRFRanker,
-    WeightedRanker,
 )
 
-from src.retrieval.config import MILVUS_URI, MILVUS_DB, MILVUS_USER, MILVUS_PASSWORD, MILVUS_TOKEN
+from src.retrieval.config import (
+    MILVUS_URI,
+    MILVUS_DB,
+    MILVUS_USER,
+    MILVUS_PASSWORD,
+    MILVUS_TOKEN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +59,9 @@ _runtime_password: str = ""
 _runtime_token: str = ""
 
 
-def configure(uri: str = "", db: str = "", user: str = "", password: str = "", token: str = ""):
+def configure(
+    uri: str = "", db: str = "", user: str = "", password: str = "", token: str = ""
+):
     """注入运行时 Milvus 连接参数（覆盖 .env 默认值）。必须在 get_milvus_client() 首次调用前执行。"""
     global _runtime_uri, _runtime_db, _runtime_user, _runtime_password, _runtime_token
     _runtime_uri = uri
@@ -195,7 +201,9 @@ class MilvusIndex:
         # 用户自定义标量字段
         if scalar_fields:
             for f in scalar_fields:
-                kwargs = {k: v for k, v in f.items() if k not in ("name", "dtype", "inverted")}
+                kwargs = {
+                    k: v for k, v in f.items() if k not in ("name", "dtype", "inverted")
+                }
                 schema.add_field(f["name"], f["dtype"], **kwargs)
 
         # 索引

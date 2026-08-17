@@ -23,16 +23,23 @@ from src.retrieval.agent_config import get_expand, AgentRuntimeConfig, AgentConf
 from src.retrieval.collection_names import agent_collection_name
 from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.query_cache import QueryCache
-from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError, SchemaLoader
+from src.retrieval.schema_loader import (
+    AgentDatasourceNotConfiguredError,
+    SchemaLoadIncompleteError,
+    SchemaLoader,
+)
 
 
 # ════════════════════════════════════════════
 # security guards
 # ════════════════════════════════════════════
 
+
 class _NoConnectionEngine:
     def connect(self):
-        raise AssertionError("unsafe SQL must be rejected before opening a database connection")
+        raise AssertionError(
+            "unsafe SQL must be rejected before opening a database connection"
+        )
 
 
 class TestReadOnlySQLGuard:
@@ -68,7 +75,10 @@ class TestReadOnlySQLGuard:
     def test_execute_and_explain_fail_before_connecting(self):
         validator = SQLValidator(_NoConnectionEngine())
         assert validator.execute("DELETE FROM analytics.orders")["success"] is False
-        assert validator.explain("UPDATE analytics.orders SET status = 1")["valid"] is False
+        assert (
+            validator.explain("UPDATE analytics.orders SET status = 1")["valid"]
+            is False
+        )
 
 
 class TestDatabaseAccessGuard:
@@ -147,6 +157,102 @@ def test_schema_loader_fails_closed_without_agent_datasources(monkeypatch):
         loader.load_all(agent_id=42)
 
 
+class _EmptyResult:
+    def fetchall(self):
+        return []
+
+
+class _RecordingConnection:
+    def __init__(self, queries):
+        self.queries = queries
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, statement, params=None):
+        self.queries.append((str(statement), params or {}))
+        return _EmptyResult()
+
+
+class _RecordingEngine:
+    def __init__(self):
+        self.queries = []
+
+    def connect(self):
+        return _RecordingConnection(self.queries)
+
+
+def test_schema_loader_scopes_global_semantics_to_agent():
+    loader = SchemaLoader.__new__(SchemaLoader)
+    loader.mysql_engine = _RecordingEngine()
+
+    loader.load_glossary([7], agent_id=42)
+    loader.load_enums([7], agent_id=42)
+    loader.load_fewshot([7], agent_id=42)
+
+    queries = loader.mysql_engine.queries
+    assert "(g.agent_id = :agent_id OR g.agent_id IS NULL)" in queries[0][0]
+    assert "g.scope IN ('all', 'nl2sql')" in queries[0][0]
+    assert "d.status = 1" in queries[1][0]
+    assert "(d.agent_id = :agent_id OR d.agent_id IS NULL)" in queries[1][0]
+    assert "f.scope IN ('all', 'nl2sql')" in queries[2][0]
+    assert "(f.agent_id = :agent_id OR f.agent_id IS NULL)" in queries[2][0]
+    assert all(params.get("agent_id") == 42 for _, params in queries[:3])
+
+
+def test_schema_loader_propagates_datasource_dependency_errors():
+    loader = SchemaLoader.__new__(SchemaLoader)
+    loader.mysql_engine = _NoConnectionEngine()
+
+    with pytest.raises(RuntimeError, match="加载 Agent 执行数据库绑定") as exc_info:
+        loader._load_agent_exec_db_ids(42)
+
+    assert isinstance(exc_info.value.__cause__, AssertionError)
+
+
+def test_schema_loader_rejects_partial_doris_schema(monkeypatch):
+    loader = SchemaLoader.__new__(SchemaLoader)
+    monkeypatch.setattr(loader, "_load_agent_exec_db_ids", lambda agent_id: [7])
+    monkeypatch.setattr(
+        loader,
+        "_load_table_semantics",
+        lambda exec_db_ids: {
+            "analytics.orders": {
+                "database_name": "analytics",
+                "table_name_short": "orders",
+            }
+        },
+    )
+    monkeypatch.setattr(loader, "_load_column_semantics", lambda exec_db_ids: {})
+    monkeypatch.setattr(loader, "_load_relations", lambda exec_db_ids: {})
+    monkeypatch.setattr(
+        loader,
+        "load_glossary",
+        lambda exec_db_ids, agent_id=None: {},
+    )
+    monkeypatch.setattr(
+        loader,
+        "load_enums",
+        lambda exec_db_ids, agent_id=None: [],
+    )
+    monkeypatch.setattr(
+        loader,
+        "load_fewshot",
+        lambda exec_db_ids, agent_id=None: [],
+    )
+
+    def raise_doris_error(table_name, database):
+        raise ConnectionError("Doris unavailable")
+
+    monkeypatch.setattr(loader, "get_table_schema", raise_doris_error)
+
+    with pytest.raises(SchemaLoadIncompleteError, match="analytics.orders"):
+        loader.load_all(agent_id=42)
+
+
 class _StaticEmbedding:
     def encode(self, texts):
         return [[1.0, 0.0] for _ in texts]
@@ -158,6 +264,48 @@ def test_query_cache_isolates_contexts():
 
     assert cache.get("订单数量", context_key='{"agent_id":1}') == {"sql": "SELECT 1"}
     assert cache.get("订单数量", context_key='{"agent_id":2}') is None
+
+
+def test_query_cache_evicts_oldest_least_used_entry():
+    cache = QueryCache(_StaticEmbedding(), max_size=2)
+    cache.put("old", {"sql": "SELECT 1"})
+    cache.put("new", {"sql": "SELECT 2"})
+    cache._entries[0].created_at -= 2
+    cache._entries[1].created_at -= 1
+
+    cache.put("latest", {"sql": "SELECT 3"})
+
+    assert [entry.query for entry in cache._entries] == ["new", "latest"]
+
+
+def test_ranker_uses_sparse_weight(monkeypatch):
+    import importlib
+    import types
+
+    pymilvus = types.ModuleType("pymilvus")
+
+    class _WeightedRanker:
+        def __init__(self, dense_weight, sparse_weight):
+            self.weights = (dense_weight, sparse_weight)
+
+    pymilvus.RRFRanker = object
+    pymilvus.WeightedRanker = _WeightedRanker
+    monkeypatch.setitem(sys.modules, "pymilvus", pymilvus)
+    ranker_strategy = importlib.import_module("src.retrieval.ranker_strategy")
+    ranker_strategy = importlib.reload(ranker_strategy)
+
+    params = ranker_strategy.get_search_params(
+        {
+            "table": {
+                "ranker_type": "weighted",
+                "dense_weight": 0.4,
+                "sparse_weight": 0.6,
+            }
+        },
+        "table",
+    )
+
+    assert params.ranker.weights == (0.4, 0.6)
 
 
 def test_milvus_collection_names_are_agent_scoped():
@@ -172,6 +320,7 @@ def test_milvus_collection_names_are_agent_scoped():
 # ════════════════════════════════════════════
 # extract_where_values
 # ════════════════════════════════════════════
+
 
 class TestExtractWhereValues:
     def test_string_equal(self):
@@ -222,16 +371,53 @@ class TestExtractWhereValues:
 # validate_enum_values
 # ════════════════════════════════════════════
 
+
 class TestValidateEnumValues:
     """enum_hits 是扁平结构，每条一个枚举值。"""
 
     ENUM_HITS = [
-        {"table_name": "t1", "column_name": "status", "enum_label_cn": "成功", "sql_value": "1", "score": 0.9},
-        {"table_name": "t1", "column_name": "status", "enum_label_cn": "失败", "sql_value": "2", "score": 0.8},
-        {"table_name": "t1", "column_name": "status", "enum_label_cn": "处理中", "sql_value": "3", "score": 0.7},
-        {"table_name": "t1", "column_name": "currency", "enum_label_cn": "人民币", "sql_value": "CNY", "score": 0.9},
-        {"table_name": "t1", "column_name": "currency", "enum_label_cn": "美元", "sql_value": "USD", "score": 0.8},
-        {"table_name": "t1", "column_name": "currency", "enum_label_cn": "新加坡元", "sql_value": "SGD", "score": 0.7},
+        {
+            "table_name": "t1",
+            "column_name": "status",
+            "enum_label_cn": "成功",
+            "sql_value": "1",
+            "score": 0.9,
+        },
+        {
+            "table_name": "t1",
+            "column_name": "status",
+            "enum_label_cn": "失败",
+            "sql_value": "2",
+            "score": 0.8,
+        },
+        {
+            "table_name": "t1",
+            "column_name": "status",
+            "enum_label_cn": "处理中",
+            "sql_value": "3",
+            "score": 0.7,
+        },
+        {
+            "table_name": "t1",
+            "column_name": "currency",
+            "enum_label_cn": "人民币",
+            "sql_value": "CNY",
+            "score": 0.9,
+        },
+        {
+            "table_name": "t1",
+            "column_name": "currency",
+            "enum_label_cn": "美元",
+            "sql_value": "USD",
+            "score": 0.8,
+        },
+        {
+            "table_name": "t1",
+            "column_name": "currency",
+            "enum_label_cn": "新加坡元",
+            "sql_value": "SGD",
+            "score": 0.7,
+        },
     ]
 
     def test_match_ok(self):
@@ -287,6 +473,7 @@ class TestValidateEnumValues:
 # check_result_anomalies
 # ════════════════════════════════════════════
 
+
 class TestCheckResultAnomalies:
     def test_negative_count(self):
         warnings = SQLValidator.check_result_anomalies(
@@ -310,7 +497,8 @@ class TestCheckResultAnomalies:
         warnings = SQLValidator.check_result_anomalies(
             "查询本月交易",
             "SELECT * FROM t WHERE create_time >= '2026-05-01'",
-            ["id"], [["1"]]
+            ["id"],
+            [["1"]],
         )
         assert not any("时间" in w for w in warnings)
 
@@ -318,7 +506,8 @@ class TestCheckResultAnomalies:
         warnings = SQLValidator.check_result_anomalies(
             "按月统计交易量",
             "SELECT month, count FROM t GROUP BY month",
-            ["month", "count"], [["2026-05", "100"]]
+            ["month", "count"],
+            [["2026-05", "100"]],
         )
         assert any("仅返回 1 行" in w for w in warnings)
 
@@ -327,7 +516,7 @@ class TestCheckResultAnomalies:
             "按月统计交易量",
             "SELECT month, count FROM t GROUP BY month",
             ["month", "count"],
-            [["2026-04", "80"], ["2026-05", "100"]]
+            [["2026-04", "80"], ["2026-05", "100"]],
         )
         assert not any("仅返回 1 行" in w for w in warnings)
 
@@ -335,7 +524,8 @@ class TestCheckResultAnomalies:
         warnings = SQLValidator.check_result_anomalies(
             "查询账户",
             "SELECT * FROM t WHERE create_time > '2026-01-01'",
-            ["id", "name"], [["1", "a"], ["2", "b"]]
+            ["id", "name"],
+            [["1", "a"], ["2", "b"]],
         )
         assert warnings == []
 
@@ -350,6 +540,7 @@ class TestCheckResultAnomalies:
 # ════════════════════════════════════════════
 # simplify_sql_for_timeout
 # ════════════════════════════════════════════
+
 
 class TestSimplifySqlForTimeout:
     def test_level1_shrink_limit(self):
@@ -389,6 +580,7 @@ class TestSimplifySqlForTimeout:
 # ════════════════════════════════════════════
 # get_expand
 # ════════════════════════════════════════════
+
 
 class TestGetExpand:
     def test_basic_read(self):
@@ -442,6 +634,7 @@ class TestGetExpand:
 # _apply_expand 优先级
 # ════════════════════════════════════════════
 
+
 class TestApplyExpandPriority:
     def test_expand_skips_explicit_keys(self):
         """显式字段已设置 → expand 不覆盖。"""
@@ -486,6 +679,7 @@ class TestApplyExpandPriority:
 # ════════════════════════════════════════════
 # AgentRuntimeConfig 新字段默认值
 # ════════════════════════════════════════════
+
 
 class TestAgentRuntimeConfigDefaults:
     def test_enhancement_defaults(self):

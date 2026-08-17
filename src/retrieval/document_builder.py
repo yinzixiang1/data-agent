@@ -127,14 +127,24 @@ class DocumentBuilder:
             if col.get("is_sensitive"):
                 continue
             # 无 comment 且无 display_name 的纯技术字段跳过
-            if not col.get("comment") and not col.get("display_name") and not col.get("description"):
+            if (
+                not col.get("comment")
+                and not col.get("display_name")
+                and not col.get("description")
+            ):
                 continue
             # JSON/STRING 无注释的跳过
-            if col.get("type", "").upper() == "STRING" and not col.get("comment") and not col.get("display_name"):
+            if (
+                col.get("type", "").upper() == "STRING"
+                and not col.get("comment")
+                and not col.get("display_name")
+            ):
                 continue
 
             parts = [
-                f"表: {short_name}({display_name})" if display_name else f"表: {short_name}",
+                f"表: {short_name}({display_name})"
+                if display_name
+                else f"表: {short_name}",
                 f"列名: {col['name']}",
             ]
 
@@ -158,17 +168,21 @@ class DocumentBuilder:
             if col.get("key") and col["key"] != "":
                 parts.append(f"索引: {col['key']}")
 
-            docs.append({
-                "table_name": table_name,
-                "column_name": col["name"],
-                "column_cn_name": col.get("display_name") or col.get("comment", ""),
-                "column_type": col.get("type", ""),
-                "column_comment": desc,
-                "is_enum": bool(col.get("enum_values")),
-                "enum_values_summary": self._format_enum_values(col["enum_values"]) if col.get("enum_values") else "",
-                "doc_type": "column",
-                "text": "\n".join(parts),
-            })
+            docs.append(
+                {
+                    "table_name": table_name,
+                    "column_name": col["name"],
+                    "column_cn_name": col.get("display_name") or col.get("comment", ""),
+                    "column_type": col.get("type", ""),
+                    "column_comment": desc,
+                    "is_enum": bool(col.get("enum_values")),
+                    "enum_values_summary": self._format_enum_values(col["enum_values"])
+                    if col.get("enum_values")
+                    else "",
+                    "doc_type": "column",
+                    "text": "\n".join(parts),
+                }
+            )
 
         return docs
 
@@ -206,24 +220,28 @@ class DocumentBuilder:
                 # 向量化文本：中文标签优先，无则用英文
                 display_label = label_cn if label_cn and label_cn != label else label
                 parts = [f"枚举值: {display_label}"]
-                col_display = f"{table_name}.{col_name}" + (f"({col_cn})" if col_cn else "")
+                col_display = f"{table_name}.{col_name}" + (
+                    f"({col_cn})" if col_cn else ""
+                )
                 parts.append(f"对应字段: {col_display}")
                 parts.append(f"实际取值: {code}")
                 if label and label != display_label:
                     parts.append(f"英文标签: {label}")
 
-                docs.append({
-                    "table_name": table_name,
-                    "column_name": col_name,
-                    "biz_line": biz_line,
-                    "metadata": entry.get("metadata", {}),
-                    "enum_code": code,
-                    "enum_label_cn": label_cn or label,
-                    "description": "",
-                    "synonyms": "",
-                    "sql_value": code,
-                    "text": "\n".join(parts),
-                })
+                docs.append(
+                    {
+                        "table_name": table_name,
+                        "column_name": col_name,
+                        "biz_line": biz_line,
+                        "metadata": entry.get("metadata", {}),
+                        "enum_code": code,
+                        "enum_label_cn": label_cn or label,
+                        "description": "",
+                        "synonyms": "",
+                        "sql_value": code,
+                        "text": "\n".join(parts),
+                    }
+                )
 
         return docs
 
@@ -295,16 +313,18 @@ class DocumentBuilder:
                 if not text_parts:
                     continue
 
-                docs.append({
-                    "table_name": table_name,
-                    "column_name": col_name,
-                    "biz_line": biz_line,
-                    "metadata": entry.get("metadata", {}),
-                    "enum_code": code,
-                    "enum_label_cn": label_cn or label,
-                    "sql_value": code,
-                    "text": " ".join(text_parts),
-                })
+                docs.append(
+                    {
+                        "table_name": table_name,
+                        "column_name": col_name,
+                        "biz_line": biz_line,
+                        "metadata": entry.get("metadata", {}),
+                        "enum_code": code,
+                        "enum_label_cn": label_cn or label,
+                        "sql_value": code,
+                        "text": " ".join(text_parts),
+                    }
+                )
 
         logger.info(f"值级文档构建: {len(docs)} 条 (BM25-only)")
         return docs

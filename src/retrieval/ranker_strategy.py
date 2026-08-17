@@ -65,14 +65,16 @@ def get_search_params(
 
     if ranker_type == "weighted":
         dw = col_cfg.get("dense_weight", 0.5)
-        bw = col_cfg.get("bm25_weight", 0.5)
+        bw = col_cfg.get("sparse_weight", col_cfg.get("bm25_weight", 0.5))
         ranker = WeightedRanker(dw, bw)
     elif ranker_type == "rrf":
         ranker = RRFRanker(k=col_cfg.get("rrf_k", 60))
     elif ranker_type == "bm25_only":
         ranker = None
     else:
-        logger.warning(f"未知 ranker_type '{ranker_type}'，fallback 到 weighted(0.5, 0.5)")
+        logger.warning(
+            f"未知 ranker_type '{ranker_type}'，fallback 到 weighted(0.5, 0.5)"
+        )
         ranker = WeightedRanker(0.5, 0.5)
         ranker_type = "weighted"
 

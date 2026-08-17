@@ -75,7 +75,9 @@ class HybridSearcher:
         return self.config.index_build_config.get("hnsw", {}).get("ef_search", 64)
 
     @staticmethod
-    def _build_filter(biz_line: str = "", metadata_filter: dict | None = None) -> str | None:
+    def _build_filter(
+        biz_line: str = "", metadata_filter: dict | None = None
+    ) -> str | None:
         """构建 Milvus 过滤表达式，支持 biz_line + 任意 metadata KV 组合过滤。"""
         return build_metadata_filter(biz_line, metadata_filter)
 
@@ -170,7 +172,9 @@ class HybridSearcher:
                 logger.info(f"枚举反哺: {enum_boost_tables}")
 
         # ── 关联表补全 ──
-        current_top = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        current_top = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[
+            :top_k
+        ]
         relation_boosted: set[str] = set()
         for table_name, score in current_top:
             schema = self.table_schemas.get(table_name, {})
@@ -189,10 +193,14 @@ class HybridSearcher:
             logger.info(f"关联补全: {relation_boosted}")
 
         # ── 强制召回规则 ──
-        pinned_tables = self._apply_pinned_rules(query, table_scores, pinned_rules or [])
+        pinned_tables = self._apply_pinned_rules(
+            query, table_scores, pinned_rules or []
+        )
 
         # 按分数排序，pinned 表不受 top_k 截断
-        sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[
+            :top_k
+        ]
         top_names = {t[0] for t in sorted_tables}
         for pt in pinned_tables:
             if pt not in top_names:
@@ -203,14 +211,16 @@ class HybridSearcher:
         results = []
         for table_name, score in sorted_tables:
             schema = self.table_schemas.get(table_name, {})
-            results.append({
-                "table_name": table_name,
-                "score": score,
-                "source": "hybrid",
-                "hit_by_column": table_name in column_hit_tables,
-                "pinned": table_name in pinned_set,
-                "schema": schema,
-            })
+            results.append(
+                {
+                    "table_name": table_name,
+                    "score": score,
+                    "source": "hybrid",
+                    "hit_by_column": table_name in column_hit_tables,
+                    "pinned": table_name in pinned_set,
+                    "schema": schema,
+                }
+            )
 
         logger.info(
             f"混合检索完成: query='{query[:50]}...', "
@@ -250,15 +260,25 @@ class HybridSearcher:
 
             # 路径1: keywords 直接命中
             keywords = rule.get("keywords", [])
-            direct_hit = any(kw.upper() in query_upper for kw in keywords) if keywords else False
+            direct_hit = (
+                any(kw.upper() in query_upper for kw in keywords) if keywords else False
+            )
 
             # 路径2: entities + entity_keywords 组合命中
             combo_hit = False
             if not direct_hit:
                 entities = rule.get("entities", [])
                 entity_keywords = rule.get("entity_keywords", [])
-                has_entity = any(e.upper() in query_upper for e in entities) if entities else False
-                has_keyword = any(kw in query for kw in entity_keywords) if entity_keywords else False
+                has_entity = (
+                    any(e.upper() in query_upper for e in entities)
+                    if entities
+                    else False
+                )
+                has_keyword = (
+                    any(kw in query for kw in entity_keywords)
+                    if entity_keywords
+                    else False
+                )
                 combo_hit = has_entity and has_keyword
 
             if not direct_hit and not combo_hit:
@@ -280,7 +300,13 @@ class HybridSearcher:
 
         return pinned
 
-    def search_enums(self, query: str, top_k: int = 8, biz_line: str | None = None, metadata_filter: dict | None = None) -> list[dict]:
+    def search_enums(
+        self,
+        query: str,
+        top_k: int = 8,
+        biz_line: str | None = None,
+        metadata_filter: dict | None = None,
+    ) -> list[dict]:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
 
@@ -305,28 +331,33 @@ class HybridSearcher:
             query,
             ranker=enum_params.ranker,
             recall_k=max(top_k, enum_params.recall_limit),
-            output_fields=["table_name", "column_name", "enum_label_cn", "sql_value", "enum_code"],
+            output_fields=[
+                "table_name",
+                "column_name",
+                "enum_label_cn",
+                "sql_value",
+                "enum_code",
+            ],
             filter_expr=filter_expr,
             ef_search=self._ef_search,
         )
 
         enum_hits = []
         for doc_id, score, entity in results[:top_k]:
-            enum_hits.append({
-                "table_name": entity["table_name"],
-                "column_name": entity["column_name"],
-                "enum_label_cn": entity["enum_label_cn"],
-                "sql_value": entity["sql_value"],
-                "score": score,
-            })
+            enum_hits.append(
+                {
+                    "table_name": entity["table_name"],
+                    "column_name": entity["column_name"],
+                    "enum_label_cn": entity["enum_label_cn"],
+                    "sql_value": entity["sql_value"],
+                    "score": score,
+                }
+            )
 
         if enum_hits:
             top_hits = [
                 f"{item['enum_label_cn']}->{item['column_name']}={item['sql_value']}"
                 for item in enum_hits[:3]
             ]
-            logger.info(
-                f"枚举检索: {len(enum_hits)} 条命中, "
-                f"top={top_hits}"
-            )
+            logger.info(f"枚举检索: {len(enum_hits)} 条命中, top={top_hits}")
         return enum_hits

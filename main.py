@@ -21,8 +21,8 @@ import sys
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.retrieval.retriever import SchemaRetriever
-from src.retrieval.config import DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL
-from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
+from src.retrieval.config import DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD_URL
+from src.retrieval.agent_config import AgentConfigLoader
 from src.retrieval.query_logger import QueryLogger
 from src.retrieval.llm_factory import create_chat_model
 
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 def create_doris_engine():
     from sqlalchemy import create_engine
+
     url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
     return create_engine(url, pool_size=2, pool_recycle=3600)
 
@@ -62,6 +63,7 @@ def main():
     print(f"\n连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
     try:
         from sqlalchemy import create_engine, text
+
         url = f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
         engine = create_engine(url, connect_args={"connect_timeout": 3})
         with engine.connect() as conn:
@@ -82,6 +84,7 @@ def main():
 
     # EXPLAIN 校验器
     from src.retrieval.sql_validator import SQLValidator
+
     validator = SQLValidator(create_doris_engine())
     print("EXPLAIN 校验已启用")
 
@@ -130,6 +133,7 @@ def main():
             continue
 
         import time
+
         start_time = time.time()
 
         # RAG 检索
@@ -141,7 +145,9 @@ def main():
 
         if result.matched_terms:
             print(f"\n[术语匹配] {', '.join(result.matched_terms)}")
-        print(f"\n[命中表] {', '.join(t['table_name'] for t in result.relevant_tables)}")
+        print(
+            f"\n[命中表] {', '.join(t['table_name'] for t in result.relevant_tables)}"
+        )
 
         if show_prompt:
             print(f"\n[Prompt] ({len(result.prompt_text)} 字符)")
@@ -152,12 +158,21 @@ def main():
         # 构建多轮对话
         messages = [
             {"role": "system", "content": config.system_prompt},
-            {"role": "user", "content": f"## 用户问题\n{query}\n\n{result.prompt_text}"},
+            {
+                "role": "user",
+                "content": f"## 用户问题\n{query}\n\n{result.prompt_text}",
+            },
         ]
 
         def _to_lc(msgs):
-            _map = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
-            return [_map.get(m["role"], HumanMessage)(content=m["content"]) for m in msgs]
+            _map = {
+                "system": SystemMessage,
+                "user": HumanMessage,
+                "assistant": AIMessage,
+            }
+            return [
+                _map.get(m["role"], HumanMessage)(content=m["content"]) for m in msgs
+            ]
 
         print("\n[生成 SQL]")
         try:
@@ -175,7 +190,12 @@ def main():
 
         if not extracted_sql:
             print("[EXPLAIN] LLM 未生成 SQL，重新请求...")
-            messages.append({"role": "user", "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。"})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "你没有生成 SQL，请根据上面的表结构生成可执行的 SQL，用 ```sql ``` 包裹。",
+                }
+            )
             try:
                 resp = llm.invoke(_to_lc(messages))
                 answer = resp.content
@@ -199,14 +219,19 @@ def main():
                     break
 
                 retry_count = attempt + 1
-                print(f"[EXPLAIN] 语法失败 (第 {retry_count}/{config.max_fix_retries} 次): {check['error']}")
+                print(
+                    f"[EXPLAIN] 语法失败 (第 {retry_count}/{config.max_fix_retries} 次): {check['error']}"
+                )
                 if attempt < config.max_fix_retries - 1:
                     print("[修复中] 分析错误原因并重新生成...")
-                    messages.append({"role": "user", "content":
-                        f"你生成的 SQL 执行 EXPLAIN 校验失败。\n\n"
-                        f"## EXPLAIN 报错\n{check['error']}\n\n"
-                        f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"你生成的 SQL 执行 EXPLAIN 校验失败。\n\n"
+                            f"## EXPLAIN 报错\n{check['error']}\n\n"
+                            f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。",
+                        }
+                    )
                     try:
                         resp = llm.invoke(_to_lc(messages))
                         answer = resp.content
@@ -216,16 +241,21 @@ def main():
                         break
                 else:
                     is_success = False
-                    print(f"[EXPLAIN] 已达最大重试次数 ({config.max_fix_retries})，输出最后结果")
+                    print(
+                        f"[EXPLAIN] 已达最大重试次数 ({config.max_fix_retries})，输出最后结果"
+                    )
 
         if syntax_ok and check and check["plan"]:
             print("[执行计划分析] 将 EXPLAIN 结果交给 LLM 分析...")
-            messages.append({"role": "user", "content":
-                f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
-                f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
-                f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
-                f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM"
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
+                    f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
+                    f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
+                    f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM",
+                }
+            )
             try:
                 resp = llm.invoke(_to_lc(messages))
                 review_result = resp.content

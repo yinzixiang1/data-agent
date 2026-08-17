@@ -163,7 +163,11 @@ class SQLValidator:
                     else:
                         state = "normal"
             elif state == "backtick":
-                output.append(char if preserve_quoted_identifiers else ("\n" if char == "\n" else " "))
+                output.append(
+                    char
+                    if preserve_quoted_identifiers
+                    else ("\n" if char == "\n" else " ")
+                )
                 if char == "`":
                     state = "normal"
             elif state == "line_comment":
@@ -187,7 +191,9 @@ class SQLValidator:
             return False, "SQL 为空或包含非法字符"
 
         structural_sql = cls._strip_literals_and_comments(sql)
-        statements = [part.strip() for part in structural_sql.split(";") if part.strip()]
+        statements = [
+            part.strip() for part in structural_sql.split(";") if part.strip()
+        ]
         if len(statements) != 1:
             return False, "只允许执行一条 SQL"
 
@@ -200,7 +206,9 @@ class SQLValidator:
             return False, "不允许通过 SQL 导出文件"
         if re.search(r"\bINTO\b", statement, re.IGNORECASE):
             return False, "不允许 SELECT INTO"
-        if re.search(r"\bFOR\s+UPDATE\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", statement, re.IGNORECASE):
+        if re.search(
+            r"\bFOR\s+UPDATE\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", statement, re.IGNORECASE
+        ):
             return False, "不允许锁定读取"
         if re.match(r"^WITH\b", statement, re.IGNORECASE) and not re.search(
             r"\bSELECT\b", statement, re.IGNORECASE
@@ -256,7 +264,9 @@ class SQLValidator:
         except Exception as e:
             error_msg = str(e)
             # 提取核心错误信息（去掉 SQLAlchemy 包装）
-            inner = re.search(r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg)
+            inner = re.search(
+                r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg
+            )
             if inner:
                 error_msg = f"Error {inner.group(1)}: {inner.group(2)}"
 
@@ -281,8 +291,11 @@ class SQLValidator:
             sql,
             preserve_quoted_identifiers=True,
         )
-        pattern = r'(?:FROM|JOIN)\s+`?(\w+)`?\s*\.\s*`?\w+`?'
-        return {match.lower() for match in re.findall(pattern, structural_sql, re.IGNORECASE)}
+        pattern = r"(?:FROM|JOIN)\s+`?(\w+)`?\s*\.\s*`?\w+`?"
+        return {
+            match.lower()
+            for match in re.findall(pattern, structural_sql, re.IGNORECASE)
+        }
 
     @classmethod
     def validate_database_access(
@@ -301,16 +314,16 @@ class SQLValidator:
         cte_names = {
             match.lower()
             for match in re.findall(
-                r'(?:\bWITH(?:\s+RECURSIVE)?|,)\s*`?(\w+)`?'
-                r'(?:\s*\([^)]*\))?\s+AS\s*\(',
+                r"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*`?(\w+)`?"
+                r"(?:\s*\([^)]*\))?\s+AS\s*\(",
                 structural_sql,
                 re.IGNORECASE,
             )
         }
         relation_pattern = re.compile(
-            r'\b(?:FROM|JOIN)\s+(?!\s*\()'
-            r'(?P<first>`?\w+`?)'
-            r'(?:\s*\.\s*(?P<second>`?\w+`?))?',
+            r"\b(?:FROM|JOIN)\s+(?!\s*\()"
+            r"(?P<first>`?\w+`?)"
+            r"(?:\s*\.\s*(?P<second>`?\w+`?))?",
             re.IGNORECASE,
         )
         referenced_databases: set[str] = set()
@@ -326,7 +339,11 @@ class SQLValidator:
             return False, "不允许使用逗号连接表，请使用显式 JOIN", referenced_databases
         if unqualified_tables:
             tables = ", ".join(sorted(unqualified_tables))
-            return False, f"SQL 中的物理表必须使用数据库限定名: {tables}", referenced_databases
+            return (
+                False,
+                f"SQL 中的物理表必须使用数据库限定名: {tables}",
+                referenced_databases,
+            )
         if not referenced_databases:
             return False, "SQL 未引用可验证的数据库限定表", set()
 
@@ -334,14 +351,18 @@ class SQLValidator:
         unauthorized = referenced_databases - authorized
         if unauthorized:
             databases = ", ".join(sorted(unauthorized))
-            return False, f"数据库 {databases} 未在当前 Agent 的授权范围内", referenced_databases
+            return (
+                False,
+                f"数据库 {databases} 未在当前 Agent 的授权范围内",
+                referenced_databases,
+            )
         return True, "", referenced_databases
 
     @staticmethod
     def _has_implicit_comma_join(structural_sql: str) -> bool:
         """检测每个 FROM 子句顶层的逗号连接，避免遗漏后续表。"""
         terminator = re.compile(
-            r'\b(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|EXCEPT|INTERSECT|QUALIFY|WINDOW)\b',
+            r"\b(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|EXCEPT|INTERSECT|QUALIFY|WINDOW)\b",
             re.IGNORECASE,
         )
         for from_match in re.finditer(r"\bFROM\b", structural_sql, re.IGNORECASE):
@@ -400,7 +421,9 @@ class SQLValidator:
                     exec_sql = f"{exec_sql} LIMIT {row_limit + 1}"
 
             with self.engine.connect() as conn:
-                result = conn.execute(text(f"/*+ SET_VAR(query_timeout={timeout}) */ {exec_sql}"))
+                result = conn.execute(
+                    text(f"/*+ SET_VAR(query_timeout={timeout}) */ {exec_sql}")
+                )
                 columns = list(result.keys())
                 all_rows = result.fetchall()
 
@@ -424,7 +447,9 @@ class SQLValidator:
 
         except Exception as e:
             error_msg = str(e)
-            inner = re.search(r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg)
+            inner = re.search(
+                r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg
+            )
             if inner:
                 error_msg = f"Error {inner.group(1)}: {inner.group(2)}"
             logger.warning(f"SQL 执行失败: {error_msg}")
@@ -444,6 +469,7 @@ class SQLValidator:
             return ""
         from datetime import date, datetime
         from decimal import Decimal
+
         if isinstance(value, datetime):
             return value.strftime("%Y-%m-%d %H:%M:%S")
         if isinstance(value, date):
@@ -464,7 +490,9 @@ class SQLValidator:
         conditions = []
         # col = 'val' 或 col = "val"
         for m in re.finditer(r"`?(\w+)`?\s*=\s*['\"]([^'\"]+)['\"]", sql):
-            conditions.append({"column": m.group(1), "operator": "=", "value": m.group(2)})
+            conditions.append(
+                {"column": m.group(1), "operator": "=", "value": m.group(2)}
+            )
         # col = 123 (纯数字)
         for m in re.finditer(r"`?(\w+)`?\s*=\s*(\d+)(?!\w)", sql):
             col = m.group(1)
@@ -474,7 +502,9 @@ class SQLValidator:
         return conditions
 
     @staticmethod
-    def validate_enum_values(where_values: list[dict], enum_hits: list[dict]) -> list[dict]:
+    def validate_enum_values(
+        where_values: list[dict], enum_hits: list[dict]
+    ) -> list[dict]:
         """将 WHERE 条件中的值与枚举定义交叉校验。
 
         enum_hits 是扁平列表，每条表示一个枚举值：
@@ -490,6 +520,7 @@ class SQLValidator:
         """
         # 按 column_name 分组
         from collections import defaultdict
+
         grouped: dict[str, list[dict]] = defaultdict(list)
         for e in enum_hits:
             col = (e.get("column_name") or "").lower()
@@ -506,21 +537,32 @@ class SQLValidator:
             if cond["value"] in valid_values:
                 continue
             # 尝试通过中文标签匹配
-            label_map = {e.get("enum_label_cn", ""): str(e.get("sql_value", "")) for e in col_enums if e.get("enum_label_cn")}
+            label_map = {
+                e.get("enum_label_cn", ""): str(e.get("sql_value", ""))
+                for e in col_enums
+                if e.get("enum_label_cn")
+            }
             suggestion = ""
             if cond["value"] in label_map:
                 suggestion = f"应使用 {cond['column']} = {label_map[cond['value']]} 表示'{cond['value']}'"
-            expected_str = ", ".join(f"{e.get('sql_value', '')}={e.get('enum_label_cn', '')}" for e in col_enums[:10])
-            mismatches.append({
-                "column": cond["column"],
-                "sql_value": cond["value"],
-                "expected_values": expected_str,
-                "suggestion": suggestion,
-            })
+            expected_str = ", ".join(
+                f"{e.get('sql_value', '')}={e.get('enum_label_cn', '')}"
+                for e in col_enums[:10]
+            )
+            mismatches.append(
+                {
+                    "column": cond["column"],
+                    "sql_value": cond["value"],
+                    "expected_values": expected_str,
+                    "suggestion": suggestion,
+                }
+            )
         return mismatches
 
     @staticmethod
-    def check_result_anomalies(question: str, sql: str, columns: list[str], rows: list[list]) -> list[str]:
+    def check_result_anomalies(
+        question: str, sql: str, columns: list[str], rows: list[list]
+    ) -> list[str]:
         """规则型预检：快速发现查询结果中的明显异常。
 
         Returns:
@@ -542,12 +584,18 @@ class SQLValidator:
         # 2. 问时间范围但 SQL 无时间条件
         time_keywords = ["本月", "今天", "本周", "今日", "当月", "昨天", "昨日"]
         if any(kw in question for kw in time_keywords):
-            if not re.search(r"WHERE.*(?:date|time|created|updated|create_time|complete_time)", sql, re.IGNORECASE):
+            if not re.search(
+                r"WHERE.*(?:date|time|created|updated|create_time|complete_time)",
+                sql,
+                re.IGNORECASE,
+            ):
                 warnings.append("问题涉及时间范围，但 SQL 未包含时间条件")
 
         # 3. 预期多行但只有 1 行
         multi_keywords = [r"排名", r"top\s*\d", r"分组", r"按.*统计", r"各", r"每"]
-        if len(rows) == 1 and any(re.search(kw, question, re.IGNORECASE) for kw in multi_keywords):
+        if len(rows) == 1 and any(
+            re.search(kw, question, re.IGNORECASE) for kw in multi_keywords
+        ):
             warnings.append("预期多行结果但仅返回 1 行，聚合粒度可能有误")
 
         return warnings
@@ -565,7 +613,12 @@ class SQLValidator:
                 return re.sub(r"\bLIMIT\s+\d+", "LIMIT 50", sql, flags=re.IGNORECASE)
             return sql.rstrip().rstrip(";") + " LIMIT 50"
         if level == 2:
-            simplified = re.sub(r"\bORDER\s+BY\s+.+?(?=\bLIMIT\b|\bUNION\b|;|\s*$)", "", sql, flags=re.IGNORECASE | re.DOTALL)
+            simplified = re.sub(
+                r"\bORDER\s+BY\s+.+?(?=\bLIMIT\b|\bUNION\b|;|\s*$)",
+                "",
+                sql,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             return simplified.strip() if simplified.strip() != sql.strip() else None
         return None
 

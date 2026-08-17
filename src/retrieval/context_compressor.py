@@ -49,7 +49,9 @@ class ContextCompressor:
 
     def __init__(self, model: BaseChatModel, custom_prompt: str = ""):
         self.model = model
-        self.prompt_template = custom_prompt.strip() if custom_prompt else COMPRESS_PROMPT
+        self.prompt_template = (
+            custom_prompt.strip() if custom_prompt else COMPRESS_PROMPT
+        )
 
     def compress(self, history_summary: str, current_question: str) -> str:
         """
@@ -70,7 +72,9 @@ class ContextCompressor:
         if prev_tables:
             history_text += f"\n涉及表: {prev_tables}"
 
-        prompt = self.prompt_template.format(history=history_text, current=current_question)
+        prompt = self.prompt_template.format(
+            history=history_text, current=current_question
+        )
 
         try:
             resp = self.model.invoke([HumanMessage(content=prompt)])

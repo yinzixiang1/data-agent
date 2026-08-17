@@ -91,7 +91,13 @@ class GlossaryResolver:
             query,
             ranker=self.search_params.ranker,
             recall_k=self.search_params.recall_limit,
-            output_fields=["term", "definition", "sql_hint", "related_tables", "related_columns"],
+            output_fields=[
+                "term",
+                "definition",
+                "sql_hint",
+                "related_tables",
+                "related_columns",
+            ],
             filter_expr=filter_expr,
             ef_search=self.ef_search,
         )
@@ -139,7 +145,9 @@ class GlossaryResolver:
         business_context = "\n".join(context_parts) if context_parts else ""
 
         if matched_terms:
-            logger.info(f"术语混合匹配: {matched_terms} (min_score={min_score:.4f}, max_score={max_score:.4f})")
+            logger.info(
+                f"术语混合匹配: {matched_terms} (min_score={min_score:.4f}, max_score={max_score:.4f})"
+            )
         elif results:
             top3 = [(e["term"], f"{s:.4f}") for _, s, e in results[:3]]
             logger.info(f"术语未命中 (top3={top3}, min_score={min_score:.4f})")

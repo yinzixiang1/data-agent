@@ -206,10 +206,15 @@ class SchemaRetriever:
         if "fewshot_selector" in indices:
             self.fewshot = indices["fewshot_selector"]
         if "glossary_index" in indices:
-            glossary_params = get_search_params(self.config.collection_search_config, "glossary")
-            ef_search = self.config.index_build_config.get("hnsw", {}).get("ef_search", 64)
+            glossary_params = get_search_params(
+                self.config.collection_search_config, "glossary"
+            )
+            ef_search = self.config.index_build_config.get("hnsw", {}).get(
+                "ef_search", 64
+            )
             self.glossary_resolver = GlossaryResolver(
-                embedding, indices["glossary_index"],
+                embedding,
+                indices["glossary_index"],
                 search_params=glossary_params,
                 ef_search=ef_search,
             )
@@ -268,18 +273,26 @@ class SchemaRetriever:
         resolve_kwargs = {}
         if glossary_score_threshold is not None:
             resolve_kwargs["score_threshold"] = glossary_score_threshold
-        glossary_result = self.glossary_resolver.resolve(user_query, metadata_filter=metadata_filter, **resolve_kwargs)
+        glossary_result = self.glossary_resolver.resolve(
+            user_query, metadata_filter=metadata_filter, **resolve_kwargs
+        )
         enriched_query = glossary_result["enriched_query"]
         business_context = glossary_result["business_context"]
 
         # 2. Value 匹配 (Schema Linking)
         value_hits = []
         if self.value_indexer:
-            value_hits = self.value_indexer.match_values(user_query, biz_line=biz_line, metadata_filter=metadata_filter)
+            value_hits = self.value_indexer.match_values(
+                user_query, biz_line=biz_line, metadata_filter=metadata_filter
+            )
 
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
-        rerank_k = table_params.rerank_top_n if cfg.enable_reranker and table_params.rerank else top_k
+        rerank_k = (
+            table_params.rerank_top_n
+            if cfg.enable_reranker and table_params.rerank
+            else top_k
+        )
         candidates = self.searcher.search(
             enriched_query,
             top_k=max(rerank_k, top_k),
@@ -292,7 +305,12 @@ class SchemaRetriever:
         reranker = get_reranker()
         all_search_candidates = {c["table_name"]: c for c in candidates}
         pinned_candidates = [c for c in candidates if c.get("pinned")]
-        if reranker and cfg.enable_reranker and table_params.rerank and len(candidates) > top_k:
+        if (
+            reranker
+            and cfg.enable_reranker
+            and table_params.rerank
+            and len(candidates) > top_k
+        ):
             candidates = reranker.rerank(user_query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
@@ -314,13 +332,19 @@ class SchemaRetriever:
                     continue
                 # 解析短名为全限定名
                 related = self.searcher._resolve_full_name(target_short)
-                if related and related in all_search_candidates and related not in hit_names:
+                if (
+                    related
+                    and related in all_search_candidates
+                    and related not in hit_names
+                ):
                     candidates.append(all_search_candidates[related])
                     hit_names.add(related)
                     logger.info(f"Reranker 后补回关联表: {related}")
 
         # 6. 枚举值检索
-        enum_hits = self.searcher.search_enums(user_query, biz_line=biz_line, metadata_filter=metadata_filter)
+        enum_hits = self.searcher.search_enums(
+            user_query, biz_line=biz_line, metadata_filter=metadata_filter
+        )
 
         # 7. Few-shot 示例检索
         hit_tables = [c["table_name"] for c in candidates]

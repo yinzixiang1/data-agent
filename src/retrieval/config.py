@@ -119,7 +119,9 @@ CONFIG_PROFILE = os.getenv("CONFIG_PROFILE", "")
 
 # ── 启动行为 ──
 # REBUILD_INDEX_ON_STARTUP: 启动时是否全量重建索引（true=重建, false=复用已有 Collection）
-REBUILD_INDEX_ON_STARTUP = os.getenv("REBUILD_INDEX_ON_STARTUP", "false").lower() == "true"
+REBUILD_INDEX_ON_STARTUP = (
+    os.getenv("REBUILD_INDEX_ON_STARTUP", "false").lower() == "true"
+)
 
 # ── 日志 ──
 # LOG_DIR: 日志输出目录（相对于项目根目录或绝对路径）

@@ -17,8 +17,15 @@ from collections import OrderedDict
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD_URL,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
+    DORIS_HOST,
+    DORIS_PORT,
+    DORIS_USER,
+    DORIS_PASSWORD_URL,
+    MYSQL_HOST,
+    MYSQL_PORT,
+    MYSQL_USER,
+    MYSQL_PASSWORD_URL,
+    MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 class AgentDatasourceNotConfiguredError(RuntimeError):
     """Agent 尚未绑定可用执行数据库。"""
+
+
+class SchemaLoadIncompleteError(RuntimeError):
+    """Doris Schema 未能完整加载。"""
 
 
 class SchemaLoader:
@@ -53,14 +64,18 @@ class SchemaLoader:
                 f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
                 f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
             )
-        self.doris_engine = create_engine(connection_string, pool_size=5, pool_recycle=3600)
+        self.doris_engine = create_engine(
+            connection_string, pool_size=5, pool_recycle=3600
+        )
 
         if mysql_connection_string is None:
             mysql_connection_string = (
                 f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                 f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
             )
-        self.mysql_engine = create_engine(mysql_connection_string, pool_size=5, pool_recycle=3600)
+        self.mysql_engine = create_engine(
+            mysql_connection_string, pool_size=5, pool_recycle=3600
+        )
 
     # ── Doris 元数据加载 ──
 
@@ -77,14 +92,16 @@ class SchemaLoader:
             col_rows = conn.execute(text(f"DESCRIBE `{db}`.`{table_name}`")).fetchall()
             columns = []
             for row in col_rows:
-                columns.append({
-                    "name": row[0],
-                    "type": row[1],
-                    "nullable": str(row[2]).upper() == "YES",
-                    "key": row[3] or "",
-                    "default": row[4],
-                    "comment": row[5] if len(row) > 5 else "",
-                })
+                columns.append(
+                    {
+                        "name": row[0],
+                        "type": row[1],
+                        "nullable": str(row[2]).upper() == "YES",
+                        "key": row[3] or "",
+                        "default": row[4],
+                        "comment": row[5] if len(row) > 5 else "",
+                    }
+                )
 
             table_comment = ""
             try:
@@ -93,6 +110,7 @@ class SchemaLoader:
                 ).fetchone()
                 if create_rows:
                     import re
+
                     match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", create_rows[1])
                     if match:
                         table_comment = match.group(1)
@@ -113,14 +131,18 @@ class SchemaLoader:
         """从 da_agent_exec_db 加载 Agent 绑定的执行数据库 ID 列表。"""
         try:
             with self.mysql_engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT DISTINCT id FROM da_agent_exec_db "
-                    "WHERE agent_id = :agent_id AND status = 1"
-                ), {"agent_id": agent_id}).fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT DISTINCT id FROM da_agent_exec_db "
+                        "WHERE agent_id = :agent_id AND status = 1"
+                    ),
+                    {"agent_id": agent_id},
+                ).fetchall()
             return [int(row[0]) for row in rows]
-        except Exception as e:
-            logger.warning(f"加载 Agent 执行数据库绑定失败: {e}")
-            return []
+        except Exception as exc:
+            raise RuntimeError(
+                f"加载 Agent 执行数据库绑定 (agent_id={agent_id})"
+            ) from exc
 
     @staticmethod
     def _exec_db_in_clause(exec_db_ids: list[int], column: str = "t.exec_db_id") -> str:
@@ -129,12 +151,23 @@ class SchemaLoader:
         return f" AND {column} IN ({id_list})"
 
     @staticmethod
-    def _exec_db_in_clause_nullable(exec_db_ids: list[int], column: str = "exec_db_id") -> str:
+    def _exec_db_in_clause_nullable(
+        exec_db_ids: list[int], column: str = "exec_db_id"
+    ) -> str:
         """生成 (exec_db_id IN (...) OR exec_db_id IS NULL) 子句，允许全局数据。"""
         id_list = ",".join(str(int(i)) for i in exec_db_ids)
         return f" AND ({column} IN ({id_list}) OR {column} IS NULL)"
 
-    def _load_table_semantics(self, exec_db_ids: list[int] | None = None) -> dict[str, dict]:
+    @staticmethod
+    def _agent_scope_clause(agent_id: int | None, column: str) -> str:
+        """限制为当前 Agent 数据，同时允许显式的全局数据。"""
+        if agent_id is None:
+            return ""
+        return f" AND ({column} = :agent_id OR {column} IS NULL)"
+
+    def _load_table_semantics(
+        self, exec_db_ids: list[int] | None = None
+    ) -> dict[str, dict]:
         """从 da_semantic_table 加载表语义 → {db.table: {display_name, description, tags, query_tips, metadata}}"""
         sql = (
             "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.business_line, b.meta_json "
@@ -175,7 +208,9 @@ class SchemaLoader:
         logger.info(f"MySQL 表语义加载: {len(result)} 张表")
         return result
 
-    def _load_column_semantics(self, exec_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
+    def _load_column_semantics(
+        self, exec_db_ids: list[int] | None = None
+    ) -> dict[str, list[dict]]:
         """从 da_semantic_column JOIN da_semantic_table 加载列语义 → {db.table: [col_dict, ...]}"""
         sql = (
             "SELECT t.name, c.name, c.display_name, c.description, "
@@ -219,7 +254,9 @@ class SchemaLoader:
         logger.info(f"MySQL 列语义加载: {sum(len(v) for v in result.values())} 列")
         return result
 
-    def _load_relations(self, exec_db_ids: list[int] | None = None) -> dict[str, list[dict]]:
+    def _load_relations(
+        self, exec_db_ids: list[int] | None = None
+    ) -> dict[str, list[dict]]:
         """从 da_semantic_relation JOIN da_semantic_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
         sql = (
             "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type, "
@@ -249,18 +286,24 @@ class SchemaLoader:
         logger.info(f"MySQL 关联关系加载: {sum(len(v) for v in result.values())} 条")
         return result
 
-    def load_glossary(self, exec_db_ids: list[int] | None = None) -> dict[str, dict]:
+    def load_glossary(
+        self,
+        exec_db_ids: list[int] | None = None,
+        agent_id: int | None = None,
+    ) -> dict[str, dict]:
         """从 da_semantic_glossary 加载业务术语 → {term: info_dict}"""
         sql = (
             "SELECT g.term, g.definition, g.sql_hint, g.related_tables, g.related_columns, g.synonyms, b.meta_json, b.business_line "
             "FROM da_semantic_glossary g "
             "LEFT JOIN da_agent_exec_db b ON g.exec_db_id = b.id "
-            "WHERE g.status = 1"
+            "WHERE g.status = 1 AND g.scope IN ('all', 'nl2sql')"
         )
         if exec_db_ids:
             sql += self._exec_db_in_clause_nullable(exec_db_ids, "g.exec_db_id")
+        sql += self._agent_scope_clause(agent_id, "g.agent_id")
+        params = {"agent_id": agent_id} if agent_id is not None else {}
         with self.mysql_engine.connect() as conn:
-            rows = conn.execute(text(sql)).fetchall()
+            rows = conn.execute(text(sql), params).fetchall()
 
         glossary = {}
         for row in rows:
@@ -276,7 +319,9 @@ class SchemaLoader:
                 try:
                     related_columns = json.loads(row[4])
                 except (json.JSONDecodeError, TypeError):
-                    related_columns = [c.strip() for c in row[4].split(",") if c.strip()]
+                    related_columns = [
+                        c.strip() for c in row[4].split(",") if c.strip()
+                    ]
 
             synonyms = []
             if row[5]:
@@ -307,7 +352,11 @@ class SchemaLoader:
         logger.info(f"MySQL 业务术语加载: {len(glossary)} 条")
         return glossary
 
-    def load_enums(self, exec_db_ids: list[int] | None = None) -> list[dict]:
+    def load_enums(
+        self,
+        exec_db_ids: list[int] | None = None,
+        agent_id: int | None = None,
+    ) -> list[dict]:
         """从 da_semantic_enum JOIN da_semantic_enum_value 加载枚举字典 → [{table_name, field_name, field_label, metadata, values: [...]}]"""
         sql = (
             "SELECT d.table_name, d.field_name, d.field_label, "
@@ -315,13 +364,15 @@ class SchemaLoader:
             "FROM da_semantic_enum_value v "
             "JOIN da_semantic_enum d ON v.definition_id = d.id "
             "LEFT JOIN da_agent_exec_db b ON d.exec_db_id = b.id "
-            "WHERE 1=1"
+            "WHERE d.status = 1 AND d.scope IN ('all', 'nl2sql')"
         )
         if exec_db_ids:
             sql += self._exec_db_in_clause_nullable(exec_db_ids, "d.exec_db_id")
+        sql += self._agent_scope_clause(agent_id, "d.agent_id")
         sql += " ORDER BY d.table_name, d.field_name, v.sort_order"
+        params = {"agent_id": agent_id} if agent_id is not None else {}
         with self.mysql_engine.connect() as conn:
-            rows = conn.execute(text(sql)).fetchall()
+            rows = conn.execute(text(sql), params).fetchall()
 
         groups: dict[tuple, dict] = OrderedDict()
         for row in rows:
@@ -339,17 +390,25 @@ class SchemaLoader:
                     "metadata": metadata,
                     "values": [],
                 }
-            groups[key]["values"].append({
-                "code": row[3],
-                "label": row[4] or "",
-                "label_cn": row[5] or "",
-            })
+            groups[key]["values"].append(
+                {
+                    "code": row[3],
+                    "label": row[4] or "",
+                    "label_cn": row[5] or "",
+                }
+            )
 
         result = list(groups.values())
-        logger.info(f"MySQL 枚举字典加载: {len(result)} 个字段, {sum(len(g['values']) for g in result)} 个值")
+        logger.info(
+            f"MySQL 枚举字典加载: {len(result)} 个字段, {sum(len(g['values']) for g in result)} 个值"
+        )
         return result
 
-    def load_fewshot(self, exec_db_ids: list[int] | None = None) -> list[dict]:
+    def load_fewshot(
+        self,
+        exec_db_ids: list[int] | None = None,
+        agent_id: int | None = None,
+    ) -> list[dict]:
         """从 da_semantic_fewshot + da_semantic_query 加载 Few-shot 示例。"""
         examples = []
 
@@ -359,11 +418,15 @@ class SchemaLoader:
                 "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json, b.business_line "
                 "FROM da_semantic_fewshot f "
                 "LEFT JOIN da_agent_exec_db b ON f.exec_db_id = b.id "
-                "WHERE f.status = 1"
+                "WHERE f.status = 1 AND f.scope IN ('all', 'nl2sql')"
             )
             if exec_db_ids:
-                fewshot_sql += self._exec_db_in_clause_nullable(exec_db_ids, "f.exec_db_id")
-            rows = conn.execute(text(fewshot_sql)).fetchall()
+                fewshot_sql += self._exec_db_in_clause_nullable(
+                    exec_db_ids, "f.exec_db_id"
+                )
+            fewshot_sql += self._agent_scope_clause(agent_id, "f.agent_id")
+            params = {"agent_id": agent_id} if agent_id is not None else {}
+            rows = conn.execute(text(fewshot_sql), params).fetchall()
 
             for row in rows:
                 tables = self._parse_json_list(row[3])
@@ -374,14 +437,16 @@ class SchemaLoader:
                 biz_line = row[6] if len(row) > 6 else None
                 if biz_line:
                     metadata["business"] = biz_line
-                examples.append({
-                    "id": row[0],
-                    "question": row[1],
-                    "sql": row[2],
-                    "tables": tables,
-                    "difficulty": row[4] or "",
-                    "metadata": metadata,
-                })
+                examples.append(
+                    {
+                        "id": row[0],
+                        "question": row[1],
+                        "sql": row[2],
+                        "tables": tables,
+                        "difficulty": row[4] or "",
+                        "metadata": metadata,
+                    }
+                )
 
             # 表级常见问题（也作为 Few-shot，通过 da_semantic_table 的 exec_db_id 过滤）
             query_sql = (
@@ -404,15 +469,19 @@ class SchemaLoader:
                 biz_line = row[5] if len(row) > 5 else None
                 if biz_line:
                     metadata["business"] = biz_line
-                examples.append({
-                    "question": row[0],
-                    "sql": row[1],
-                    "tables": tables,
-                    "difficulty": row[3] or "",
-                    "metadata": metadata,
-                })
+                examples.append(
+                    {
+                        "question": row[0],
+                        "sql": row[1],
+                        "tables": tables,
+                        "difficulty": row[3] or "",
+                        "metadata": metadata,
+                    }
+                )
 
-        logger.info(f"MySQL Few-shot 加载: {len(examples)} 条 (全局 {len(rows)} + 表级 {len(query_rows)})")
+        logger.info(
+            f"MySQL Few-shot 加载: {len(examples)} 条 (全局 {len(rows)} + 表级 {len(query_rows)})"
+        )
         return examples
 
     # ── 合并 ──
@@ -430,7 +499,9 @@ class SchemaLoader:
         # 表级信息
         if table_sem:
             schema["display_name"] = table_sem.get("display_name", "")
-            schema["description"] = table_sem.get("description", schema.get("table_comment", ""))
+            schema["description"] = table_sem.get(
+                "description", schema.get("table_comment", "")
+            )
             schema["tags"] = table_sem.get("tags", [])
             schema["query_tips"] = table_sem.get("query_tips", "")
             schema["biz_line"] = table_sem.get("biz_line", "")
@@ -462,7 +533,9 @@ class SchemaLoader:
 
     # ── 统一入口 ──
 
-    def load_all(self, agent_id: int | None = None) -> tuple[list[dict], dict, list[dict], list[dict]]:
+    def load_all(
+        self, agent_id: int | None = None
+    ) -> tuple[list[dict], dict, list[dict], list[dict]]:
         """
         加载并合并所有 Schema。
 
@@ -477,7 +550,9 @@ class SchemaLoader:
         if agent_id:
             exec_db_ids = self._load_agent_exec_db_ids(agent_id)
             if exec_db_ids:
-                logger.info(f"Agent {agent_id} 绑定执行数据库: exec_db_id={exec_db_ids}")
+                logger.info(
+                    f"Agent {agent_id} 绑定执行数据库: exec_db_id={exec_db_ids}"
+                )
             else:
                 raise AgentDatasourceNotConfiguredError(
                     f"Agent {agent_id} 未绑定可用执行数据库，拒绝加载全量语义层"
@@ -487,22 +562,23 @@ class SchemaLoader:
         table_semantics = self._load_table_semantics(exec_db_ids)
         column_semantics = self._load_column_semantics(exec_db_ids)
         relations = self._load_relations(exec_db_ids)
-        glossary = self.load_glossary(exec_db_ids)
-        enums = self.load_enums(exec_db_ids)
-        fewshot = self.load_fewshot(exec_db_ids)
+        glossary = self.load_glossary(exec_db_ids, agent_id=agent_id)
+        enums = self.load_enums(exec_db_ids, agent_id=agent_id)
+        fewshot = self.load_fewshot(exec_db_ids, agent_id=agent_id)
 
         logger.info(f"MySQL 可用表: {len(table_semantics)} 张 (status=1, available=1)")
 
         # 以 MySQL 为基准，逐表从 Doris 获取 DDL 补充列类型
         schemas = []
-        skipped = []
+        skipped: list[tuple[str, str]] = []
         for full_key, sem in table_semantics.items():
             short_name = sem["table_name_short"]
             try:
-                doris_schema = self.get_table_schema(short_name, database=sem.get("database_name"))
-            except Exception as e:
-                logger.warning(f"Doris DDL 获取失败，跳过: {full_key} ({e})")
-                skipped.append(full_key)
+                doris_schema = self.get_table_schema(
+                    short_name, database=sem.get("database_name")
+                )
+            except Exception as exc:
+                skipped.append((full_key, str(exc)))
                 continue
 
             merged = self.merge_schema(
@@ -514,7 +590,12 @@ class SchemaLoader:
             schemas.append(merged)
 
         if skipped:
-            logger.warning(f"跳过 {len(skipped)} 张表 (Doris 不可达): {skipped}")
+            failed_tables = ", ".join(table for table, _ in skipped[:10])
+            first_error = skipped[0][1]
+            raise SchemaLoadIncompleteError(
+                f"Doris Schema 加载不完整: {len(skipped)}/{len(table_semantics)} 张表，"
+                f"tables=[{failed_tables}]，first_error={first_error}"
+            )
         logger.info(f"Schema 合并完成: {len(schemas)} 张表进入索引")
         return schemas, glossary, enums, fewshot
 

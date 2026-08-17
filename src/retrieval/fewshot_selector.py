@@ -54,7 +54,9 @@ class FewShotSelector:
         example_table_sets: 每个示例涉及的表名集合列表
     """
 
-    def __init__(self, embedding: Qwen3Embedding, milvus_index: MilvusIndex | None = None):
+    def __init__(
+        self, embedding: Qwen3Embedding, milvus_index: MilvusIndex | None = None
+    ):
         self.embedding = embedding
         self.milvus_index = milvus_index
         self.examples: list[dict] = []
@@ -127,7 +129,9 @@ class FewShotSelector:
         candidate_k = min(len(self.examples), top_k * 3)
 
         if self.milvus_index and self.milvus_index.count > 0:
-            results = self.milvus_index.dense_search(q_dense, top_k=candidate_k, filter_expr=filter_expr)
+            results = self.milvus_index.dense_search(
+                q_dense, top_k=candidate_k, filter_expr=filter_expr
+            )
             n = len(self.examples)
             candidate_indices = [doc_id for doc_id, score, _ in results if doc_id < n]
             similarities = np.zeros(n)
@@ -194,10 +198,7 @@ class FewShotSelector:
                 best_mmr = -float("inf")
                 for c in remaining:
                     relevance = scores[c]
-                    max_sim = max(
-                        float(np.dot(normed[c], normed[s]))
-                        for s in selected
-                    )
+                    max_sim = max(float(np.dot(normed[c], normed[s])) for s in selected)
                     mmr = lambda_param * relevance - (1 - lambda_param) * max_sim
                     if mmr > best_mmr:
                         best_mmr = mmr

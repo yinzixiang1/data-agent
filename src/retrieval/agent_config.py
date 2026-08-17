@@ -25,12 +25,27 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
-    TABLE_SEARCH_TOP_K, COLUMN_SEARCH_TOP_K, RECALL_TOP_K,
-    RERANK_INPUT_TOP_K, FEWSHOT_TOP_K, RRF_K, MMR_LAMBDA,
-    ENABLE_RERANKER, GLOSSARY_SCORE_THRESHOLD, DEFAULT_AGENT_TOKEN,
-    NL2SQL_ENV, DENSE_MODEL, DENSE_DIM, RERANKER_MODEL,
-    CONFIG_SOURCE, CONFIG_PROFILE,
+    MYSQL_HOST,
+    MYSQL_PORT,
+    MYSQL_USER,
+    MYSQL_PASSWORD_URL,
+    MYSQL_DATABASE,
+    TABLE_SEARCH_TOP_K,
+    COLUMN_SEARCH_TOP_K,
+    RECALL_TOP_K,
+    RERANK_INPUT_TOP_K,
+    FEWSHOT_TOP_K,
+    RRF_K,
+    MMR_LAMBDA,
+    ENABLE_RERANKER,
+    GLOSSARY_SCORE_THRESHOLD,
+    DEFAULT_AGENT_TOKEN,
+    NL2SQL_ENV,
+    DENSE_MODEL,
+    DENSE_DIM,
+    RERANKER_MODEL,
+    CONFIG_SOURCE,
+    CONFIG_PROFILE,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,18 +55,18 @@ logger = logging.getLogger(__name__)
 
 EXPAND_VALIDATORS = {
     "max_execute_fix_retries": lambda v: isinstance(v, int) and 0 <= v <= 5,
-    "execute_row_limit":       lambda v: isinstance(v, int) and 1 <= v <= 10000,
-    "execute_timeout":         lambda v: isinstance(v, int) and 1 <= v <= 300,
-    "max_fix_retries":         lambda v: isinstance(v, int) and 0 <= v <= 10,
-    "intent_threshold":        lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
-    "max_tokens":              lambda v: isinstance(v, int) and 1 <= v <= 32768,
-    "top_p":                   lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
-    "llm_temperature":         lambda v: isinstance(v, (int, float)) and 0 <= v <= 2,
+    "execute_row_limit": lambda v: isinstance(v, int) and 1 <= v <= 10000,
+    "execute_timeout": lambda v: isinstance(v, int) and 1 <= v <= 300,
+    "max_fix_retries": lambda v: isinstance(v, int) and 0 <= v <= 10,
+    "intent_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+    "max_tokens": lambda v: isinstance(v, int) and 1 <= v <= 32768,
+    "top_p": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+    "llm_temperature": lambda v: isinstance(v, (int, float)) and 0 <= v <= 2,
     "value_exact_match_boost": lambda v: isinstance(v, (int, float)) and v >= 0,
-    "table_search_top_k":      lambda v: isinstance(v, int) and 1 <= v <= 100,
-    "column_search_top_k":     lambda v: isinstance(v, int) and 1 <= v <= 200,
-    "recall_top_k":            lambda v: isinstance(v, int) and 1 <= v <= 100,
-    "fewshot_top_k":           lambda v: isinstance(v, int) and 1 <= v <= 50,
+    "table_search_top_k": lambda v: isinstance(v, int) and 1 <= v <= 100,
+    "column_search_top_k": lambda v: isinstance(v, int) and 1 <= v <= 200,
+    "recall_top_k": lambda v: isinstance(v, int) and 1 <= v <= 100,
+    "fewshot_top_k": lambda v: isinstance(v, int) and 1 <= v <= 50,
     "glossary_score_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
 }
 
@@ -73,11 +88,17 @@ def get_expand(expand_cfg: dict, key: str, default=None, cast=None):
     if cast is not None:
         try:
             if cast is bool:
-                value = value if isinstance(value, bool) else str(value).lower() in ("true", "1")
+                value = (
+                    value
+                    if isinstance(value, bool)
+                    else str(value).lower() in ("true", "1")
+                )
             else:
                 value = cast(value)
         except (ValueError, TypeError):
-            logger.warning(f"expand 配置 {key}={value} 类型转换失败，使用默认值 {default}")
+            logger.warning(
+                f"expand 配置 {key}={value} 类型转换失败，使用默认值 {default}"
+            )
             return default
 
     # 值校验
@@ -191,7 +212,9 @@ class AgentConfigLoader:
                     f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
                     f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
                 )
-            self.engine = create_engine(mysql_connection_string, pool_size=2, pool_recycle=3600)
+            self.engine = create_engine(
+                mysql_connection_string, pool_size=2, pool_recycle=3600
+            )
 
     def load(self, agent_id: int | None = None) -> AgentRuntimeConfig:
         """
@@ -210,6 +233,7 @@ class AgentConfigLoader:
         file_path = Path(CONFIG_PROFILE)
         if not file_path.is_absolute():
             from src.retrieval.config import PROJECT_ROOT
+
             file_path = PROJECT_ROOT / file_path
 
         if not file_path.exists():
@@ -255,7 +279,9 @@ class AgentConfigLoader:
         # 补充默认值
         self._apply_defaults(config)
 
-        logger.info(f"本地配置加载完成: agent={config.agent_name}, source={config.config_source}")
+        logger.info(
+            f"本地配置加载完成: agent={config.agent_name}, source={config.config_source}"
+        )
         return config
 
     def _load_from_mysql(self, agent_id: int | None = None) -> AgentRuntimeConfig:
@@ -301,9 +327,9 @@ class AgentConfigLoader:
         """从 sys_config 加载全局配置。"""
         try:
             with self.engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT config_key, config_value FROM sys_config"
-                )).fetchall()
+                rows = conn.execute(
+                    text("SELECT config_key, config_value FROM sys_config")
+                ).fetchall()
             return {row[0]: row[1] for row in rows}
         except Exception as e:
             logger.warning(f"加载 sys_config 失败（表可能不存在）: {e}")
@@ -313,12 +339,17 @@ class AgentConfigLoader:
         """加载 Agent 基础信息。"""
         try:
             with self.engine.connect() as conn:
-                row = conn.execute(text(
-                    "SELECT name, handle, status, token FROM da_agent WHERE id = :id"
-                ), {"id": agent_id}).fetchone()
+                row = conn.execute(
+                    text(
+                        "SELECT name, handle, status, token FROM da_agent WHERE id = :id"
+                    ),
+                    {"id": agent_id},
+                ).fetchone()
             if row:
                 return {
-                    "name": row[0], "handle": row[1], "status": row[2],
+                    "name": row[0],
+                    "handle": row[1],
+                    "status": row[2],
                     "token": row[3] or "",
                 }
             return None
@@ -335,10 +366,13 @@ class AgentConfigLoader:
         """
         try:
             with self.engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT DISTINCT source_type FROM da_agent_source "
-                    "WHERE agent_id = :id AND status = 1"
-                ), {"id": agent_id}).fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT DISTINCT source_type FROM da_agent_source "
+                        "WHERE agent_id = :id AND status = 1"
+                    ),
+                    {"id": agent_id},
+                ).fetchall()
             types = {row[0] for row in rows}
             has_db = 1 in types
             has_kb = 2 in types
@@ -355,9 +389,12 @@ class AgentConfigLoader:
         """加载 Agent 分段配置 → {section: config_dict}"""
         try:
             with self.engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT section, config_json FROM da_agent_config WHERE agent_id = :id"
-                ), {"id": agent_id}).fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT section, config_json FROM da_agent_config WHERE agent_id = :id"
+                    ),
+                    {"id": agent_id},
+                ).fetchall()
             result = {}
             for row in rows:
                 try:
@@ -373,10 +410,13 @@ class AgentConfigLoader:
         """加载 Agent 资源引用 → {resource_type: [resource_key, ...]}"""
         try:
             with self.engine.connect() as conn:
-                rows = conn.execute(text(
-                    "SELECT resource_type, resource_key FROM da_agent_ref "
-                    "WHERE agent_id = :id ORDER BY sort_order"
-                ), {"id": agent_id}).fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT resource_type, resource_key FROM da_agent_ref "
+                        "WHERE agent_id = :id ORDER BY sort_order"
+                    ),
+                    {"id": agent_id},
+                ).fetchall()
             result: dict[str, list[str]] = {}
             for row in rows:
                 result.setdefault(row[0], []).append(row[1])
@@ -389,10 +429,13 @@ class AgentConfigLoader:
         """从 sys_resource 加载资源配置。"""
         try:
             with self.engine.connect() as conn:
-                row = conn.execute(text(
-                    "SELECT config_json FROM sys_resource "
-                    "WHERE resource_type = :type AND name = :name AND status = 1"
-                ), {"type": resource_type, "name": name}).fetchone()
+                row = conn.execute(
+                    text(
+                        "SELECT config_json FROM sys_resource "
+                        "WHERE resource_type = :type AND name = :name AND status = 1"
+                    ),
+                    {"type": resource_type, "name": name},
+                ).fetchone()
             if row and row[0]:
                 return json.loads(row[0])
             return {}
@@ -400,7 +443,9 @@ class AgentConfigLoader:
             logger.warning(f"加载资源 {resource_type}/{name} 失败: {e}")
             return {}
 
-    def _apply_sys_configs(self, config: AgentRuntimeConfig, sys_configs: dict[str, str]):
+    def _apply_sys_configs(
+        self, config: AgentRuntimeConfig, sys_configs: dict[str, str]
+    ):
         """将 sys_config 值应用到 AgentRuntimeConfig。"""
         int_mappings = {
             "TABLE_SEARCH_TOP_K": "table_search_top_k",
@@ -497,14 +542,20 @@ class AgentConfigLoader:
             # Agent 级 Embedding 配置覆盖（deep merge 到 sys_config 值）
             if "embedding_config" in model_cfg and model_cfg["embedding_config"]:
                 config.embedding_config.update(model_cfg["embedding_config"])
-                logger.info(f"Agent 覆盖 embedding_config: model={model_cfg['embedding_config'].get('model')}")
+                logger.info(
+                    f"Agent 覆盖 embedding_config: model={model_cfg['embedding_config'].get('model')}"
+                )
 
             # Agent 级 Reranker 配置覆盖（deep merge 到 index_build_config.reranker）
             if "reranker_config" in model_cfg and model_cfg["reranker_config"]:
                 if "reranker" not in config.index_build_config:
                     config.index_build_config["reranker"] = {}
-                config.index_build_config["reranker"].update(model_cfg["reranker_config"])
-                logger.info(f"Agent 覆盖 reranker_config: model={model_cfg['reranker_config'].get('model')}")
+                config.index_build_config["reranker"].update(
+                    model_cfg["reranker_config"]
+                )
+                logger.info(
+                    f"Agent 覆盖 reranker_config: model={model_cfg['reranker_config'].get('model')}"
+                )
 
         # 从 agent_ref 的 provider 引用解析 base_url
         provider_refs = agent_refs.get("provider", [])
@@ -537,7 +588,9 @@ class AgentConfigLoader:
                 config.milvus_user = res_config.get("user", "")
                 config.milvus_password = res_config.get("password", "")
                 config.milvus_token = res_config.get("token", "")
-                logger.info(f"Vector DB 从资源绑定加载: uri={config.milvus_uri}, db={config.milvus_db}")
+                logger.info(
+                    f"Vector DB 从资源绑定加载: uri={config.milvus_uri}, db={config.milvus_db}"
+                )
 
         # prompt 分区
         prompt_cfg = agent_configs.get("prompt", {})
@@ -553,8 +606,13 @@ class AgentConfigLoader:
         retrieval_cfg = agent_configs.get("retrieval", {})
         if retrieval_cfg:
             int_fields = [
-                "table_search_top_k", "column_search_top_k", "recall_top_k",
-                "rerank_input_top_k", "fewshot_top_k", "rrf_k", "max_fix_retries",
+                "table_search_top_k",
+                "column_search_top_k",
+                "recall_top_k",
+                "rerank_input_top_k",
+                "fewshot_top_k",
+                "rrf_k",
+                "max_fix_retries",
             ]
             for f in int_fields:
                 if f in retrieval_cfg:
@@ -569,15 +627,21 @@ class AgentConfigLoader:
                     pass
             if "glossary_score_threshold" in retrieval_cfg:
                 try:
-                    config.glossary_score_threshold = float(retrieval_cfg["glossary_score_threshold"])
+                    config.glossary_score_threshold = float(
+                        retrieval_cfg["glossary_score_threshold"]
+                    )
                 except (ValueError, TypeError):
                     pass
             if "enable_reranker" in retrieval_cfg:
                 v = retrieval_cfg["enable_reranker"]
-                config.enable_reranker = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                config.enable_reranker = (
+                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                )
             if "enable_explain" in retrieval_cfg:
                 v = retrieval_cfg["enable_explain"]
-                config.enable_explain = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                config.enable_explain = (
+                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                )
             if "pinned_rules" in retrieval_cfg:
                 rules = retrieval_cfg["pinned_rules"]
                 if isinstance(rules, list):
@@ -588,7 +652,9 @@ class AgentConfigLoader:
         if flow_cfg:
             if "enable_execute" in flow_cfg:
                 v = flow_cfg["enable_execute"]
-                config.enable_execute = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                config.enable_execute = (
+                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                )
             if "execute_row_limit" in flow_cfg:
                 try:
                     config.execute_row_limit = int(flow_cfg["execute_row_limit"])
@@ -601,16 +667,29 @@ class AgentConfigLoader:
                     pass
             if "enable_summarize" in flow_cfg:
                 v = flow_cfg["enable_summarize"]
-                config.enable_summarize = v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                config.enable_summarize = (
+                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                )
             if "max_execute_fix_retries" in flow_cfg:
                 try:
-                    config.max_execute_fix_retries = int(flow_cfg["max_execute_fix_retries"])
+                    config.max_execute_fix_retries = int(
+                        flow_cfg["max_execute_fix_retries"]
+                    )
                 except (ValueError, TypeError):
                     pass
-            for bool_key in ("enable_empty_analysis", "enable_enum_validate", "enable_result_check", "enable_timeout_fallback"):
+            for bool_key in (
+                "enable_empty_analysis",
+                "enable_enum_validate",
+                "enable_result_check",
+                "enable_timeout_fallback",
+            ):
                 if bool_key in flow_cfg:
                     v = flow_cfg[bool_key]
-                    setattr(config, bool_key, v if isinstance(v, bool) else str(v).lower() in ("true", "1"))
+                    setattr(
+                        config,
+                        bool_key,
+                        v if isinstance(v, bool) else str(v).lower() in ("true", "1"),
+                    )
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)
@@ -622,8 +701,10 @@ class AgentConfigLoader:
             explicit_keys: set[str] = set()
             # model 分区: config JSON key → config 属性名（不一致的需要映射）
             _model_key_map = {
-                "provider": "llm_provider", "model": "llm_model",
-                "temperature": "llm_temperature", "api_key": "llm_api_key",
+                "provider": "llm_provider",
+                "model": "llm_model",
+                "temperature": "llm_temperature",
+                "api_key": "llm_api_key",
                 "base_url": "llm_base_url",
             }
             model_cfg_keys = agent_configs.get("model", {})
@@ -641,7 +722,11 @@ class AgentConfigLoader:
             self._apply_expand(config, expand_cfg, explicit_keys)
 
     @staticmethod
-    def _apply_expand(config: AgentRuntimeConfig, expand_cfg: dict, explicit_keys: set[str] | None = None):
+    def _apply_expand(
+        config: AgentRuntimeConfig,
+        expand_cfg: dict,
+        explicit_keys: set[str] | None = None,
+    ):
         """将 expand 分区的扩展配置应用到 AgentRuntimeConfig。
 
         只覆盖 Agent 显式字段未设置的值（显式字段 > expand）。
@@ -664,7 +749,9 @@ class AgentConfigLoader:
             if hasattr(config, key):
                 setattr(config, key, validated)
             else:
-                logger.warning(f"expand 配置 {key}={value} 无对应 AgentRuntimeConfig 字段，已忽略")
+                logger.warning(
+                    f"expand 配置 {key}={value} 无对应 AgentRuntimeConfig 字段，已忽略"
+                )
 
     def _merge_collection_overrides(
         self,
@@ -679,7 +766,9 @@ class AgentConfigLoader:
             if col_name in config.collection_search_config:
                 config.collection_search_config[col_name].update(col_override)
             else:
-                logger.warning(f"collection_overrides 中的 {col_name} 不在全局配置中，已忽略")
+                logger.warning(
+                    f"collection_overrides 中的 {col_name} 不在全局配置中，已忽略"
+                )
 
     def _default_embedding_config(self) -> dict:
         """根据 NL2SQL_ENV 生成 EMBEDDING_CONFIG 默认值。"""
@@ -810,7 +899,8 @@ class AgentConfigLoader:
             f"    Temperature: {config.llm_temperature}",
             "",
             "  [Prompt]",
-            f"    System Prompt: {config.system_prompt[:60]}..." if len(config.system_prompt) > 60
+            f"    System Prompt: {config.system_prompt[:60]}..."
+            if len(config.system_prompt) > 60
             else f"    System Prompt: {config.system_prompt}",
             "",
             "  [检索参数]",
@@ -864,7 +954,9 @@ class AgentConfigLoader:
                 ranker = col_cfg.get("ranker_type", "?")
                 rerank = "✓" if col_cfg.get("rerank") else "✗"
                 final = col_cfg.get("final_top_n", "?")
-                lines.append(f"    {col_name:10s}  ranker={ranker:10s}  rerank={rerank}  top_n={final}")
+                lines.append(
+                    f"    {col_name:10s}  ranker={ranker:10s}  rerank={rerank}  top_n={final}"
+                )
 
         lines += [
             "",

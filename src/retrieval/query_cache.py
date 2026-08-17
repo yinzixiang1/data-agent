@@ -21,14 +21,15 @@ from src.retrieval.embedding import BaseEmbedding
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TTL = 3600          # 默认缓存 1 小时
-DEFAULT_MAX_SIZE = 500      # 最大缓存条目数
-SIMILARITY_THRESHOLD = 0.95 # 余弦相似度阈值
+DEFAULT_TTL = 3600  # 默认缓存 1 小时
+DEFAULT_MAX_SIZE = 500  # 最大缓存条目数
+SIMILARITY_THRESHOLD = 0.95  # 余弦相似度阈值
 
 
 @dataclass
 class CacheEntry:
     """缓存条目。"""
+
     query: str
     vector: np.ndarray
     result: dict
@@ -121,17 +122,19 @@ class QueryCache:
         # 容量淘汰
         if len(self._entries) >= self.max_size:
             # 淘汰最老且命中最少的条目
-            self._entries.sort(key=lambda e: (e.hit_count, -e.created_at))
+            self._entries.sort(key=lambda e: (e.hit_count, e.created_at))
             self._entries.pop(0)
 
         q_vec = self.embedding.encode([query])[0]
-        self._entries.append(CacheEntry(
-            query=query,
-            vector=q_vec,
-            result=result,
-            created_at=time.time(),
-            context_key=context_key,
-        ))
+        self._entries.append(
+            CacheEntry(
+                query=query,
+                vector=q_vec,
+                result=result,
+                created_at=time.time(),
+                context_key=context_key,
+            )
+        )
 
     def invalidate(self):
         """清空所有缓存。"""
