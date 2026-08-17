@@ -101,16 +101,16 @@ class SchemaRetriever:
         self.config = config
         self.index_manager = IndexManager(agent_id=config.agent_id)
 
+        # 先确认 Agent 已绑定数据源，避免待配置状态下加载大模型。
+        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all(
+            agent_id=config.agent_id
+        )
+
         # 初始化 Embedding
         embedding = get_embedding(config.embedding_config)
 
         # 初始化 Reranker
         get_reranker(config.index_build_config)
-
-        # 加载 Schema + 语义层 + 枚举 + Fewshot（按 Agent 绑定数据源过滤）
-        schemas, glossary, enums, fewshot_examples = self.schema_loader.load_all(
-            agent_id=config.agent_id
-        )
 
         from src.retrieval.config import REBUILD_INDEX_ON_STARTUP
 

@@ -23,7 +23,7 @@ from src.retrieval.agent_config import get_expand, AgentRuntimeConfig, AgentConf
 from src.retrieval.collection_names import agent_collection_name
 from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.query_cache import QueryCache
-from src.retrieval.schema_loader import SchemaLoader
+from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError, SchemaLoader
 
 
 # ════════════════════════════════════════════
@@ -143,7 +143,7 @@ def test_schema_loader_fails_closed_without_agent_datasources(monkeypatch):
     loader = SchemaLoader.__new__(SchemaLoader)
     monkeypatch.setattr(loader, "_load_agent_exec_db_ids", lambda agent_id: [])
 
-    with pytest.raises(RuntimeError, match="拒绝加载全量语义层"):
+    with pytest.raises(AgentDatasourceNotConfiguredError, match="拒绝加载全量语义层"):
         loader.load_all(agent_id=42)
 
 

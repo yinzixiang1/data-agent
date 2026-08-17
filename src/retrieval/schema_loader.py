@@ -17,11 +17,15 @@ from collections import OrderedDict
 from sqlalchemy import create_engine, text
 
 from src.retrieval.config import (
-    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD_URL,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class AgentDatasourceNotConfiguredError(RuntimeError):
+    """Agent 尚未绑定可用执行数据库。"""
 
 
 class SchemaLoader:
@@ -475,7 +479,7 @@ class SchemaLoader:
             if exec_db_ids:
                 logger.info(f"Agent {agent_id} 绑定执行数据库: exec_db_id={exec_db_ids}")
             else:
-                raise RuntimeError(
+                raise AgentDatasourceNotConfiguredError(
                     f"Agent {agent_id} 未绑定可用执行数据库，拒绝加载全量语义层"
                 )
 

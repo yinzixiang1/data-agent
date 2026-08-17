@@ -40,14 +40,16 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 from src.retrieval.retriever import SchemaRetriever
+from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.query_logger import QueryLogger
 from src.retrieval.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_PASSWORD_URL,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
+    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD_URL, MYSQL_DATABASE,
     MILVUS_URI, MILVUS_DB, MILVUS_USER, MILVUS_PASSWORD, MILVUS_TOKEN,
     EMBEDDING_MODEL, RERANKER_MODEL,
     DEFAULT_AGENT_TOKEN,
@@ -124,7 +126,7 @@ query_cache: QueryCache | None = None
 
 # ── 启动配置打印 ──
 
-def print_infra_config(config: AgentRuntimeConfig | None = None):
+def print_infra_config(config: AgentRuntimeConfig | None = None) -> None:
     """打印基础设施配置。传入 agent_config 后会显示实际使用的 Milvus 连接。"""
     # Milvus: 优先 agent_config 资源绑定，fallback .env
     m_uri = (config.milvus_uri if config and config.milvus_uri else MILVUS_URI)
@@ -146,15 +148,22 @@ def print_infra_config(config: AgentRuntimeConfig | None = None):
         rnk_model = config.index_build_config["reranker"]["model"]
         rnk_source = "Agent 配置"
 
+    doris_config = load_doris_config(config.agent_id if config else None)
+    if doris_config:
+        doris_endpoint = f"{doris_config['host']}:{doris_config['port']}"
+        doris_source = str(doris_config["source"])
+    else:
+        doris_endpoint = "(尚未绑定)"
+        doris_source = "全局数据库资源"
+
     lines = [
         "",
         "=" * 60,
         "  NL2SQL Data Agent 基础设施配置",
         "=" * 60,
         "",
-        "  [Doris]",
-        f"    Host:     {DORIS_HOST}:{DORIS_PORT}",
-        f"    User:     {DORIS_USER}",
+        f"  [Doris] (来源: {doris_source})",
+        f"    Host:     {doris_endpoint}",
         "",
         "  [MySQL 语义层]",
         f"    Host:     {MYSQL_HOST}:{MYSQL_PORT}",
@@ -178,15 +187,7 @@ def print_infra_config(config: AgentRuntimeConfig | None = None):
     print("\n".join(lines))
 
 
-def create_doris_engine():
-    url = (
-        f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
-        f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
-    )
-    return create_engine(url, pool_size=2, pool_recycle=3600)
-
-
-def _get_mysql_engine():
+def _get_mysql_engine() -> Engine:
     """获取 MySQL 语义层连接引擎（复用）。"""
     url = (
         f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD_URL}"
@@ -240,26 +241,28 @@ def load_agent_databases(agent_id: int | None, metadata_filter: dict | None = No
         raise RuntimeError("无法确认 Agent 的数据库授权范围") from e
 
 
-def load_doris_config(agent_id: int | None) -> dict:
+def load_doris_config(agent_id: int | None) -> dict[str, str | int] | None:
     """
     加载 Agent 绑定的 Doris 连接配置。
 
-    优先级: da_agent_exec_db.resource_id → sys_resource → .env 默认值
+    mysql 配置模式只允许从全局资源读取；local 模式保留 .env 供本地开发。
     """
     from urllib.parse import quote_plus
-    result = {
-        "host": DORIS_HOST,
-        "port": int(DORIS_PORT),
-        "user": DORIS_USER,
-        "password": DORIS_PASSWORD,
-        "password_url": DORIS_PASSWORD_URL,
-        "source": "env",
-    }
-    if not agent_id:
-        return result
 
+    if CONFIG_SOURCE == "local":
+        return {
+            "host": DORIS_HOST,
+            "port": int(DORIS_PORT),
+            "user": DORIS_USER,
+            "password": DORIS_PASSWORD,
+            "password_url": DORIS_PASSWORD_URL,
+            "source": ".env (local)",
+        }
+    if not agent_id:
+        return None
+
+    eng = _get_mysql_engine()
     try:
-        eng = _get_mysql_engine()
         with eng.connect() as conn:
             # 从 da_agent_exec_db 取第一个启用的 resource_id
             ds_row = conn.execute(text(
@@ -268,45 +271,83 @@ def load_doris_config(agent_id: int | None) -> dict:
                 "ORDER BY sort_order LIMIT 1"
             ), {"agent_id": agent_id}).fetchone()
             if not ds_row:
-                eng.dispose()
-                return result
+                return None
 
             resource_id = ds_row[0]
             # 从 sys_resource 读取连接配置
             res_row = conn.execute(text(
-                "SELECT name, config_json FROM sys_resource "
+                "SELECT name, resource_type, config_json FROM sys_resource "
                 "WHERE id = :resource_id AND status = 1"
             ), {"resource_id": resource_id}).fetchone()
+    finally:
         eng.dispose()
 
-        if res_row and res_row[1]:
-            import json
-            resource_name = res_row[0]
-            cfg = json.loads(res_row[1])
-            pwd = cfg.get("password", "")
-            result = {
-                "host": cfg.get("host", DORIS_HOST),
-                "port": int(cfg.get("port", DORIS_PORT)),
-                "user": cfg.get("user", DORIS_USER),
-                "password": pwd,
-                "password_url": quote_plus(pwd) if pwd else DORIS_PASSWORD_URL,
-                "source": f"resource:{resource_name}(id={resource_id})",
-            }
-            logger.info(f"Doris 配置来自资源: {resource_name}(id={resource_id}) ({result['host']}:{result['port']})")
-    except Exception as e:
-        logger.warning(f"加载 Doris 资源配置失败 (fallback .env): {e}")
+    if not res_row:
+        raise RuntimeError(f"Agent {agent_id} 绑定的数据库资源 {resource_id} 不存在或未启用")
+    resource_name, resource_type, raw_config = res_row
+    if resource_type != "database":
+        raise RuntimeError(f"资源 {resource_name}(id={resource_id}) 不是数据库资源")
 
-    return result
+    try:
+        cfg = json.loads(raw_config) if raw_config else {}
+        host = str(cfg["host"]).strip()
+        port = int(cfg["port"])
+        user = str(cfg["user"]).strip()
+        password = str(cfg.get("password", ""))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"数据库资源 {resource_name}(id={resource_id}) 配置不完整") from exc
+    if not host or not user:
+        raise RuntimeError(f"数据库资源 {resource_name}(id={resource_id}) 配置不完整")
+
+    logger.info(
+        f"Doris 配置来自全局资源: {resource_name}(id={resource_id}) ({host}:{port})"
+    )
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "password_url": quote_plus(password),
+        "source": f"全局资源:{resource_name}(id={resource_id})",
+    }
 
 
-def create_doris_engine_for_agent(agent_id: int | None = None):
-    """根据 Agent 绑定的 Doris 资源创建引擎，fallback 到 .env。"""
+def create_doris_engine_for_agent(agent_id: int | None = None) -> Engine:
+    """根据 Agent 引用的全局 Doris 资源创建引擎。"""
     cfg = load_doris_config(agent_id)
+    if cfg is None:
+        raise AgentDatasourceNotConfiguredError(
+            f"Agent {agent_id} 尚未绑定执行数据库"
+        )
     url = (
         f"mysql+pymysql://{cfg['user']}:{cfg['password_url']}"
         f"@{cfg['host']}:{cfg['port']}/information_schema?charset=utf8mb4"
     )
     return create_engine(url, pool_size=2, pool_recycle=3600)
+
+
+def _initialize_nl2sql_runtime(config: AgentRuntimeConfig) -> None:
+    """使用 Agent 引用的全局数据库资源初始化 NL2SQL 运行时。"""
+    global retriever, validator
+
+    engine = create_doris_engine_for_agent(config.agent_id)
+    candidate = SchemaRetriever(
+        connection_string=engine.url.render_as_string(hide_password=False)
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        candidate.initialize(config=config)
+    except Exception:
+        engine.dispose()
+        raise
+
+    old_validator = validator
+    retriever = candidate
+    validator = SQLValidator(engine)
+    if old_validator:
+        old_validator.engine.dispose()
+    logger.info("Doris、Schema 索引与 EXPLAIN 校验器已就绪")
 
 
 def _register_engine_url(agent_id: int):
@@ -408,22 +449,14 @@ async def lifespan(app: FastAPI):
     # 初始化 RAG（传入 agent_config 以使用 Agent 级 Embedding/Reranker 配置）
     engine_type = agent_config.engine_type
 
-    # 验证 Doris 连接（仅 NL2SQL / Hybrid 模式需要）
     if engine_type in ("nl2sql", "hybrid"):
-        logger.info(f"连接 Doris ({DORIS_HOST}:{DORIS_PORT})...")
         try:
-            engine = create_doris_engine()
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            engine.dispose()
-            logger.info("Doris 连接成功")
-        except Exception as e:
-            logger.error(f"Doris 连接失败: {e}")
-            raise
-
-    if engine_type in ("nl2sql", "hybrid"):
-        retriever = SchemaRetriever()
-        retriever.initialize(config=agent_config)
+            _initialize_nl2sql_runtime(agent_config)
+        except AgentDatasourceNotConfiguredError:
+            logger.info(
+                f"Agent {agent_config.agent_id} 尚未绑定执行数据库，"
+                "NL2SQL 以待配置状态启动"
+            )
 
     # 初始化 LLM
     llm_client = create_llm_client(agent_config)
@@ -446,11 +479,6 @@ async def lifespan(app: FastAPI):
         logger.info("查询缓存已启用")
     else:
         logger.info("查询缓存已关闭 (enable_query_cache=false)")
-
-    # 初始化 EXPLAIN 校验器
-    if engine_type in ("nl2sql", "hybrid"):
-        validator = SQLValidator(create_doris_engine())
-        logger.info("EXPLAIN 校验器已就绪")
 
     # 初始化查询日志
     query_logger = QueryLogger()
@@ -1286,14 +1314,24 @@ def run_query(
 @app.get("/health")
 async def health():
     et = agent_config.engine_type if agent_config else "nl2sql"
+    nl2sql_enabled = et in ("nl2sql", "hybrid")
+    nl2sql_ready = not nl2sql_enabled or (
+        retriever is not None and retriever._initialized and validator is not None
+    )
+    knowledge_ready = et not in ("knowledge", "hybrid") or (
+        knowledge_retriever is not None and knowledge_retriever._initialized
+    )
+    ready = nl2sql_ready and knowledge_ready
     return {
         "status": "ok",
-        "initialized": (retriever is not None and retriever._initialized) or (knowledge_retriever is not None and knowledge_retriever._initialized),
+        "ready": ready,
+        "state": "ready" if ready else "not_configured",
+        "initialized": ready,
         "agent": agent_config.agent_name if agent_config and agent_config.agent_id else None,
         "config_source": agent_config.config_source if agent_config else "none",
         "engine_type": et,
         "capabilities": {
-            "nl2sql": et in ("nl2sql", "hybrid"),
+            "nl2sql": nl2sql_enabled,
             "knowledge_qa": knowledge_retriever is not None and knowledge_retriever._initialized,
             "intent_classification": et == "hybrid",
             "explain_validate": validator is not None,
@@ -1622,11 +1660,15 @@ async def query(req: QueryRequest, request: Request):
 @app.post("/admin/index-rebuild", response_model=IndexRebuildResponse)
 async def index_rebuild(req: IndexRebuildRequest, request: Request):
     _verify_admin_token(request)
-    if not retriever:
-        raise HTTPException(status_code=503, detail="服务未就绪")
+    if not agent_config:
+        raise HTTPException(status_code=503, detail="Agent 配置未就绪")
 
     try:
         if req.collections:
+            if not retriever or not retriever._initialized:
+                raise AgentDatasourceNotConfiguredError(
+                    "索引尚未初始化，请先执行一次全量重建"
+                )
             logger.info(f"收到局部索引重建请求: {req.collections}")
             table_count = retriever.rebuild_partial(req.collections)
             rebuilt = ", ".join(req.collections)
@@ -1637,7 +1679,7 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
             )
         else:
             logger.info("收到全量索引重建请求，开始重建...")
-            retriever.initialize()
+            _initialize_nl2sql_runtime(agent_config)
             table_count = len(retriever.table_schemas)
             logger.info(f"索引重建完成: {table_count} 张表")
             return IndexRebuildResponse(
@@ -1645,6 +1687,9 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
                 message=f"索引重建完成，共 {table_count} 张表",
                 table_count=table_count,
             )
+    except AgentDatasourceNotConfiguredError as e:
+        logger.info(f"索引重建等待数据源配置: {e}")
+        return IndexRebuildResponse(status="error", message=str(e))
     except Exception as e:
         logger.error(f"索引重建失败: {e}", exc_info=True)
         return IndexRebuildResponse(status="error", message=str(e))
