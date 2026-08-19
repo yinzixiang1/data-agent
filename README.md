@@ -263,12 +263,19 @@ sys_config（全局默认）            ← 管理后台「系统配置」
 
 | MySQL 表 | 说明 |
 |----------|------|
-| `da_table` / `da_table_column` | 表和列的语义描述 |
-| `da_table_relation` | 表关联关系（JOIN 提示） |
-| `da_table_query` | 表级常见问题 |
-| `da_glossary` | 业务术语 |
-| `da_enum_def` / `da_enum_value` | 枚举定义和枚举值 |
-| `da_fewshot` | Few-shot SQL 示例 |
+| `da_semantic_table` / `da_semantic_column` | 表和列的语义描述 |
+| `da_semantic_relation` | 表关联关系（JOIN 提示） |
+| `da_semantic_query` | 表级常见问题 |
+| `da_semantic_glossary` | 业务术语 |
+| `da_semantic_enum` / `da_semantic_enum_value` | 枚举定义和枚举值 |
+| `da_semantic_fewshot` | Few-shot SQL 示例 |
+
+### 语义检索原则
+
+- 表召回由表、列的中文名、描述、业务逻辑及不同字段的语义覆盖度共同决定。
+- 业务口径通过语义层声明；修复召回问题时完善语义定义并重建索引。
+- 禁止为具体问题、表名或字段名增加硬编码分支、专属权重或强制召回规则。
+- 通用检索算法和 SQL 校验可以演进，但必须对所有语义表使用相同规则。
 
 ### 变更后操作
 

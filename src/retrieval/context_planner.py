@@ -127,6 +127,82 @@ class SchemaContextPlanner:
             result = required + optional[: max(0, max_tables - len(required))]
         return result, paths
 
+    @classmethod
+    def resolve_requested_columns(
+        cls,
+        candidates: list[dict],
+        requested_fields: list[str],
+        query: str = "",
+        max_matches_per_field: int = 12,
+    ) -> list[dict]:
+        """把“展示邮箱”等自然语言字段映射为候选 Schema 的真实列。"""
+        requirements: list[dict] = []
+        query_tokens = cls._semantic_terms(query)
+        for requested_field in requested_fields:
+            field_text = cls._normalize_semantic_text(requested_field)
+            if len(field_text) < 2:
+                continue
+            matches: list[tuple[float, str]] = []
+            for candidate in candidates:
+                table_name = str(candidate.get("table_name") or "")
+                for column in candidate.get("schema", {}).get("columns", []):
+                    if column.get("is_sensitive"):
+                        continue
+                    column_name = str(column.get("name") or "")
+                    if not column_name:
+                        continue
+                    name_text = cls._normalize_semantic_text(column_name)
+                    labels = [
+                        cls._normalize_semantic_text(column.get(key) or "")
+                        for key in (
+                            "display_name",
+                            "comment",
+                            "description",
+                            "business_logic",
+                        )
+                    ]
+                    semantic_text = " ".join(
+                        str(column.get(key) or "")
+                        for key in (
+                            "name",
+                            "display_name",
+                            "comment",
+                            "description",
+                            "business_logic",
+                        )
+                    )
+                    score = 0.0
+                    if name_text == field_text:
+                        score = 12.0
+                    elif field_text in name_text:
+                        score = 9.0
+                    for label in labels:
+                        if not label:
+                            continue
+                        if label == field_text:
+                            score = max(score, 11.0)
+                        elif field_text in label:
+                            score = max(score, 8.0)
+                    if score:
+                        score += 4.0 * len(
+                            query_tokens & cls._semantic_terms(semantic_text)
+                        )
+                        score += float(candidate.get("score") or 0) * 0.01
+                        matches.append((score, f"{table_name}.{column_name}"))
+
+            matches.sort(key=lambda item: (-item[0], item[1]))
+            best_score = matches[0][0] if matches else 0.0
+            columns = list(
+                dict.fromkeys(
+                    column for score, column in matches if score >= best_score - 0.75
+                )
+            )[:max_matches_per_field]
+            if columns:
+                requirements.append({"field": requested_field, "columns": columns})
+            else:
+                requirements.append({"field": requested_field, "columns": []})
+        return requirements
+
     def prune_columns(
         self,
         candidates: list[dict],
@@ -260,6 +336,22 @@ class SchemaContextPlanner:
             "columns_pruned": max(0, total_before - total_after),
         }
         return planned, stats
+
+    @staticmethod
+    def _normalize_semantic_text(value: object) -> str:
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value).casefold())
+
+    @staticmethod
+    def _semantic_terms(value: object) -> set[str]:
+        """生成稳定的中英文语义词，避免中文分词粒度导致实体信号丢失。"""
+        text = str(value).casefold()
+        terms = set(re.findall(r"[a-z0-9_]{2,}", text))
+        for sequence in re.findall(r"[\u4e00-\u9fff]+", text):
+            terms.update(
+                sequence[index : index + 2]
+                for index in range(max(0, len(sequence) - 1))
+            )
+        return terms
 
     @classmethod
     def _select_temporal_columns(

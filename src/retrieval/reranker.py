@@ -46,17 +46,33 @@ def _extract_text(candidate: dict) -> str:
         parts.append(short)
     if schema.get("description"):
         parts.append(schema["description"])
+    if schema.get("tags"):
+        parts.append("标签: " + ", ".join(str(tag) for tag in schema["tags"]))
     for col in schema.get("columns", []):
         if col.get("is_skip_index") or col.get("is_sensitive"):
             continue
-        display = col.get("display_name") or col.get("comment", "")
-        if display:
-            parts.append(f"{col['name']}({display})")
+        display = col.get("display_name") or ""
+        description = col.get("description") or col.get("comment", "")
+        business_logic = col.get("business_logic") or ""
+        if any((display, description, business_logic)):
+            semantic = f"字段:{col['name']}"
+            if display:
+                semantic += f"({display})"
+            details = "；".join(
+                str(value).strip()
+                for value in (description, business_logic)
+                if str(value).strip()
+            )
+            if details:
+                semantic += f":{details}"
+            parts.append(semantic)
     for rel in schema.get("relations", []):
         target = rel.get("target_table", "")
         if target:
             desc = rel.get("description", "")
             parts.append(f"关联:{target}" + (f"({desc})" if desc else ""))
+    if schema.get("query_tips"):
+        parts.append("查询注意:" + str(schema["query_tips"]))
     return "\n".join(parts)
 
 

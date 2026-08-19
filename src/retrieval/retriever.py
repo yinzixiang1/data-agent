@@ -32,6 +32,7 @@ from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.schema_formatter import SchemaFormatter
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.context_planner import SchemaContextPlanner
+from src.retrieval.entity_resolver import EntityResolver
 from src.retrieval.query_analyzer import QueryAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,10 @@ class RetrievalResult:
     inferred_biz_line: str = ""
     context_stats: dict = field(default_factory=dict)
     query_intent: dict = field(default_factory=dict)
+    requested_fields: list[dict] = field(default_factory=list)
+    entity_filters: list[dict] = field(default_factory=list)
+    unresolved_entities: list[dict] = field(default_factory=list)
+    rejected_terms: list[str] = field(default_factory=list)
 
 
 class SchemaRetriever:
@@ -253,6 +258,7 @@ class SchemaRetriever:
         glossary_score_threshold: float | None = None,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
+        requested_field_query: str | None = None,
     ) -> RetrievalResult:
         """
         完整 RAG 检索流程。
@@ -297,6 +303,16 @@ class SchemaRetriever:
             logger.info(f"开始检索: '{user_query}'")
 
         query_analysis = QueryAnalyzer.analyze(user_query)
+        requested_field_analysis = QueryAnalyzer.analyze(
+            requested_field_query or user_query
+        )
+
+        entity_result = EntityResolver(
+            cfg.entity_resolution_rules,
+            self.table_schemas,
+        ).resolve(user_query, biz_line=biz_line)
+        entity_filters = entity_result["filters"]
+        entity_context = EntityResolver.to_prompt_context(entity_filters)
 
         # 1. 业务术语解析
         resolve_kwargs = {}
@@ -306,6 +322,7 @@ class SchemaRetriever:
             user_query,
             biz_line=biz_line,
             metadata_filter=metadata_filter,
+            require_lexical_grounding=cfg.glossary_require_lexical_grounding,
             **resolve_kwargs,
         )
         enriched_query = glossary_result["enriched_query"]
@@ -326,6 +343,8 @@ class SchemaRetriever:
         required_tables.update(glossary_result.get("related_tables", []))
         required_tables.update(self.searcher._find_explicit_tables(user_query))
         required_columns = set(glossary_result.get("related_columns", []))
+        required_tables.update(item["table"] for item in entity_filters)
+        required_columns.update(item["qualified_column"] for item in entity_filters)
 
         if query_analysis.requires_exchange_rate and cfg.exchange_rate_injection:
             if EXCHANGE_RATE_TABLE not in self.table_schemas:
@@ -407,7 +426,15 @@ class SchemaRetriever:
 
         # 8. 字段级上下文规划：只保留问题相关字段，主键/Join/口径字段始终保留。
         context_stats = {}
+        requested_fields: list[dict] = []
         if self.context_planner:
+            requested_fields = self.context_planner.resolve_requested_columns(
+                candidates,
+                requested_field_analysis.requested_fields,
+                query=user_query,
+            )
+            for requirement in requested_fields:
+                required_columns.update(requirement["columns"])
             candidates, context_stats = self.context_planner.prune_columns(
                 candidates,
                 enriched_query,
@@ -417,6 +444,11 @@ class SchemaRetriever:
             )
 
         # 9. Prompt 组装
+        intent_context = query_analysis.to_prompt_context()
+        if entity_context:
+            intent_context = "\n\n".join(
+                part for part in (intent_context, entity_context) if part
+            )
         prompt_text = self.formatter.format_all(
             tables=candidates,
             examples=examples,
@@ -425,7 +457,7 @@ class SchemaRetriever:
             value_hits=value_hits,
             question=user_query,
             output_rules=self.config.output_rules if self.config else "",
-            intent_context=query_analysis.to_prompt_context(),
+            intent_context=intent_context,
         )
         context_stats["prompt_chars"] = len(prompt_text)
         context_stats["prompt_tokens_estimate"] = max(1, len(prompt_text) // 3)
@@ -443,10 +475,15 @@ class SchemaRetriever:
             inferred_biz_line=inferred_biz_line,
             context_stats=context_stats,
             query_intent=query_analysis.to_dict(),
+            requested_fields=requested_fields,
+            entity_filters=entity_filters,
+            unresolved_entities=entity_result["unresolved"],
+            rejected_terms=glossary_result.get("rejected_terms", []),
         )
 
         logger.info(
             f"检索完成: tables={hit_tables}, values={len(value_hits)}, "
-            f"enums={len(enum_hits)}, examples={len(examples)}, terms={result.matched_terms}"
+            f"enums={len(enum_hits)}, examples={len(examples)}, terms={result.matched_terms}, "
+            f"entity_filters={len(entity_filters)}"
         )
         return result

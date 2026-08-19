@@ -67,7 +67,15 @@ def build_searcher() -> HybridSearcher:
                 (1, 0.7, {"table_name": "sales.decoy"}),
             ]
         ),
-        column_index=FakeIndex([(0, 100.0, {"table_name": "sales.column_hit"})]),
+        column_index=FakeIndex(
+            [
+                (
+                    0,
+                    100.0,
+                    {"table_name": "sales.column_hit", "column_name": "amount"},
+                )
+            ]
+        ),
         enum_index=FakeIndex([(0, 50.0, {"table_name": "sales.enum_hit"})]),
         table_schemas=schemas,
         config=config,
@@ -88,6 +96,26 @@ def test_cross_collection_scores_are_normalized_and_required_tables_are_pinned()
     assert by_name["sales.enum_hit"]["score"] == pytest.approx(0.16)
     assert by_name["sales.value_hit"]["pinned"] is True
     assert by_name["sales.value_hit"]["score"] == pytest.approx(0.72)
+
+
+def test_column_signal_rewards_distinct_semantic_coverage_not_duplicate_hits():
+    searcher = build_searcher()
+    searcher.table_index = FakeIndex([])
+    searcher.column_index = FakeIndex(
+        [
+            (0, 1.0, {"table_name": "sales.column_hit", "column_name": "channel"}),
+            (1, 0.8, {"table_name": "sales.column_hit", "column_name": "amount"}),
+            (2, 1.0, {"table_name": "sales.decoy", "column_name": "channel"}),
+            (3, 0.9, {"table_name": "sales.decoy", "column_name": "channel"}),
+        ]
+    )
+
+    results = searcher.search("渠道交易金额", top_k=6)
+    by_name = {item["table_name"]: item for item in results}
+
+    assert by_name["sales.column_hit"]["score"] > by_name["sales.decoy"]["score"]
+    assert by_name["sales.column_hit"]["semantic_coverage"] == 2
+    assert by_name["sales.decoy"]["semantic_coverage"] == 1
 
 
 def test_explicit_table_detection_and_relation_resolution_are_schema_aware():
@@ -211,10 +239,39 @@ def test_glossary_top_k_caps_query_expansion():
     params = CollectionSearchParams("weighted", object(), 10, False, 10, 10)
     resolver = GlossaryResolver(FakeEmbedding(), index, params)
 
-    result = resolver.resolve("业务问题", top_k=1, score_threshold=0.1)
+    result = resolver.resolve("查询术语一", top_k=1, score_threshold=0.1)
 
     assert result["matched_terms"] == ["术语一"]
     assert "定义二" not in result["business_context"]
+
+
+def test_glossary_requires_term_or_synonym_to_appear_in_query():
+    index = FakeIndex(
+        [
+            (0, 1.0, {"term": "FX账户", "definition": "外汇账户"}),
+            (1, 0.9, {"term": "AC账户", "definition": "内部账户"}),
+            (
+                2,
+                0.8,
+                {
+                    "term": "转账",
+                    "definition": "转账交易",
+                    "synonyms": '["transfer"]',
+                },
+            ),
+        ]
+    )
+    params = CollectionSearchParams("weighted", object(), 10, False, 10, 10)
+    resolver = GlossaryResolver(FakeEmbedding(), index, params)
+
+    result = resolver.resolve(
+        "查询账户为 12345 的 transfer 交易",
+        top_k=3,
+        score_threshold=0.1,
+    )
+
+    assert result["matched_terms"] == ["转账"]
+    assert result["rejected_terms"] == ["FX账户", "AC账户"]
 
 
 def test_fewshot_uses_table_structure_and_quality_after_hybrid_recall():

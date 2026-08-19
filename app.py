@@ -754,6 +754,12 @@ class QueryResponse(BaseModel):
     clarification: Clarification | None = Field(
         default=None, description="结构化澄清问题和候选项"
     )
+    interpretation: str = Field(
+        default="", description="本轮对历史查询状态的保留、修改和移除说明"
+    )
+    query_state: dict = Field(
+        default_factory=dict, description="合并后的结构化查询状态"
+    )
 
 
 class IndexRebuildRequest(BaseModel):
@@ -874,21 +880,68 @@ def _run_query_impl(
         return int((_time.monotonic() - t0) * 1000)
 
     # 多轮上下文压缩
+    from src.retrieval.context_compressor import ContextCompressor
+
     effective_question = question
+    previous_sql = ""
+    query_state = ContextCompressor.infer_state(question)
+    interpretation = ""
+    context_relation = "new_question"
     if history_summary:
         t0 = _time.monotonic()
-        from src.retrieval.context_compressor import ContextCompressor
-
+        previous_state = ContextCompressor.parse_summary(history_summary)
+        previous_sql = previous_state["sql"]
         compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
-        effective_question = compressor.compress(history_summary, question)
+        merge_result = compressor.merge(history_summary, question)
+        effective_question = merge_result.effective_question
+        query_state = merge_result.query_state
+        interpretation = merge_result.interpretation
+        context_relation = merge_result.relation
         trace_steps.append(
             {
                 "step": "context_compress",
                 "duration_ms": _elapsed_ms(t0),
                 "input": question,
                 "output": effective_question,
+                "relation": merge_result.relation,
+                "changes": merge_result.changes,
+                "query_state": merge_result.query_state.to_dict(),
+                "interpretation": merge_result.interpretation,
+                "confidence": merge_result.confidence,
+                "needs_clarification": merge_result.needs_clarification,
             }
         )
+        if merge_result.needs_clarification:
+            clarification = merge_result.clarification
+            return {
+                "sql": "",
+                "raw_answer": "NEED_CLARIFY: "
+                + json.dumps(clarification, ensure_ascii=False),
+                "matched_tables": [],
+                "matched_terms": [],
+                "enum_hits": [],
+                "retrieval_context": {},
+                "is_success": False,
+                "retry_count": 0,
+                "error": "NEED_CLARIFY:" + str(clarification.get("question") or ""),
+                "matched_fewshot": [],
+                "context_summary": history_summary,
+                "trace": {
+                    "question": question,
+                    "effective_question": effective_question,
+                    "steps": trace_steps,
+                    "total_duration_ms": _elapsed_ms(t_start),
+                },
+                "summary": "",
+                "query_result": None,
+                "execution_error": "",
+                "script": "",
+                "placeholder": "",
+                "needs_clarification": True,
+                "clarification": clarification,
+                "interpretation": interpretation,
+                "query_state": query_state.to_dict(),
+            }
 
     # RAG 检索（用压缩后的完整问题）
     t0 = _time.monotonic()
@@ -899,11 +952,45 @@ def _run_query_impl(
         glossary_score_threshold=config.glossary_score_threshold,
         biz_line=biz_line,
         metadata_filter=metadata_filter,
+        requested_field_query=question,
     )
     retrieval_ms = _elapsed_ms(t0)
 
     matched_tables = [t["table_name"] for t in result.relevant_tables]
     matched_terms = result.matched_terms
+    requested_field_contract = result.requested_fields
+    entity_filter_contract = result.entity_filters
+
+    def _validate_requested_projection(sql: str) -> tuple[bool, str, dict]:
+        projection_ok, projection_error, projection_detail = (
+            SQLValidator.validate_requested_projection(
+                sql,
+                requested_field_contract,
+            )
+        )
+        metric_ok, metric_error, metric_detail = (
+            SQLValidator.validate_metric_projection(sql, result.query_intent)
+        )
+        errors = [
+            error
+            for valid, error in (
+                (projection_ok, projection_error),
+                (metric_ok, metric_error),
+            )
+            if not valid and error
+        ]
+        return (
+            projection_ok and metric_ok,
+            "；".join(errors),
+            {**projection_detail, "metric_contract": metric_detail},
+        )
+
+    def _validate_entity_filters(sql: str) -> tuple[bool, str, dict]:
+        entity_ok, entity_error, entity_detail = SQLValidator.validate_entity_filters(
+            sql,
+            entity_filter_contract,
+        )
+        return entity_ok, entity_error, entity_detail
 
     # trace: 术语解析
     trace_steps.append(
@@ -911,6 +998,7 @@ def _run_query_impl(
             "step": "glossary",
             "duration_ms": retrieval_ms,
             "matched_terms": matched_terms,
+            "rejected_terms": result.rejected_terms,
             "business_context": result.business_context or "",
         }
     )
@@ -922,6 +1010,8 @@ def _run_query_impl(
             "table_name": t["table_name"],
             "search_score": round(float(t.get("score", 0)), 4),
             "hit_by_column": bool(t.get("hit_by_column")),
+            "semantic_coverage": int(t.get("semantic_coverage", 0)),
+            "matched_columns": t.get("matched_columns", [])[:5],
             "hit_by_enum": bool(t.get("hit_by_enum")),
             "pinned": bool(t.get("pinned")),
             "relation_bridge": bool(t.get("relation_bridge")),
@@ -939,6 +1029,8 @@ def _run_query_impl(
             "inferred_biz_line": result.inferred_biz_line,
             "context_stats": result.context_stats,
             "query_intent": result.query_intent,
+            "entity_filters": entity_filter_contract,
+            "unresolved_entities": result.unresolved_entities,
         }
     )
 
@@ -1002,6 +1094,12 @@ def _run_query_impl(
     _placeholder_fields = _ctx.get("placeholder_fields", [])
 
     prompt_text = result.prompt_text
+    if previous_sql and context_relation == "follow_up_add":
+        prompt_text += (
+            "\n\n【上一轮成功结果（本轮补充材料）】\n"
+            "本轮已识别为增量追加；保留原有查询条件、展示维度和指标后再增加新内容。\n"
+            f"```sql\n{previous_sql}\n```"
+        )
     if _param_mode and _placeholder_fields:
         fields_str = ", ".join(_placeholder_fields)
         param_mode_rules = (
@@ -1041,18 +1139,54 @@ def _run_query_impl(
 
     # 调用 LLM
     llm_calls = []
-    t0 = _time.monotonic()
-    answer, usage = _invoke(messages)
-    llm_calls.append(
-        {
-            "role": "initial",
-            "duration_ms": _elapsed_ms(t0),
-            "model": config.llm_model,
-            "output": answer,
-            "input_tokens": usage.get("input_tokens") if usage else None,
-            "output_tokens": usage.get("output_tokens") if usage else None,
-        }
-    )
+    unresolved_requested_fields = [
+        str(requirement.get("field") or "")
+        for requirement in requested_field_contract
+        if not requirement.get("columns")
+    ]
+    unresolved_entity_issues = [
+        str(item.get("issue") or "")
+        for item in result.unresolved_entities
+        if item.get("issue")
+    ]
+    if unresolved_requested_fields or unresolved_entity_issues:
+        unresolved_text = "、".join(unresolved_requested_fields)
+        issue_parts = []
+        if unresolved_text:
+            issue_parts.append(f"没有找到“{unresolved_text}”对应的已授权语义字段。")
+        issue_parts.extend(unresolved_entity_issues)
+        answer = "NEED_CLARIFY: " + json.dumps(
+            {
+                "question": (
+                    "；".join(issue_parts) + "请说明它对应哪个业务字段或数据库列。"
+                ),
+                "options": [],
+            },
+            ensure_ascii=False,
+        )
+        llm_calls.append(
+            {
+                "role": "unresolved_requested_field",
+                "duration_ms": 0,
+                "model": "deterministic_guard",
+                "output": answer,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
+    else:
+        t0 = _time.monotonic()
+        answer, usage = _invoke(messages)
+        llm_calls.append(
+            {
+                "role": "initial",
+                "duration_ms": _elapsed_ms(t0),
+                "model": config.llm_model,
+                "output": answer,
+                "input_tokens": usage.get("input_tokens") if usage else None,
+                "output_tokens": usage.get("output_tokens") if usage else None,
+            }
+        )
     messages.append({"role": "assistant", "content": answer})
 
     # 检测 NEED_CLARIFY
@@ -1163,6 +1297,181 @@ def _run_query_impl(
             }
         )
 
+    # 用户明确要求展示的字段属于结果契约，任何生成或纠错都不能静默删除。
+    projection_validation_attempts = []
+    if (
+        extracted_sql
+        and (
+            result.requested_fields
+            or result.query_intent.get("count_only")
+        )
+        and is_success
+    ):
+        max_projection_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_projection_fix_retries + 1):
+            projection_ok, projection_error, projection_detail = (
+                _validate_requested_projection(extracted_sql)
+            )
+            projection_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": projection_ok,
+                    "error": projection_error,
+                    **projection_detail,
+                }
+            )
+            if projection_ok:
+                break
+            if attempt >= max_projection_fix_retries:
+                is_success = False
+                error_msg = projection_error
+                break
+
+            if result.query_intent.get("count_only"):
+                repair_instruction = (
+                    "请把最终 SELECT 改为唯一一个 COUNT 结果列，移除金额、币种、汇率等其他结果列，"
+                    "移除 GROUP BY 和汇率表关联；保留仍适用的时间范围与出金等筛选条件。"
+                )
+            else:
+                repair_instruction = (
+                    "请从候选列中选择与查询实体语义最匹配的真实字段，必要时补充正确的 "
+                    "JOIN，并确保该字段出现在最终 SELECT 结果中。禁止通过删除用户要求的字段来修复 SQL。"
+                )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你生成的 SQL 不符合用户本轮明确要求的结果结构。\n\n"
+                        f"## 结果字段问题\n{projection_error}\n\n"
+                        f"{repair_instruction}"
+                        "请输出完整修复后的 Doris SQL，用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"requested_projection_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "结果字段修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "requested_projection_validate",
+                "requirements": {
+                    "requested_fields": result.requested_fields,
+                    "count_only": bool(result.query_intent.get("count_only")),
+                },
+                "attempts": projection_validation_attempts,
+                "final_valid": bool(
+                    projection_validation_attempts
+                    and projection_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
+
+    # 配置化实体绑定是强约束；同时复核换汇和展示字段，避免一次修复破坏另一项口径。
+    entity_validation_attempts = []
+    if extracted_sql and entity_filter_contract and is_success:
+        max_entity_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_entity_fix_retries + 1):
+            entity_ok, entity_error, entity_detail = _validate_entity_filters(
+                extracted_sql
+            )
+            currency_ok, currency_error, _ = SQLValidator.validate_currency_conversion(
+                extracted_sql,
+                result.query_intent,
+            )
+            projection_ok, projection_error, _ = _validate_requested_projection(
+                extracted_sql
+            )
+            contract_errors = [
+                error
+                for valid, error in (
+                    (entity_ok, entity_error),
+                    (currency_ok, currency_error),
+                    (projection_ok, projection_error),
+                )
+                if not valid and error
+            ]
+            contract_ok = entity_ok and currency_ok and projection_ok
+            entity_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": contract_ok,
+                    "error": "；".join(contract_errors),
+                    **entity_detail,
+                }
+            )
+            if contract_ok:
+                break
+            if attempt >= max_entity_fix_retries:
+                is_success = False
+                error_msg = "；".join(contract_errors)
+                break
+
+            expected_filters = "\n".join(
+                f"- `{item['qualified_column']}` = {item['value']!r}"
+                for item in entity_filter_contract
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "SQL 违反了已确定的查询契约。\n\n"
+                        f"## 校验问题\n{'；'.join(contract_errors)}\n\n"
+                        f"## 必须保留的实体过滤\n{expected_filters}\n\n"
+                        "请使用指定表、指定字段和原值修复 WHERE 条件；需要时补充正确 JOIN。"
+                        "同时保留完整换汇口径和用户要求展示的字段。请输出完整 Doris SQL，"
+                        "用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"entity_contract_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "实体过滤修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "entity_filter_validate",
+                "requirements": entity_filter_contract,
+                "attempts": entity_validation_attempts,
+                "final_valid": bool(
+                    entity_validation_attempts
+                    and entity_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
+
     # EXPLAIN 校验（param_mode 下跳过，? 占位符无法通过 EXPLAIN）
     explain_details = []
     if (
@@ -1189,6 +1498,22 @@ def _run_query_impl(
                         "valid": False,
                         "error": f"货币换算口径校验失败: {currency_error}",
                     }
+                projection_ok, projection_error, _ = _validate_requested_projection(
+                    check["sql"]
+                )
+                if check["valid"] and not projection_ok:
+                    check = {
+                        **check,
+                        "valid": False,
+                        "error": projection_error,
+                    }
+                entity_ok, entity_error, _ = _validate_entity_filters(check["sql"])
+                if check["valid"] and not entity_ok:
+                    check = {
+                        **check,
+                        "valid": False,
+                        "error": entity_error,
+                    }
             explain_details.append(
                 {
                     "attempt": attempt + 1,
@@ -1211,7 +1536,8 @@ def _run_query_impl(
                         "role": "user",
                         "content": f"你生成的 SQL 执行 EXPLAIN 校验失败。\n\n"
                         f"## EXPLAIN 报错\n{check['error']}\n\n"
-                        f"请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。",
+                        "请分析错误原因（1-2句），然后输出修复后的 SQL，用 ```sql ``` 包裹。"
+                        "修复时必须保留用户明确要求展示的所有结果字段。",
                     }
                 )
                 t0 = _time.monotonic()
@@ -1277,7 +1603,18 @@ def _run_query_impl(
                             result.query_intent,
                         )
                     )
-                    if optimized_safety["safe"] and optimized_currency_ok:
+                    optimized_projection_ok, optimized_projection_error, _ = (
+                        _validate_requested_projection(optimized_sql)
+                    )
+                    optimized_entity_ok, optimized_entity_error, _ = (
+                        _validate_entity_filters(optimized_sql)
+                    )
+                    if (
+                        optimized_safety["safe"]
+                        and optimized_currency_ok
+                        and optimized_projection_ok
+                        and optimized_entity_ok
+                    ):
                         answer = review_result
                         is_success = True
                         error_msg = ""
@@ -1287,6 +1624,10 @@ def _run_query_impl(
                             **optimized_safety,
                             "currency_conversion_valid": optimized_currency_ok,
                             "currency_conversion_error": optimized_currency_error,
+                            "requested_projection_valid": optimized_projection_ok,
+                            "requested_projection_error": optimized_projection_error,
+                            "entity_filter_valid": optimized_entity_ok,
+                            "entity_filter_error": optimized_entity_error,
                         }
                     )
 
@@ -1411,7 +1752,15 @@ def _run_query_impl(
                         fixed_sql,
                         [table.get("schema", {}) for table in result.relevant_tables],
                     )
-                    if recheck["valid"] and currency_ok and schema_ok:
+                    projection_ok, _, _ = _validate_requested_projection(fixed_sql)
+                    entity_ok, _, _ = _validate_entity_filters(fixed_sql)
+                    if (
+                        recheck["valid"]
+                        and currency_ok
+                        and schema_ok
+                        and projection_ok
+                        and entity_ok
+                    ):
                         final_sql = fixed_sql
                         answer = enum_fix_answer
                         enum_fixed = True
@@ -1438,6 +1787,10 @@ def _run_query_impl(
                 [table.get("schema", {}) for table in result.relevant_tables],
             )
         )
+        projection_ok, projection_error, projection_detail = (
+            _validate_requested_projection(final_sql)
+        )
+        entity_ok, entity_error, entity_detail = _validate_entity_filters(final_sql)
         trace_steps.append(
             {
                 "step": "sql_post_rewrite_guard",
@@ -1447,11 +1800,19 @@ def _run_query_impl(
                 "schema_valid": schema_ok,
                 "schema_error": schema_error,
                 "schema_detail": schema_detail,
+                "requested_projection_valid": projection_ok,
+                "requested_projection_error": projection_error,
+                "requested_projection_detail": projection_detail,
+                "entity_filter_valid": entity_ok,
+                "entity_filter_error": entity_error,
+                "entity_filter_detail": entity_detail,
             }
         )
-        if not currency_ok or not schema_ok:
+        if not currency_ok or not schema_ok or not projection_ok or not entity_ok:
             is_success = False
-            error_msg = currency_error or schema_error
+            error_msg = (
+                currency_error or schema_error or projection_error or entity_error
+            )
 
     # ── param_mode: 提取 script + placeholder，跳过执行 ──
     script_text = ""
@@ -1601,6 +1962,36 @@ def _run_query_impl(
                         )
                         continue
 
+                    projection_ok, projection_error, _ = _validate_requested_projection(
+                        simplified
+                    )
+                    if not projection_ok:
+                        trace_steps.append(
+                            {
+                                "step": "timeout_fallback",
+                                "level": level,
+                                "simplified_sql": simplified,
+                                "success": False,
+                                "error": projection_error,
+                                "duration_ms": _elapsed_ms(t0),
+                            }
+                        )
+                        continue
+
+                    entity_ok, entity_error, _ = _validate_entity_filters(simplified)
+                    if not entity_ok:
+                        trace_steps.append(
+                            {
+                                "step": "timeout_fallback",
+                                "level": level,
+                                "simplified_sql": simplified,
+                                "success": False,
+                                "error": entity_error,
+                                "duration_ms": _elapsed_ms(t0),
+                            }
+                        )
+                        continue
+
                     # EXPLAIN 校验简化后的 SQL
                     access_allowed, access_error, simplified_dbs = (
                         SQLValidator.validate_database_access(
@@ -1713,6 +2104,50 @@ def _run_query_impl(
                                 "content": (
                                     "上一版修复 SQL 破坏了货币换算口径："
                                     f"{currency_error}。后续修复必须保留完整换汇规则。"
+                                ),
+                            }
+                        )
+                        continue
+
+                    projection_ok, projection_error, _ = _validate_requested_projection(
+                        new_sql
+                    )
+                    if not projection_ok:
+                        trace_steps.append(
+                            {
+                                "step": "execution_fix",
+                                "attempt": exec_fix_i + 1,
+                                "success": False,
+                                "reason": projection_error,
+                            }
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "上一版修复 SQL 删除了用户明确要求的结果字段："
+                                    f"{projection_error}。后续修复必须保留这些字段。"
+                                ),
+                            }
+                        )
+                        continue
+
+                    entity_ok, entity_error, _ = _validate_entity_filters(new_sql)
+                    if not entity_ok:
+                        trace_steps.append(
+                            {
+                                "step": "execution_fix",
+                                "attempt": exec_fix_i + 1,
+                                "success": False,
+                                "reason": entity_error,
+                            }
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "上一版修复 SQL 破坏了已确定的实体过滤条件："
+                                    f"{entity_error}。后续修复必须使用配置指定的表、字段和值。"
                                 ),
                             }
                         )
@@ -1910,12 +2345,13 @@ def _run_query_impl(
     ]
 
     # 构建本轮摘要供下一轮使用（仅成功时更新，失败轮不污染上下文）
-    from src.retrieval.context_compressor import ContextCompressor
-
     context_summary = ""
     if is_success and final_sql:
         context_summary = ContextCompressor.build_summary(
-            effective_question, matched_tables
+            effective_question,
+            matched_tables,
+            final_sql,
+            query_state=query_state,
         )
 
     # 汇总 trace
@@ -1943,6 +2379,7 @@ def _run_query_impl(
             "inferred_biz_line": result.inferred_biz_line,
             "context_stats": result.context_stats,
             "query_intent": result.query_intent,
+            "requested_fields": result.requested_fields,
         },
         "is_success": is_success,
         "retry_count": retry_count,
@@ -1957,6 +2394,8 @@ def _run_query_impl(
         "placeholder": placeholder_text,
         "needs_clarification": clarification is not None,
         "clarification": clarification,
+        "interpretation": interpretation,
+        "query_state": query_state.to_dict(),
     }
 
 
@@ -2206,6 +2645,8 @@ async def query(req: QueryRequest, request: Request):
                     "execution_error": result.get("execution_error", ""),
                     "script": result.get("script", ""),
                     "placeholder": result.get("placeholder", ""),
+                    "interpretation": result.get("interpretation", ""),
+                    "query_state": result.get("query_state", {}),
                 },
                 context_key=_cache_ctx,
             )
@@ -2232,6 +2673,8 @@ async def query(req: QueryRequest, request: Request):
             placeholder=result.get("placeholder", ""),
             needs_clarification=result.get("needs_clarification", False),
             clarification=result.get("clarification"),
+            interpretation=result.get("interpretation", ""),
+            query_state=result.get("query_state", {}),
         )
 
         # Lark 请求把完整、JSON-safe 的响应快照与查询日志一起提交；Admin

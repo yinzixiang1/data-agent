@@ -115,6 +115,91 @@ def test_column_pruning_keeps_keys_join_and_question_fields():
     assert stats["columns_pruned"] == 2
 
 
+def test_explicit_result_field_is_mapped_and_survives_column_pruning():
+    schemas = _schemas()
+    schemas["sales.customers"]["columns"] = [
+        {"name": "customer_id", "key": "PRI"},
+        *({"name": f"attribute_{index}"} for index in range(20)),
+        {
+            "name": "main_email",
+            "display_name": "开户邮箱",
+            "description": "用户开户时登记的邮箱",
+        },
+    ]
+    planner = SchemaContextPlanner(schemas)
+    candidates = [
+        {
+            "table_name": "sales.customers",
+            "schema": schemas["sales.customers"],
+        }
+    ]
+
+    requirements = planner.resolve_requested_columns(candidates, ["邮箱"])
+    required_columns = {
+        column for requirement in requirements for column in requirement["columns"]
+    }
+    planned, _ = planner.prune_columns(
+        candidates,
+        "展示一下邮箱",
+        required_columns=required_columns,
+        per_table_limit=3,
+    )
+
+    assert requirements == [
+        {"field": "邮箱", "columns": ["sales.customers.main_email"]}
+    ]
+    assert "main_email" in planned[0]["selected_columns"]
+
+
+def test_unmapped_explicit_result_field_is_not_silently_dropped():
+    planner = SchemaContextPlanner(_schemas())
+
+    requirements = planner.resolve_requested_columns(
+        [
+            {
+                "table_name": "sales.customers",
+                "schema": _schemas()["sales.customers"],
+            }
+        ],
+        ["别名"],
+    )
+
+    assert requirements == [{"field": "别名", "columns": []}]
+
+
+def test_requested_field_mapping_uses_query_entity_semantics():
+    schemas = _schemas()
+    schemas["sales.customers"]["columns"].append(
+        {
+            "name": "main_email",
+            "display_name": "开户邮箱",
+            "business_logic": "查询账户、商户或用户邮箱时使用，不是付款方邮箱",
+        }
+    )
+    schemas["sales.orders"]["columns"].append(
+        {
+            "name": "payer_email",
+            "display_name": "付款方邮箱",
+            "description": "付款方邮箱",
+        }
+    )
+    planner = SchemaContextPlanner(schemas)
+    candidates = [
+        {"table_name": name, "schema": schemas[name]}
+        for name in ("sales.orders", "sales.customers")
+    ]
+
+    requirements = planner.resolve_requested_columns(
+        candidates,
+        ["邮箱"],
+        query="查询account_name为 yzx的用户，并展示其邮箱",
+    )
+
+    assert requirements == [
+        {"field": "邮箱", "columns": ["sales.customers.main_email"]}
+    ]
+
+
 def test_time_query_keeps_likely_time_columns_beyond_regular_limit():
     schemas = _schemas()
     schemas["sales.orders"]["columns"].extend(
@@ -145,6 +230,21 @@ def test_domain_routing_requires_clear_evidence():
 
     assert planner.infer_biz_line("issuing 发卡数量") == "issuing"
     assert planner.infer_biz_line("查询最近数据") == ""
+
+
+def test_table_document_indexes_column_descriptions_and_business_logic():
+    schema = _schemas()["sales.orders"]
+    schema["columns"][2].update(
+        {
+            "description": "主订单的原币交易金额，不是账户余额",
+            "business_logic": "按渠道汇总订单交易金额时使用",
+        }
+    )
+
+    document = DocumentBuilder().build_table_document(schema)
+
+    assert "amount(订单金额): 主订单的原币交易金额，不是账户余额" in document["text"]
+    assert "按渠道汇总订单交易金额时使用" in document["text"]
 
 
 def test_inline_enum_values_are_added_to_entity_value_index():

@@ -17,6 +17,7 @@
 
 import json
 import logging
+import re
 
 from src.retrieval.config import GLOSSARY_SCORE_THRESHOLD
 from src.retrieval.embedding import Qwen3Embedding
@@ -57,6 +58,7 @@ class GlossaryResolver:
         score_threshold: float = GLOSSARY_SCORE_THRESHOLD,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
+        require_lexical_grounding: bool = True,
     ) -> dict:
         """
         通过混合检索匹配用户提问中的业务术语。
@@ -83,6 +85,7 @@ class GlossaryResolver:
                 "matched_terms": [],
                 "related_tables": [],
                 "related_columns": [],
+                "rejected_terms": [],
             }
 
         effective_filter = dict(metadata_filter or {})
@@ -105,6 +108,7 @@ class GlossaryResolver:
                 "sql_hint",
                 "related_tables",
                 "related_columns",
+                "synonyms",
             ],
             filter_expr=filter_expr,
             ef_search=self.ef_search,
@@ -114,11 +118,18 @@ class GlossaryResolver:
         max_score = results[0][1] if results else 0
         min_score = max_score * score_threshold
 
+        rejected_terms: list[str] = []
         for doc_id, score, entity in results[:top_k]:
             if score < min_score:
                 continue
 
             term = entity["term"]
+            synonyms = self._parse_synonyms(entity.get("synonyms", "[]"))
+            if require_lexical_grounding and not self._is_grounded(
+                query, term, synonyms
+            ):
+                rejected_terms.append(term)
+                continue
             definition = entity.get("definition", "")
             sql_hint = entity.get("sql_hint", "")
 
@@ -168,4 +179,38 @@ class GlossaryResolver:
             "matched_terms": matched_terms,
             "related_tables": sorted(required_tables),
             "related_columns": sorted(required_columns),
+            "rejected_terms": rejected_terms,
         }
+
+    @staticmethod
+    def _parse_synonyms(raw_synonyms: object) -> list[str]:
+        if isinstance(raw_synonyms, list):
+            return [str(value) for value in raw_synonyms if value]
+        if not isinstance(raw_synonyms, str) or not raw_synonyms:
+            return []
+        try:
+            parsed = json.loads(raw_synonyms)
+        except (json.JSONDecodeError, TypeError):
+            return [value.strip() for value in raw_synonyms.split(",") if value.strip()]
+        if not isinstance(parsed, list):
+            return []
+        return [str(value) for value in parsed if value]
+
+    @classmethod
+    def _is_grounded(cls, query: str, term: str, synonyms: list[str]) -> bool:
+        return any(cls._contains_phrase(query, phrase) for phrase in [term, *synonyms])
+
+    @staticmethod
+    def _contains_phrase(query: str, phrase: str) -> bool:
+        normalized = phrase.strip()
+        if not normalized:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9_ -]+", normalized):
+            return bool(
+                re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])",
+                    query,
+                    re.IGNORECASE,
+                )
+            )
+        return normalized.casefold() in query.casefold()

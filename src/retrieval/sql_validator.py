@@ -386,6 +386,374 @@ class SQLValidator:
         return True, "", {"referenced_tables": sorted(referenced_tables)}
 
     @classmethod
+    def validate_requested_projection(
+        cls,
+        sql: str,
+        requirements: list[dict],
+    ) -> tuple[bool, str, dict]:
+        """确保用户明确要求展示的字段没有在 SQL 纠错中被删除。"""
+        if not requirements:
+            return True, "", {"required": False}
+
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return False, parse_error, {"required": True}
+
+        projected_columns: set[str] = set()
+        has_star = False
+        if tree is not None:
+            from sqlglot import expressions as exp
+
+            select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+            if select is not None:
+                for expression in select.expressions:
+                    if isinstance(expression, exp.Star) or (
+                        isinstance(expression, exp.Column)
+                        and isinstance(expression.this, exp.Star)
+                    ):
+                        has_star = True
+                    projected_columns.update(
+                        column.name.casefold()
+                        for column in expression.find_all(exp.Column)
+                    )
+        else:
+            structural_sql = cls._strip_literals_and_comments(
+                sql,
+                preserve_quoted_identifiers=True,
+            )
+            match = re.search(
+                r"\bSELECT\b(?P<select>.*?)\bFROM\b",
+                structural_sql,
+                re.IGNORECASE | re.DOTALL,
+            )
+            select_text = match.group("select") if match else ""
+            has_star = bool(
+                re.search(
+                    r"(?:^|,)\s*(?:`?[A-Za-z_][A-Za-z0-9_]*`?\s*\.\s*)?"
+                    r"\*\s*(?:,|$)",
+                    select_text,
+                )
+            )
+            projected_columns.update(
+                value.casefold()
+                for value in re.findall(
+                    r"(?:\b|`)([A-Za-z_][A-Za-z0-9_]*)`?", select_text
+                )
+            )
+
+        missing: list[dict] = []
+        if not has_star:
+            for requirement in requirements:
+                candidates = {
+                    str(column).rsplit(".", 1)[-1].casefold()
+                    for column in requirement.get("columns", [])
+                }
+                if not candidates & projected_columns:
+                    missing.append(requirement)
+
+        detail = {
+            "required": True,
+            "projected_columns": sorted(projected_columns),
+            "missing_fields": [item.get("field", "") for item in missing],
+        }
+        if not missing:
+            return True, "", detail
+
+        descriptions = []
+        for requirement in missing:
+            candidates = ", ".join(requirement.get("columns", []))
+            descriptions.append(
+                f"{requirement.get('field', '')}（候选列: {candidates}）"
+            )
+        return (
+            False,
+            "SQL 未在最终 SELECT 结果中保留用户明确要求的字段: "
+            + "；".join(descriptions),
+            detail,
+        )
+
+    @classmethod
+    def validate_metric_projection(
+        cls,
+        sql: str,
+        query_intent: dict,
+    ) -> tuple[bool, str, dict]:
+        """Enforce exclusive metric requests after every SQL repair step."""
+        count_only = bool(query_intent.get("count_only"))
+        if not count_only:
+            return True, "", {"required": False}
+
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return (
+                False,
+                parse_error,
+                {
+                    "required": True,
+                    "count_only": count_only,
+                },
+            )
+
+        invalid_projections: list[str] = []
+        has_group_by = False
+        has_exchange_rate = False
+        if tree is not None:
+            from sqlglot import expressions as exp
+
+            select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+            if select is not None:
+                has_group_by = select.args.get("group") is not None
+                if len(select.expressions) != 1:
+                    invalid_projections.extend(
+                        expression.sql(dialect="mysql")
+                        for expression in select.expressions
+                    )
+                for expression in select.expressions:
+                    projected = (
+                        expression.this
+                        if isinstance(expression, exp.Alias)
+                        else expression
+                    )
+                    has_count = isinstance(projected, exp.Count) or (
+                        projected.find(exp.Count) is not None
+                    )
+                    if (
+                        not has_count
+                        and expression.sql(dialect="mysql") not in invalid_projections
+                    ):
+                        invalid_projections.append(expression.sql(dialect="mysql"))
+            has_exchange_rate = any(
+                table.name.casefold() == "sys_exchange_rate"
+                for table in tree.find_all(exp.Table)
+            )
+        else:
+            structural_sql = cls._strip_literals_and_comments(
+                sql,
+                preserve_quoted_identifiers=True,
+            )
+            match = re.search(
+                r"\bSELECT\b(?P<select>.*?)\bFROM\b",
+                structural_sql,
+                re.IGNORECASE | re.DOTALL,
+            )
+            projection = match.group("select") if match else ""
+            count_only_projection = re.fullmatch(
+                r"\s*COUNT\s*\([^)]*\)\s*"
+                r"(?:(?:AS\s+)?(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))?\s*",
+                projection,
+                flags=re.IGNORECASE,
+            )
+            invalid_projections = [] if count_only_projection else [projection.strip()]
+            has_group_by = bool(re.search(r"\bGROUP\s+BY\b", structural_sql, re.I))
+            has_exchange_rate = "sys_exchange_rate" in structural_sql.casefold()
+
+        detail = {
+            "required": True,
+            "count_only": count_only,
+            "invalid_projections": invalid_projections,
+            "has_group_by": has_group_by,
+            "has_exchange_rate": has_exchange_rate,
+        }
+        if not invalid_projections and not has_group_by and not has_exchange_rate:
+            return True, "", detail
+        issues = []
+        if invalid_projections:
+            issues.append("SELECT 包含次数之外的结果字段")
+        if has_group_by:
+            issues.append("SQL 仍按维度分组")
+        if has_exchange_rate:
+            issues.append("SQL 仍引用汇率表")
+        return (
+            False,
+            "用户要求仅统计次数，但" + "、".join(issues),
+            detail,
+        )
+
+    @classmethod
+    def validate_entity_filters(
+        cls,
+        sql: str,
+        requirements: list[dict],
+    ) -> tuple[bool, str, dict]:
+        """确保配置化实体链接在最终 SQL 中仍使用指定表、字段和值。"""
+        if not requirements:
+            return True, "", {"required": False}
+
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return False, parse_error, {"required": True}
+        if tree is None:
+            return cls._validate_entity_filters_without_ast(sql, requirements)
+
+        from sqlglot import expressions as exp
+
+        alias_to_table: dict[str, str] = {}
+        referenced_tables: set[str] = set()
+        for table in tree.find_all(exp.Table):
+            full_name = (
+                f"{table.db}.{table.name}" if table.db else str(table.name)
+            ).casefold()
+            referenced_tables.add(full_name)
+            alias_to_table[str(table.alias_or_name).casefold()] = full_name
+            alias_to_table[table.name.casefold()] = full_name
+
+        def literal_value(expression) -> str | None:
+            if not isinstance(expression, exp.Literal):
+                return None
+            return str(expression.this)
+
+        missing: list[dict] = []
+        for requirement in requirements:
+            expected_table = str(requirement.get("table") or "").casefold()
+            expected_column = str(requirement.get("column") or "").casefold()
+            expected_value = str(requirement.get("value") or "")
+            table_present = expected_table in referenced_tables or any(
+                table.endswith(f".{expected_table}")
+                for table in referenced_tables
+                if "." not in expected_table
+            )
+            found = False
+            if table_present:
+                for equality in tree.find_all(exp.EQ):
+                    for column_expr, value_expr in (
+                        (equality.this, equality.expression),
+                        (equality.expression, equality.this),
+                    ):
+                        if not isinstance(column_expr, exp.Column):
+                            continue
+                        if column_expr.name.casefold() != expected_column:
+                            continue
+                        actual_value = literal_value(value_expr)
+                        if actual_value != expected_value:
+                            continue
+                        qualifier = str(column_expr.table or "").casefold()
+                        if qualifier:
+                            actual_table = alias_to_table.get(qualifier, qualifier)
+                            if actual_table != expected_table:
+                                continue
+                        elif len(referenced_tables) != 1:
+                            continue
+                        found = True
+                        break
+                    if found:
+                        break
+            if not found:
+                missing.append(requirement)
+
+        detail = {
+            "required": True,
+            "referenced_tables": sorted(referenced_tables),
+            "missing_filters": [
+                {
+                    "qualified_column": item.get("qualified_column", ""),
+                    "value": item.get("value", ""),
+                }
+                for item in missing
+            ],
+        }
+        if not missing:
+            return True, "", detail
+
+        descriptions = [
+            f"{item.get('qualified_column', '')} = {item.get('value', '')!r}"
+            for item in missing
+        ]
+        return (
+            False,
+            "SQL 未保留已确定的实体过滤条件: " + "；".join(descriptions),
+            detail,
+        )
+
+    @classmethod
+    def _validate_entity_filters_without_ast(
+        cls,
+        sql: str,
+        requirements: list[dict],
+    ) -> tuple[bool, str, dict]:
+        """sqlglot 不可用时，用保守正则校验简单的表别名和等值条件。"""
+        normalized = sql.replace("`", "")
+        aliases: dict[str, str] = {}
+        referenced_tables: set[str] = set()
+        reserved = {
+            "where",
+            "join",
+            "left",
+            "right",
+            "inner",
+            "outer",
+            "group",
+            "order",
+            "limit",
+            "on",
+        }
+        table_pattern = re.compile(
+            r"\b(?:FROM|JOIN)\s+"
+            r"(?P<table>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)"
+            r"(?:\s+(?:AS\s+)?(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?",
+            re.IGNORECASE,
+        )
+        for match in table_pattern.finditer(normalized):
+            table_name = match.group("table").casefold()
+            alias = str(match.group("alias") or "").casefold()
+            if alias in reserved:
+                alias = ""
+            short_name = table_name.rsplit(".", 1)[-1]
+            referenced_tables.add(table_name)
+            aliases[short_name] = table_name
+            if alias:
+                aliases[alias] = table_name
+
+        missing: list[dict] = []
+        for requirement in requirements:
+            expected_table = str(requirement.get("table") or "").casefold()
+            expected_column = str(requirement.get("column") or "")
+            expected_value = str(requirement.get("value") or "")
+            table_present = expected_table in referenced_tables
+            value_pattern = rf"(?:'{re.escape(expected_value)}'|\"{re.escape(expected_value)}\"|{re.escape(expected_value)})"
+            equality_pattern = re.compile(
+                rf"(?:(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?"
+                rf"{re.escape(expected_column)}\s*=\s*{value_pattern}"
+                r"(?![A-Za-z0-9_.@-])",
+                re.IGNORECASE,
+            )
+            found = False
+            if table_present:
+                for match in equality_pattern.finditer(normalized):
+                    qualifier = str(match.group("alias") or "").casefold()
+                    if qualifier and aliases.get(qualifier) != expected_table:
+                        continue
+                    if not qualifier and len(referenced_tables) != 1:
+                        continue
+                    found = True
+                    break
+            if not found:
+                missing.append(requirement)
+
+        detail = {
+            "required": True,
+            "referenced_tables": sorted(referenced_tables),
+            "missing_filters": [
+                {
+                    "qualified_column": item.get("qualified_column", ""),
+                    "value": item.get("value", ""),
+                }
+                for item in missing
+            ],
+            "ast_validation": "unavailable",
+        }
+        if not missing:
+            return True, "", detail
+        descriptions = [
+            f"{item.get('qualified_column', '')} = {item.get('value', '')!r}"
+            for item in missing
+        ]
+        return (
+            False,
+            "SQL 未保留已确定的实体过滤条件: " + "；".join(descriptions),
+            detail,
+        )
+
+    @classmethod
     def validate_currency_conversion(
         cls,
         sql: str,
@@ -477,7 +845,20 @@ class SQLValidator:
                 for column in equality_columns
                 if column.table
             }
-            if "source_currency" in equality_names and len(equality_aliases) >= 2:
+            non_rate_currency_columns = [
+                column
+                for column in equality_columns
+                if column.name.casefold() != "source_currency"
+                and (
+                    "currency" in column.name.casefold()
+                    or column.name.casefold() in {"ccy", "currency_code"}
+                )
+            ]
+            if (
+                "source_currency" in equality_names
+                and non_rate_currency_columns
+                and len(equality_aliases) >= 2
+            ):
                 source_join_found = True
             if "sync_time" in equality_names and any(
                 name in time_names or name.endswith("_time") or name.endswith("_date")

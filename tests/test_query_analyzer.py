@@ -40,6 +40,14 @@ def test_query_analyzer_detects_chinese_currency_conversion_target():
     assert "缺失汇率笔数" in analysis.to_prompt_context()
 
 
+def test_query_analyzer_detects_short_chinese_conversion_phrase():
+    analysis = QueryAnalyzer.analyze("查询最近一个月的 transfer 交易，转美元")
+
+    assert analysis.currency_conversion is True
+    assert analysis.requires_exchange_rate is True
+    assert analysis.target_currency == "USD"
+
+
 def test_query_analyzer_detects_currency_reporting_phrase():
     analysis = QueryAnalyzer.analyze("最近一个月的入金按新加坡元统计")
 
@@ -61,3 +69,36 @@ def test_query_analyzer_does_not_treat_currency_filter_as_conversion():
 
     assert analysis.requires_exchange_rate is False
     assert analysis.currency_conversion is False
+
+
+def test_query_analyzer_extracts_explicit_result_fields_from_followup():
+    analysis = QueryAnalyzer.analyze(
+        "查询account_name为 yzx的用户最近一个月的交易情况，并展示其邮箱。"
+    )
+
+    assert analysis.requested_fields == ["邮箱"]
+    assert "必须展示字段: 邮箱" in analysis.to_prompt_context()
+
+
+def test_query_analyzer_extracts_multiple_result_fields():
+    analysis = QueryAnalyzer.analyze("显示开户时间和手机号")
+
+    assert analysis.requested_fields == ["开户时间", "手机号"]
+
+
+def test_query_analyzer_marks_exclusive_count_as_result_contract():
+    analysis = QueryAnalyzer.analyze(
+        "最近一个月只查询出金交易次数，不返回金额，不按币种分组"
+    )
+
+    assert analysis.aggregations == ["count"]
+    assert analysis.count_only is True
+    assert "仅返回 COUNT 次数" in analysis.to_prompt_context()
+
+
+def test_query_analyzer_detects_relative_month_without_table_specific_intent():
+    analysis = QueryAnalyzer.analyze("查询visa渠道这一个月的交易金额")
+
+    assert analysis.has_time_filter is True
+    assert "transaction_amount" not in analysis.to_dict()
+    assert "channel_scoped" not in analysis.to_dict()

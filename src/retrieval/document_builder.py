@@ -73,6 +73,29 @@ class DocumentBuilder:
         if col_summaries:
             parts.append(f"主要字段: {', '.join(col_summaries)}")
 
+        semantic_summaries = []
+        for col in schema.get("columns", []):
+            if col.get("is_skip_index") or col.get("is_sensitive"):
+                continue
+            display_name = str(col.get("display_name") or "").strip()
+            description = str(
+                col.get("description") or col.get("comment") or ""
+            ).strip()
+            business_logic = str(col.get("business_logic") or "").strip()
+            if not any((display_name, description, business_logic)):
+                continue
+            semantic = col["name"]
+            if display_name:
+                semantic += f"({display_name})"
+            details = "；".join(
+                value for value in (description, business_logic) if value
+            )
+            if details:
+                semantic += f": {details}"
+            semantic_summaries.append(semantic)
+        if semantic_summaries:
+            parts.append("字段语义: " + " | ".join(semantic_summaries))
+
         # 关联表
         for rel in schema.get("relations", []):
             target = rel.get("target_table", "")

@@ -232,6 +232,27 @@ class TestCurrencyConversionGuard:
         assert valid is False
         assert "LEFT JOIN" in error
 
+    def test_rejects_non_currency_column_as_exchange_rate_source(self):
+        sql = """
+        SELECT SUM(
+                 CASE
+                   WHEN t.credit_debit_type = 'USD' THEN t.amount
+                   ELSE t.amount * r.mid
+                 END
+               ) AS usd_amount,
+               SUM(CASE WHEN r.mid IS NULL THEN 1 ELSE 0 END) AS missing_rate_count
+        FROM dwd_bi_banking.pmt_finance_transactions AS t
+        LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = t.credit_debit_type
+         AND r.target_currency = 'USD'
+         AND DATE(r.sync_time) = DATE(t.create_time)
+        """
+
+        valid, error, _ = SQLValidator.validate_currency_conversion(sql, self.INTENT)
+
+        assert valid is False
+        assert "交易原币种" in error
+
     def test_skips_non_conversion_queries(self):
         valid, error, detail = SQLValidator.validate_currency_conversion(
             "SELECT 1",
@@ -241,6 +262,148 @@ class TestCurrencyConversionGuard:
         assert valid is True
         assert error == ""
         assert detail == {"required": False}
+
+
+class TestRequestedProjectionGuard:
+    REQUIREMENTS = [
+        {
+            "field": "邮箱",
+            "columns": [
+                "dwd_bi_banking.banking_account.main_email",
+                "dwd_bi_banking.pmt_finance_invoice.invoice_email",
+            ],
+        }
+    ]
+
+    def test_accepts_requested_real_column_in_select(self):
+        sql = """
+        SELECT a.account_name, a.main_email
+        FROM dwd_bi_banking.banking_account AS a
+        """
+
+        valid, error, detail = SQLValidator.validate_requested_projection(
+            sql,
+            self.REQUIREMENTS,
+        )
+
+        assert valid is True, error
+        assert "main_email" in detail["projected_columns"]
+
+    def test_rejects_unknown_alias_and_silent_field_removal(self):
+        unknown_sql = """
+        SELECT a.account_name, a.email
+        FROM dwd_bi_banking.banking_account AS a
+        """
+        removed_sql = """
+        SELECT t.account_name, COUNT(*)
+        FROM dwd_bi_banking.pmt_finance_transactions AS t
+        GROUP BY t.account_name
+        """
+
+        for sql in (unknown_sql, removed_sql):
+            valid, error, detail = SQLValidator.validate_requested_projection(
+                sql,
+                self.REQUIREMENTS,
+            )
+            assert valid is False
+            assert "邮箱" in error
+            assert detail["missing_fields"] == ["邮箱"]
+
+    def test_does_not_require_incidental_email_filter_without_display_request(self):
+        valid, error, detail = SQLValidator.validate_requested_projection(
+            "SELECT account_name FROM dwd_bi_banking.banking_account",
+            [],
+        )
+
+        assert valid is True
+        assert error == ""
+        assert detail == {"required": False}
+
+
+class TestMetricProjectionGuard:
+    INTENT = {"count_only": True}
+
+    def test_accepts_single_count_projection(self):
+        valid, error, detail = SQLValidator.validate_metric_projection(
+            "SELECT COUNT(*) AS `出金交易次数` FROM banking.transactions",
+            self.INTENT,
+        )
+
+        assert valid is True, error
+        assert detail["count_only"] is True
+
+    def test_rejects_amount_currency_group_and_exchange_rate_join(self):
+        sql = """
+        SELECT t.currency, COUNT(*), SUM(t.amount)
+        FROM banking.transactions AS t
+        LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = t.currency
+        GROUP BY t.currency
+        """
+
+        valid, error, detail = SQLValidator.validate_metric_projection(
+            sql,
+            self.INTENT,
+        )
+
+        assert valid is False
+        assert "次数之外" in error
+        assert detail["has_group_by"] is True
+        assert detail["has_exchange_rate"] is True
+
+class TestEntityFilterGuard:
+    REQUIREMENTS = [
+        {
+            "table": "dwd_bi_banking.banking_account",
+            "column": "short_account_id",
+            "qualified_column": ("dwd_bi_banking.banking_account.short_account_id"),
+            "value": "12345",
+        }
+    ]
+
+    def test_accepts_exact_configured_table_column_and_value(self):
+        sql = """
+        SELECT a.account_name, COUNT(*)
+        FROM dwd_bi_banking.banking_account AS a
+        JOIN dwd_bi_banking.pmt_finance_transactions AS t
+          ON t.account_id = a.account_id
+        WHERE a.short_account_id = '12345'
+        GROUP BY a.account_name
+        """
+
+        valid, error, detail = SQLValidator.validate_entity_filters(
+            sql,
+            self.REQUIREMENTS,
+        )
+
+        assert valid is True, error
+        assert detail["missing_filters"] == []
+
+    @pytest.mark.parametrize(
+        "where_clause",
+        [
+            "a.account_id = '12345'",
+            "t.short_account_id = '12345'",
+            "a.short_account_id = '54321'",
+        ],
+    )
+    def test_rejects_changed_entity_contract(self, where_clause):
+        sql = f"""
+        SELECT a.account_name
+        FROM dwd_bi_banking.banking_account AS a
+        JOIN dwd_bi_banking.pmt_finance_transactions AS t
+          ON t.account_id = a.account_id
+        WHERE {where_clause}
+        """
+
+        valid, error, detail = SQLValidator.validate_entity_filters(
+            sql,
+            self.REQUIREMENTS,
+        )
+
+        assert valid is False
+        assert "short_account_id" in error
+        assert detail["missing_filters"]
 
 
 class TestMilvusFilterGuard:

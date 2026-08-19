@@ -16,6 +16,8 @@ class QueryAnalysis:
     requires_exchange_rate: bool = False
     currency_conversion: bool = False
     target_currency: str = ""
+    requested_fields: list[str] = field(default_factory=list)
+    count_only: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -45,6 +47,12 @@ class QueryAnalysis:
                     "换算结果保留 NULL，并显式返回缺失汇率笔数",
                 )
             )
+        if self.requested_fields:
+            parts.append("必须展示字段: " + ", ".join(self.requested_fields))
+        if self.count_only:
+            parts.append(
+                "结果契约: 仅返回 COUNT 次数；禁止返回金额、币种、汇率或其他展示维度"
+            )
         return "\n".join(parts)
 
 
@@ -65,7 +73,7 @@ class QueryAnalyzer:
         ),
     }
     _AGGREGATION_RULES = {
-        "count": r"多少|数量|笔数|个数|count",
+        "count": r"多少|数量|笔数|次数|个数|count",
         "sum": r"总计|合计|总额|总金额|sum",
         "avg": r"平均|均值|avg",
         "max": r"最高|最大|max",
@@ -84,6 +92,7 @@ class QueryAnalyzer:
     )
     _TIME_FILTER_RULE = (
         r"最近|近\s*\d+|过去|今日|今天|昨日|昨天|本(?:周|月|季|年)|"
+        r"这(?:一|个|一个)?(?:天|周|月|个月|季度|年)|"
         r"上(?:周|月|季|年)|last\s+\d+|past\s+\d+|recent|today|yesterday|"
         r"this\s+(?:week|month|quarter|year)|last\s+(?:week|month|quarter|year)"
     )
@@ -107,7 +116,7 @@ class QueryAnalyzer:
     )
     _CONVERSION_TARGET_RULES = (
         re.compile(
-            rf"(?:转换|换算|折算|兑换|转成|换成|统一(?:为|成))\s*"
+            rf"(?:转换|换算|折算|兑换|转成|换成|转|统一(?:为|成))\s*"
             rf"(?:为|成|到)?\s*(?P<target>{_CURRENCY_TARGET})",
             re.IGNORECASE,
         ),
@@ -126,6 +135,25 @@ class QueryAnalyzer:
         r"汇率|兑换率|外汇牌价|exchange\s+rate|\bfx\s+rate\b",
         re.IGNORECASE,
     )
+    _REQUESTED_FIELD_RULES = (
+        re.compile(
+            r"(?:展示|显示|列出|返回|带上|加上|补充|查看)(?:一下|下)?"
+            r"(?P<fields>[^，。；！？\n]{1,40})",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:show|display|include|return|add)\s+"
+            r"(?P<fields>[^,.;!?\n]{1,60})",
+            re.IGNORECASE,
+        ),
+    )
+    _COUNT_ONLY_RULE = re.compile(
+        r"(?:只|仅)(?:需|要|查询|查看|统计|返回|展示)?[^，。；！？\n]{0,24}"
+        r"(?:次数|笔数|数量|个数)|"
+        r"(?:次数|笔数|数量|个数)[^，。；！？\n]{0,12}(?:即可|就行)|"
+        r"\bonly\b[^,.;!?\n]{0,30}\b(?:count|number)\b",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def _normalize_currency(cls, value: str) -> str:
@@ -141,6 +169,27 @@ class QueryAnalyzer:
                 return True, True, target
         requires_rate = bool(cls._EXCHANGE_RATE_RULE.search(query))
         return requires_rate, False, ""
+
+    @classmethod
+    def _requested_fields(cls, query: str) -> list[str]:
+        """提取用户明确要求出现在结果列中的字段描述。"""
+        fields: list[str] = []
+        for pattern in cls._REQUESTED_FIELD_RULES:
+            for match in pattern.finditer(query):
+                phrase = match.group("fields").strip()
+                phrase = re.sub(
+                    r"^(?:一下|其|对应的?|相关的?|用户的?|账户的?)",
+                    "",
+                    phrase,
+                    flags=re.IGNORECASE,
+                ).strip()
+                for value in re.split(r"\s*(?:、|和|以及|与|及|,|&)\s*", phrase):
+                    value = re.sub(
+                        r"(?:字段|信息)$", "", value.strip(), flags=re.IGNORECASE
+                    ).strip()
+                    if 1 < len(value) <= 30 and value not in fields:
+                        fields.append(value)
+        return fields
 
     @classmethod
     def analyze(cls, query: str) -> QueryAnalysis:
@@ -161,6 +210,9 @@ class QueryAnalyzer:
             for name, pattern in cls._AGGREGATION_RULES.items()
             if re.search(pattern, query, re.IGNORECASE)
         ]
+        count_only = "count" in aggregations and bool(
+            cls._COUNT_ONLY_RULE.search(query)
+        )
         time_grain = next(
             (
                 grain
@@ -180,4 +232,6 @@ class QueryAnalyzer:
             requires_exchange_rate=requires_exchange_rate,
             currency_conversion=currency_conversion,
             target_currency=target_currency,
+            requested_fields=cls._requested_fields(query),
+            count_only=count_only,
         )

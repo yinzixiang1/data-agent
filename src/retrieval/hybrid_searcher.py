@@ -104,28 +104,54 @@ class HybridSearcher:
         table_scores: dict[str, float],
         results: list[tuple[int, float, dict]],
         weight: float,
+        coverage_field: str | None = None,
     ) -> set[str]:
-        """按每张表的最强命中归一化附加跨 Collection 召回信号。"""
-        best_by_table: dict[str, float] = {}
+        """融合跨 Collection 信号；字段检索按不同语义列的覆盖度聚合。"""
+        scores_by_table: dict[str, dict[str, float]] = {}
         for _, score, entity in results:
             table_name = entity.get("table_name", "")
-            if table_name:
-                best_by_table[table_name] = max(
-                    best_by_table.get(table_name, 0.0), float(score)
-                )
-        if not best_by_table:
+            if not table_name:
+                continue
+            signal_name = (
+                str(entity.get(coverage_field) or "").casefold()
+                if coverage_field
+                else "__table__"
+            )
+            if not signal_name:
+                continue
+            table_signals = scores_by_table.setdefault(table_name, {})
+            table_signals[signal_name] = max(
+                table_signals.get(signal_name, 0.0), float(score)
+            )
+        if not scores_by_table:
             return set()
 
-        source_max = max(best_by_table.values())
+        source_max = max(
+            score
+            for table_signals in scores_by_table.values()
+            for score in table_signals.values()
+        )
         if source_max <= 0:
             return set()
         reference_score = max(table_scores.values(), default=source_max)
-        for table_name, score in best_by_table.items():
-            normalized_score = max(0.0, min(score / source_max, 1.0))
+        for table_name, table_signals in scores_by_table.items():
+            normalized_signals = sorted(
+                (
+                    max(0.0, min(score / source_max, 1.0))
+                    for score in table_signals.values()
+                ),
+                reverse=True,
+            )[:3]
+            # 最强字段保留完整信号，其他不同字段按名次衰减后累积。
+            # 相同列的重复召回已在上方去重，不会制造虚假覆盖度。
+            normalized_score = sum(
+                signal / rank
+                for rank, signal in enumerate(normalized_signals, start=1)
+            )
             table_scores[table_name] = table_scores.get(table_name, 0.0) + (
                 reference_score * weight * normalized_score
             )
-        return set(best_by_table)
+        return set(scores_by_table)
 
     def _inject_required_tables(
         self,
@@ -238,6 +264,7 @@ class HybridSearcher:
                 if result[2].get("table_name") in self.table_schemas
             ],
             COLUMN_SIGNAL_WEIGHT,
+            coverage_field="column_name",
         )
 
         # ── 枚举命中反哺表分数 ──
@@ -338,6 +365,9 @@ class HybridSearcher:
                     "hit_by_enum": table_name in enum_boost_tables,
                     "pinned": table_name in pinned_set,
                     "matched_columns": matched_columns_by_table.get(table_name, []),
+                    "semantic_coverage": len(
+                        matched_columns_by_table.get(table_name, [])[:3]
+                    ),
                     "schema": schema,
                 }
             )

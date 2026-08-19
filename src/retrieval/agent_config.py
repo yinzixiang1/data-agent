@@ -183,6 +183,8 @@ class AgentRuntimeConfig:
 
     # 强制召回规则（from retrieval.pinned_rules）
     pinned_rules: list[dict] = field(default_factory=list)
+    entity_resolution_rules: list[dict] = field(default_factory=list)
+    glossary_require_lexical_grounding: bool = True
 
     # 结构化配置（from sys_config JSON，hot-reload 可更新）
     collection_search_config: dict = field(default_factory=dict)
@@ -677,6 +679,19 @@ class AgentConfigLoader:
                 rules = retrieval_cfg["pinned_rules"]
                 if isinstance(rules, list):
                     config.pinned_rules = rules
+            if "entity_resolution_rules" in retrieval_cfg:
+                rules = retrieval_cfg["entity_resolution_rules"]
+                if isinstance(rules, list):
+                    config.entity_resolution_rules = [
+                        rule for rule in rules if isinstance(rule, dict)
+                    ]
+            if "glossary_require_lexical_grounding" in retrieval_cfg:
+                value = retrieval_cfg["glossary_require_lexical_grounding"]
+                config.glossary_require_lexical_grounding = (
+                    value
+                    if isinstance(value, bool)
+                    else str(value).lower() in ("true", "1")
+                )
 
         # flow 分区（SQL 执行 & 结果总结）
         flow_cfg = agent_configs.get("flow", {})
