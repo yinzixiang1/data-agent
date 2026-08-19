@@ -13,8 +13,10 @@ services:
       - CONFIG_SOURCE=mysql
       - CONFIG_PROFILE=${CONFIG_PROFILE:?CONFIG_PROFILE is required}
       - REBUILD_INDEX_ON_STARTUP=true
+      - CODEX_HOME=/var/lib/lumen-codex
     volumes:
       - model-cache:/root/.cache
+      - codex-home:/var/lib/lumen-codex
     deploy:
       resources:
         reservations:
@@ -31,3 +33,4 @@ services:
 
 volumes:
   model-cache:
+  codex-home:

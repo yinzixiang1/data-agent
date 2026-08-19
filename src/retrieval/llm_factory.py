@@ -60,6 +60,23 @@ def _resolve_provider(config: AgentRuntimeConfig) -> str:
 
 def create_chat_model(config: AgentRuntimeConfig) -> BaseChatModel:
     """根据 Agent 配置创建 LangChain ChatModel。"""
+    if (config.llm_provider or "").strip().lower() == "codex":
+        from src.retrieval.codex_chat_model import CodexChatModel
+
+        logger.info(
+            "创建 Codex LLM: model=%s, effort=%s, timeout=%ss, concurrency=%s",
+            config.llm_model,
+            config.codex_reasoning_effort,
+            config.codex_timeout_seconds,
+            config.codex_max_concurrency,
+        )
+        return CodexChatModel(
+            model_name=config.llm_model,
+            reasoning_effort=config.codex_reasoning_effort,
+            timeout_seconds=config.codex_timeout_seconds,
+            max_concurrency=config.codex_max_concurrency,
+        )
+
     provider = _resolve_provider(config)
 
     kwargs = {

@@ -55,6 +55,7 @@ class GlossaryResolver:
         query: str,
         top_k: int = 5,
         score_threshold: float = GLOSSARY_SCORE_THRESHOLD,
+        biz_line: str | None = None,
         metadata_filter: dict | None = None,
     ) -> dict:
         """
@@ -72,15 +73,22 @@ class GlossaryResolver:
         matched_terms = []
         context_parts = []
         extra_keywords = []
+        required_tables: set[str] = set()
+        required_columns: set[str] = set()
 
         if self.glossary_index.count == 0:
             return {
                 "enriched_query": query,
                 "business_context": "",
                 "matched_terms": [],
+                "related_tables": [],
+                "related_columns": [],
             }
 
-        filter_expr = build_metadata_filter(metadata_filter=metadata_filter)
+        effective_filter = dict(metadata_filter or {})
+        if biz_line:
+            effective_filter.setdefault("business", biz_line)
+        filter_expr = build_metadata_filter(metadata_filter=effective_filter or None)
 
         # 编码查询（glossary instruction）
         q_dense = self.embedding.encode_query(query, collection_type="glossary")
@@ -106,7 +114,7 @@ class GlossaryResolver:
         max_score = results[0][1] if results else 0
         min_score = max_score * score_threshold
 
-        for doc_id, score, entity in results:
+        for doc_id, score, entity in results[:top_k]:
             if score < min_score:
                 continue
 
@@ -128,15 +136,17 @@ class GlossaryResolver:
                 related_cols = []
             if isinstance(related_cols, list):
                 for col in related_cols:
+                    required_columns.add(str(col))
                     parts = col.split(".")
                     extra_keywords.append(parts[-1])
 
             try:
-                related_tables = json.loads(entity.get("related_tables", "[]"))
+                parsed_tables = json.loads(entity.get("related_tables", "[]"))
             except (json.JSONDecodeError, TypeError):
-                related_tables = []
-            if isinstance(related_tables, list):
-                extra_keywords.extend(related_tables)
+                parsed_tables = []
+            if isinstance(parsed_tables, list):
+                extra_keywords.extend(parsed_tables)
+                required_tables.update(str(table) for table in parsed_tables)
 
         enriched_query = query
         if extra_keywords:
@@ -156,4 +166,6 @@ class GlossaryResolver:
             "enriched_query": enriched_query,
             "business_context": business_context,
             "matched_terms": matched_terms,
+            "related_tables": sorted(required_tables),
+            "related_columns": sorted(required_columns),
         }

@@ -270,7 +270,8 @@ class DocumentBuilder:
             table_docs.append(self.build_table_document(schema))
             column_docs.extend(self.build_column_documents(schema))
 
-        enum_docs = self.build_enum_documents(enums or [])
+        enum_entries = [*(enums or []), *self.build_inline_enum_entries(schemas)]
+        enum_docs = self._dedupe_documents(self.build_enum_documents(enum_entries))
 
         logger.info(
             f"文档构建完成: {len(table_docs)} 个表级, "
@@ -278,7 +279,9 @@ class DocumentBuilder:
         )
         return table_docs, column_docs, enum_docs
 
-    def build_value_documents(self, enums: list[dict]) -> list[dict]:
+    def build_value_documents(
+        self, enums: list[dict], schemas: list[dict] | None = None
+    ) -> list[dict]:
         """
         构建值级检索文档 (nl2sql_value, BM25-only Schema Linking)。
 
@@ -293,7 +296,8 @@ class DocumentBuilder:
                 enum_label_cn, sql_value, text
         """
         docs = []
-        for entry in enums:
+        entries = [*enums, *self.build_inline_enum_entries(schemas or [])]
+        for entry in entries:
             table_name = entry["table_name"]
             col_name = entry["field_name"]
             biz_line = entry.get("biz_line", "")
@@ -326,8 +330,72 @@ class DocumentBuilder:
                     }
                 )
 
+        docs = self._dedupe_documents(docs)
         logger.info(f"值级文档构建: {len(docs)} 条 (BM25-only)")
         return docs
+
+    @staticmethod
+    def build_inline_enum_entries(schemas: list[dict]) -> list[dict]:
+        """把语义字段内联枚举转换成统一枚举条目，不扫描业务数据。"""
+        entries = []
+        for schema in schemas:
+            for column in schema.get("columns", []):
+                raw_values = column.get("enum_values")
+                if not raw_values:
+                    continue
+                if isinstance(raw_values, dict):
+                    raw_values = [
+                        {"value": value, "label": label}
+                        for value, label in raw_values.items()
+                    ]
+                values = []
+                for raw in raw_values if isinstance(raw_values, list) else []:
+                    if isinstance(raw, dict):
+                        code = raw.get("code", raw.get("value", ""))
+                        label = raw.get("label", raw.get("name", ""))
+                        label_cn = raw.get("label_cn", label)
+                        synonyms = raw.get("synonyms", [])
+                    else:
+                        code = raw
+                        label = str(raw)
+                        label_cn = label
+                        synonyms = []
+                    values.append(
+                        {
+                            "code": code,
+                            "label": label,
+                            "label_cn": label_cn,
+                            "synonyms": synonyms,
+                        }
+                    )
+                if values:
+                    entries.append(
+                        {
+                            "table_name": schema["table_name"],
+                            "field_name": column.get("name", ""),
+                            "field_label": column.get("display_name", ""),
+                            "biz_line": schema.get("biz_line", ""),
+                            "metadata": schema.get("metadata", {}),
+                            "values": values,
+                        }
+                    )
+        return entries
+
+    @staticmethod
+    def _dedupe_documents(documents: list[dict]) -> list[dict]:
+        deduplicated: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for document in documents:
+            key = (
+                str(document.get("table_name", "")).casefold(),
+                str(document.get("column_name", "")).casefold(),
+                str(document.get("sql_value", "")).casefold(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(document)
+        return deduplicated
 
     def _format_enum_values(self, enum_values) -> str:
         """

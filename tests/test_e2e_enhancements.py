@@ -90,7 +90,6 @@ class E2ETest:
                 "name": "E2E-Test-Agent",
                 "handle": f"e2e-test-{int(time.time())}",
                 "description": "集成测试专用 Agent，测试完后删除",
-                "engine_type": "nl2sql",
                 "status": "live",
             },
         )

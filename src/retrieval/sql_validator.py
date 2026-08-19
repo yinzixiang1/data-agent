@@ -21,6 +21,7 @@ EXPLAIN 不会真正执行 SQL，只检查语法和生成执行计划，因此�
     # result: {"valid": True, "error": None, "plan": "..."}
 """
 
+import json
 import re
 import logging
 from sqlalchemy import text
@@ -45,7 +46,10 @@ class SQLValidator:
         self.engine = engine
 
     # NEED_CLARIFY 检测
-    _CLARIFY_RE = re.compile(r"NEED_CLARIFY\s*[:：]\s*(.+)", re.DOTALL)
+    _CLARIFY_RE = re.compile(
+        r"^\s*NEED_CLARIFY\s*[:：]\s*(.+)",
+        re.DOTALL | re.MULTILINE,
+    )
 
     @staticmethod
     def extract_sql(llm_response: str) -> str | None:
@@ -98,6 +102,41 @@ class SQLValidator:
             return match.group(1).strip()
         return None
 
+    @classmethod
+    def extract_clarification(cls, llm_response: str) -> dict | None:
+        """将 NEED_CLARIFY 转为稳定的卡片交互结构。"""
+        raw = cls.extract_clarify(llm_response)
+        if not raw:
+            return None
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(raw)
+            except (json.JSONDecodeError, TypeError):
+                return {"question": raw[:1000], "options": []}
+
+        if not isinstance(payload, dict):
+            return {"question": raw[:1000], "options": []}
+
+        question = str(payload.get("question") or "").strip()
+        if not question:
+            return {"question": raw[:1000], "options": []}
+
+        options = []
+        for option in payload.get("options") or []:
+            if not isinstance(option, dict):
+                continue
+            label = str(option.get("label") or "").strip()
+            value = str(option.get("value") or "").strip()
+            if label and value:
+                options.append({"label": label[:80], "value": value[:500]})
+            if len(options) == 4:
+                break
+
+        return {"question": question[:1000], "options": options}
+
     _PLACEHOLDER_RE = re.compile(r"PLACEHOLDER\s*[:：]\s*(.+)", re.IGNORECASE)
 
     _WRITE_KEYWORDS_RE = re.compile(
@@ -106,6 +145,7 @@ class SQLValidator:
         r"RESTORE|KILL|LOCK|UNLOCK)\b",
         re.IGNORECASE,
     )
+    _EXCHANGE_RATE_TABLE = "warehouse_sys.sys_exchange_rate"
 
     @staticmethod
     def _strip_literals_and_comments(
@@ -214,7 +254,417 @@ class SQLValidator:
             r"\bSELECT\b", statement, re.IGNORECASE
         ):
             return False, "WITH 查询必须包含 SELECT"
+        ast_valid, ast_reason = cls._validate_ast_read_only(sql)
+        if not ast_valid:
+            return False, ast_reason
         return True, ""
+
+    @staticmethod
+    def _parse_ast(sql: str):
+        """使用 MySQL 兼容语法解析 Doris SQL；依赖缺失时保留旧校验能力。"""
+        try:
+            import sqlglot
+        except ImportError:
+            return None, ""
+        try:
+            return sqlglot.parse_one(sql, read="mysql"), ""
+        except sqlglot.errors.ParseError as exc:
+            return None, f"SQL AST 解析失败: {exc}"
+
+    @classmethod
+    def _validate_ast_read_only(cls, sql: str) -> tuple[bool, str]:
+        tree, error = cls._parse_ast(sql)
+        if error:
+            return False, error
+        if tree is None:
+            return True, ""
+
+        from sqlglot import expressions as exp
+
+        forbidden_types = tuple(
+            expression_type
+            for name in (
+                "Insert",
+                "Update",
+                "Delete",
+                "Create",
+                "Drop",
+                "Alter",
+                "Merge",
+                "Command",
+                "Transaction",
+            )
+            if (expression_type := getattr(exp, name, None)) is not None
+        )
+        if forbidden_types and any(tree.find_all(*forbidden_types)):
+            return False, "SQL AST 包含写入或管理语句"
+        for join in tree.find_all(exp.Join):
+            kind = str(join.args.get("kind") or "").upper()
+            if kind == "CROSS":
+                return False, "不允许 CROSS JOIN"
+            if not join.args.get("on") and not join.args.get("using"):
+                return False, "JOIN 必须包含 ON 或 USING 条件"
+        return True, ""
+
+    @classmethod
+    def validate_schema_references(
+        cls,
+        sql: str,
+        allowed_schemas: list[dict],
+    ) -> tuple[bool, str, dict]:
+        """校验 SQL 的物理表和限定字段均来自本次检索上下文。"""
+        tree, error = cls._parse_ast(sql)
+        if error:
+            return False, error, {}
+        if tree is None:
+            # 运行环境尚未安装 sqlglot 时不做伪精确的正则字段校验。
+            return True, "", {"ast_validation": "unavailable"}
+
+        from sqlglot import expressions as exp
+
+        by_full: dict[str, dict] = {}
+        by_short: dict[str, list[dict]] = {}
+        for schema in allowed_schemas:
+            full_name = str(schema.get("table_name") or "").replace("`", "")
+            if not full_name:
+                continue
+            by_full[full_name.casefold()] = schema
+            short_name = str(
+                schema.get("table_name_short") or full_name.rsplit(".", 1)[-1]
+            ).casefold()
+            by_short.setdefault(short_name, []).append(schema)
+
+        cte_names = {cte.alias_or_name.casefold() for cte in tree.find_all(exp.CTE)}
+        alias_to_schema: dict[str, dict] = {}
+        referenced_tables: set[str] = set()
+        for table in tree.find_all(exp.Table):
+            short_name = table.name.casefold()
+            if short_name in cte_names:
+                continue
+            database = str(table.db or "").casefold()
+            full_name = f"{database}.{short_name}" if database else short_name
+            schema = by_full.get(full_name)
+            if schema is None:
+                candidates = by_short.get(short_name, [])
+                if len(candidates) == 1:
+                    schema = candidates[0]
+            if schema is None:
+                return (
+                    False,
+                    f"SQL 引用了本次检索上下文之外的表: {full_name}",
+                    {"referenced_tables": sorted(referenced_tables | {full_name})},
+                )
+            canonical = str(schema.get("table_name") or full_name)
+            referenced_tables.add(canonical)
+            alias_to_schema[short_name] = schema
+            alias_to_schema[str(table.alias_or_name).casefold()] = schema
+
+        invalid_columns: set[str] = set()
+        for column in tree.find_all(exp.Column):
+            qualifier = str(column.table or "").casefold()
+            if not qualifier or qualifier in cte_names:
+                continue
+            schema = alias_to_schema.get(qualifier)
+            if schema is None:
+                continue
+            available_columns = {
+                str(item.get("name") or "").casefold()
+                for item in schema.get("columns", [])
+            }
+            if column.name.casefold() not in available_columns:
+                invalid_columns.add(f"{qualifier}.{column.name}")
+        if invalid_columns:
+            return (
+                False,
+                "SQL 引用了本次字段上下文之外的字段: "
+                + ", ".join(sorted(invalid_columns)),
+                {
+                    "referenced_tables": sorted(referenced_tables),
+                    "invalid_columns": sorted(invalid_columns),
+                },
+            )
+        return True, "", {"referenced_tables": sorted(referenced_tables)}
+
+    @classmethod
+    def validate_currency_conversion(
+        cls,
+        sql: str,
+        query_intent: dict,
+    ) -> tuple[bool, str, dict]:
+        """校验货币换算 SQL 是否完整执行了确定的业务口径。"""
+        if not query_intent.get("currency_conversion"):
+            return True, "", {"required": False}
+
+        target_currency = str(query_intent.get("target_currency") or "").upper()
+        if not target_currency:
+            return (
+                False,
+                "无法确定货币换算的目标币种",
+                {"required": True, "issues": ["缺少目标币种"]},
+            )
+
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return False, parse_error, {"required": True, "issues": [parse_error]}
+        if tree is None:
+            return cls._validate_currency_conversion_without_ast(
+                sql,
+                target_currency,
+            )
+
+        from sqlglot import expressions as exp
+
+        rate_table_found = False
+        rate_join_is_left = False
+        for table in tree.find_all(exp.Table):
+            full_name = (
+                f"{table.db}.{table.name}" if table.db else str(table.name)
+            ).casefold()
+            if full_name != cls._EXCHANGE_RATE_TABLE:
+                continue
+            rate_table_found = True
+
+        for join in tree.find_all(exp.Join):
+            joined_table = join.this
+            if not isinstance(joined_table, exp.Table):
+                continue
+            full_name = (
+                f"{joined_table.db}.{joined_table.name}"
+                if joined_table.db
+                else str(joined_table.name)
+            ).casefold()
+            if full_name == cls._EXCHANGE_RATE_TABLE:
+                rate_join_is_left = str(join.args.get("side") or "").upper() == "LEFT"
+
+        all_columns = list(tree.find_all(exp.Column))
+        column_names = {column.name.casefold() for column in all_columns}
+
+        def literal_value(expression) -> str | None:
+            if isinstance(expression, exp.Literal):
+                return str(expression.this).upper()
+            return None
+
+        target_filter_found = False
+        source_join_found = False
+        date_join_found = False
+        target_passthrough_found = False
+        time_names = {
+            "create_time",
+            "complete_time",
+            "settle_time",
+            "transaction_time",
+            "created_at",
+            "completed_at",
+        }
+
+        for equality in tree.find_all(exp.EQ):
+            left = equality.this
+            right = equality.expression
+            pairs = ((left, right), (right, left))
+            for column_expr, value_expr in pairs:
+                if not isinstance(column_expr, exp.Column):
+                    continue
+                if (
+                    column_expr.name.casefold() == "target_currency"
+                    and literal_value(value_expr) == target_currency
+                ):
+                    target_filter_found = True
+
+            equality_columns = list(equality.find_all(exp.Column))
+            equality_names = {column.name.casefold() for column in equality_columns}
+            equality_aliases = {
+                str(column.table).casefold()
+                for column in equality_columns
+                if column.table
+            }
+            if "source_currency" in equality_names and len(equality_aliases) >= 2:
+                source_join_found = True
+            if "sync_time" in equality_names and any(
+                name in time_names or name.endswith("_time") or name.endswith("_date")
+                for name in equality_names - {"sync_time"}
+            ):
+                date_join_found = True
+
+        for case in tree.find_all(exp.Case):
+            for equality in case.find_all(exp.EQ):
+                equality_columns = list(equality.find_all(exp.Column))
+                if not any(
+                    column.name.casefold() != "target_currency"
+                    for column in equality_columns
+                ):
+                    continue
+                if any(
+                    literal_value(node) == target_currency
+                    for node in equality.find_all(exp.Literal)
+                ):
+                    target_passthrough_found = True
+                    break
+
+        mid_multiplication_found = False
+        for multiplication in tree.find_all(exp.Mul):
+            multiplication_columns = list(multiplication.find_all(exp.Column))
+            names = {column.name.casefold() for column in multiplication_columns}
+            if "mid" in names and len(multiplication_columns) >= 2:
+                mid_multiplication_found = True
+                break
+
+        rate_fallback_found = any(
+            any(
+                column.name.casefold() == "mid"
+                for column in function.find_all(exp.Column)
+            )
+            for function in tree.find_all(exp.Coalesce)
+        )
+        missing_rate_indicator_found = any(
+            isinstance(condition.this, exp.Column)
+            and condition.this.name.casefold() == "mid"
+            and isinstance(condition.expression, exp.Null)
+            for condition in tree.find_all(exp.Is)
+        )
+
+        issues: list[str] = []
+        if not rate_table_found:
+            issues.append(f"必须引用 {cls._EXCHANGE_RATE_TABLE}")
+        elif not rate_join_is_left:
+            issues.append("汇率表必须使用 LEFT JOIN，避免目标币种原始记录被丢弃")
+        if "mid" not in column_names or not mid_multiplication_found:
+            issues.append("必须使用 原金额 * mid 计算目标币种金额")
+        if not source_join_found:
+            issues.append("必须用 source_currency 关联交易原币种")
+        if not target_filter_found:
+            issues.append(f"必须限定 target_currency = '{target_currency}'")
+        if not date_join_found:
+            issues.append("必须按 sync_time 与交易日期关联每日汇率")
+        if not target_passthrough_found:
+            issues.append(
+                f"原币种为 {target_currency} 时必须直接使用原金额，汇率按 1 处理"
+            )
+        if rate_fallback_found:
+            issues.append("非目标币种缺失汇率时禁止用 COALESCE/IFNULL 按1或0兜底")
+        if not missing_rate_indicator_found:
+            issues.append("必须显式返回非目标币种的缺失汇率笔数（mid IS NULL）")
+
+        detail = {
+            "required": True,
+            "target_currency": target_currency,
+            "exchange_rate_table": cls._EXCHANGE_RATE_TABLE,
+            "rate_fallback_found": rate_fallback_found,
+            "missing_rate_indicator_found": missing_rate_indicator_found,
+            "issues": issues,
+        }
+        if issues:
+            return False, "；".join(issues), detail
+        return True, "", detail
+
+    @classmethod
+    def _validate_currency_conversion_without_ast(
+        cls,
+        sql: str,
+        target_currency: str,
+    ) -> tuple[bool, str, dict]:
+        """在 sqlglot 不可用时保守校验固定的换汇 SQL 结构。"""
+        normalized = sql.replace("`", "")
+        flags = re.IGNORECASE | re.DOTALL
+        rate_table = r"warehouse_sys\s*\.\s*sys_exchange_rate"
+        target_literal = re.escape(target_currency)
+        currency_column = r"(?:\w+\.)?(?!target_currency\b)\w*currency"
+        amount_column = r"(?:\w+\.)?\w+"
+        mid_column = r"(?:\w+\.)?mid"
+
+        rate_table_found = bool(re.search(rate_table, normalized, flags))
+        rate_join_is_left = bool(
+            re.search(rf"\bLEFT\s+JOIN\s+{rate_table}\b", normalized, flags)
+        )
+        mid_multiplication_found = bool(
+            re.search(
+                rf"(?:{amount_column}\s*\*\s*{mid_column}|"
+                rf"{mid_column}\s*\*\s*{amount_column})",
+                normalized,
+                flags,
+            )
+        )
+        source_join_found = bool(
+            re.search(
+                rf"(?:\b(?:\w+\.)?source_currency\s*=\s*{currency_column}\b|"
+                rf"\b{currency_column}\s*=\s*(?:\w+\.)?source_currency\b)",
+                normalized,
+                flags,
+            )
+        )
+        target_filter_found = bool(
+            re.search(
+                rf"\b(?:\w+\.)?target_currency\s*=\s*['\"]{target_literal}['\"]",
+                normalized,
+                flags,
+            )
+        )
+        date_join_found = bool(
+            re.search(
+                r"DATE\s*\(\s*(?:\w+\.)?sync_time\s*\)\s*=\s*"
+                r"DATE\s*\(\s*(?:\w+\.)?\w+(?:_time|_date|_at)\s*\)",
+                normalized,
+                flags,
+            )
+            or re.search(
+                r"DATE\s*\(\s*(?:\w+\.)?\w+(?:_time|_date|_at)\s*\)\s*=\s*"
+                r"DATE\s*\(\s*(?:\w+\.)?sync_time\s*\)",
+                normalized,
+                flags,
+            )
+        )
+        target_passthrough_found = bool(
+            re.search(
+                rf"\bCASE\b.*?\bWHEN\s+{currency_column}\s*=\s*"
+                rf"['\"]{target_literal}['\"]\s+THEN\s+{amount_column}\b",
+                normalized,
+                flags,
+            )
+        )
+        rate_fallback_found = bool(
+            re.search(
+                r"\b(?:COALESCE|IFNULL)\s*\([^)]*\bmid\b",
+                normalized,
+                flags,
+            )
+        )
+        missing_rate_indicator_found = bool(
+            re.search(r"\b(?:\w+\.)?mid\s+IS\s+NULL\b", normalized, flags)
+        )
+
+        issues: list[str] = []
+        if not rate_table_found:
+            issues.append(f"必须引用 {cls._EXCHANGE_RATE_TABLE}")
+        elif not rate_join_is_left:
+            issues.append("汇率表必须使用 LEFT JOIN，避免目标币种原始记录被丢弃")
+        if not mid_multiplication_found:
+            issues.append("必须使用 原金额 * mid 计算目标币种金额")
+        if not source_join_found:
+            issues.append("必须用 source_currency 关联交易原币种")
+        if not target_filter_found:
+            issues.append(f"必须限定 target_currency = '{target_currency}'")
+        if not date_join_found:
+            issues.append("必须按 sync_time 与交易日期关联每日汇率")
+        if not target_passthrough_found:
+            issues.append(
+                f"原币种为 {target_currency} 时必须直接使用原金额，汇率按 1 处理"
+            )
+        if rate_fallback_found:
+            issues.append("非目标币种缺失汇率时禁止用 COALESCE/IFNULL 按1或0兜底")
+        if not missing_rate_indicator_found:
+            issues.append("必须显式返回非目标币种的缺失汇率笔数（mid IS NULL）")
+
+        detail = {
+            "required": True,
+            "target_currency": target_currency,
+            "exchange_rate_table": cls._EXCHANGE_RATE_TABLE,
+            "rate_fallback_found": rate_fallback_found,
+            "missing_rate_indicator_found": missing_rate_indicator_found,
+            "ast_validation": "unavailable",
+            "issues": issues,
+        }
+        if issues:
+            return False, "；".join(issues), detail
+        return True, "", detail
 
     @classmethod
     def extract_placeholder(cls, llm_response: str) -> str:
@@ -461,6 +911,35 @@ class SQLValidator:
                 "truncated": False,
                 "error": error_msg,
             }
+
+    @staticmethod
+    def inspect_plan(plan: str, max_scan_rows: int = 100_000_000) -> dict:
+        """对 Doris EXPLAIN 文本做确定性安全检查。"""
+        warnings: list[str] = []
+        folded = plan.upper()
+        if "CARTESIAN" in folded or "CROSS JOIN" in folded:
+            warnings.append("执行计划包含笛卡尔积")
+
+        estimates: list[int] = []
+        for value in re.findall(
+            r"(?:CARDINALITY|ROWS|ROW_COUNT)\s*[:=]\s*([0-9][0-9,]*)",
+            plan,
+            re.IGNORECASE,
+        ):
+            try:
+                estimates.append(int(value.replace(",", "")))
+            except ValueError:
+                continue
+        max_estimated_rows = max(estimates, default=0)
+        if max_scan_rows > 0 and max_estimated_rows > max_scan_rows:
+            warnings.append(
+                f"预计扫描/中间结果行数 {max_estimated_rows} 超过限制 {max_scan_rows}"
+            )
+        return {
+            "safe": not warnings,
+            "warnings": warnings,
+            "max_estimated_rows": max_estimated_rows,
+        }
 
     @staticmethod
     def _serialize_cell(value) -> str:

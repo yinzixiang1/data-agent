@@ -260,7 +260,7 @@ class SchemaLoader:
         """从 da_semantic_relation JOIN da_semantic_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
         sql = (
             "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type, "
-            "b.database_name "
+            "b.database_name, r.cardinality "
             "FROM da_semantic_relation r "
             "JOIN da_semantic_table t ON r.table_id = t.id "
             "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
@@ -280,6 +280,7 @@ class SchemaLoader:
                 "target_table": row[2],
                 "target_column": row[3],
                 "join_type": row[4] or "LEFT JOIN",
+                "cardinality": row[6] or "unknown",
             }
             result.setdefault(full_key, []).append(rel)
 

@@ -17,14 +17,19 @@
 """
 
 import logging
+import re
 
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
-from src.retrieval.milvus_filter import build_metadata_filter
+from src.retrieval.milvus_filter import add_table_name_filter, build_metadata_filter
 from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.agent_config import AgentRuntimeConfig
 
 logger = logging.getLogger(__name__)
+
+COLUMN_SIGNAL_WEIGHT = 0.25
+ENUM_SIGNAL_WEIGHT = 0.20
+REQUIRED_TABLE_SCORE_RATIO = 0.90
 
 
 class HybridSearcher:
@@ -57,18 +62,98 @@ class HybridSearcher:
         self.config = config
         self._rebuild_short_map()
 
-    def _rebuild_short_map(self):
+    def _rebuild_short_map(self) -> None:
         """构建 short_name -> full_name 反查映射（用于关联表解析）。"""
-        self._short_to_full: dict[str, str] = {}
+        self._short_to_full: dict[str, list[str]] = {}
         for full_name in self.table_schemas:
             short = full_name.split(".", 1)[1] if "." in full_name else full_name
-            self._short_to_full[short] = full_name
+            self._short_to_full.setdefault(short, []).append(full_name)
 
-    def _resolve_full_name(self, target: str) -> str | None:
+    def _resolve_full_name(
+        self, target: str, source_table: str | None = None
+    ) -> str | None:
         """将关联表名（可能是短名或全名）解析为 table_schemas 中的全限定名。"""
         if target in self.table_schemas:
             return target
-        return self._short_to_full.get(target)
+        candidates = self._short_to_full.get(target, [])
+        if len(candidates) == 1:
+            return candidates[0]
+        if source_table and "." in source_table:
+            source_db = source_table.split(".", 1)[0]
+            same_db = [name for name in candidates if name.startswith(f"{source_db}.")]
+            if len(same_db) == 1:
+                return same_db[0]
+        return None
+
+    def _find_explicit_tables(self, query: str) -> set[str]:
+        """识别用户明确写出的表名，避免精确 Schema 引用被语义召回裁掉。"""
+        normalized = query.replace("`", "")
+        matched: set[str] = set()
+        for full_name in self.table_schemas:
+            short_name = full_name.rsplit(".", 1)[-1]
+            patterns = (full_name, short_name)
+            if any(
+                re.search(rf"(?<![\w.]){re.escape(name)}(?![\w.])", normalized, re.I)
+                for name in patterns
+            ):
+                matched.add(full_name)
+        return matched
+
+    @staticmethod
+    def _add_ranked_signal(
+        table_scores: dict[str, float],
+        results: list[tuple[int, float, dict]],
+        weight: float,
+    ) -> set[str]:
+        """按每张表的最强命中归一化附加跨 Collection 召回信号。"""
+        best_by_table: dict[str, float] = {}
+        for _, score, entity in results:
+            table_name = entity.get("table_name", "")
+            if table_name:
+                best_by_table[table_name] = max(
+                    best_by_table.get(table_name, 0.0), float(score)
+                )
+        if not best_by_table:
+            return set()
+
+        source_max = max(best_by_table.values())
+        if source_max <= 0:
+            return set()
+        reference_score = max(table_scores.values(), default=source_max)
+        for table_name, score in best_by_table.items():
+            normalized_score = max(0.0, min(score / source_max, 1.0))
+            table_scores[table_name] = table_scores.get(table_name, 0.0) + (
+                reference_score * weight * normalized_score
+            )
+        return set(best_by_table)
+
+    def _inject_required_tables(
+        self,
+        table_scores: dict[str, float],
+        required_tables: set[str],
+    ) -> list[str]:
+        """将确定性 Schema Linking 命中的表注入候选并标记为不可裁剪。"""
+        resolved_tables: list[str] = []
+        reference_score = max(table_scores.values(), default=1.0)
+        for table_name in required_tables:
+            resolved = self._resolve_full_name(table_name)
+            if not resolved or resolved in resolved_tables:
+                continue
+            table_scores[resolved] = max(
+                table_scores.get(resolved, 0.0),
+                reference_score * REQUIRED_TABLE_SCORE_RATIO,
+            )
+            resolved_tables.append(resolved)
+        return resolved_tables
+
+    @staticmethod
+    def _apply_final_limit(
+        results: list[tuple[int, float, dict]],
+        final_top_n: int | str,
+    ) -> list[tuple[int, float, dict]]:
+        if isinstance(final_top_n, int):
+            return results[: max(final_top_n, 0)]
+        return results
 
     @property
     def _ef_search(self) -> int:
@@ -88,6 +173,7 @@ class HybridSearcher:
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
         pinned_rules: list[dict] | None = None,
+        required_tables: set[str] | None = None,
     ) -> list[dict]:
         """
         表级 + 列级混合检索，融合枚举反哺、关联表补全和强制召回规则。
@@ -98,6 +184,7 @@ class HybridSearcher:
             biz_line: 业务线过滤，为空则不过滤
             metadata_filter: 任意 KV 过滤
             pinned_rules: 强制召回规则列表（从 Agent 配置读取）
+            required_tables: 确定性 Schema Linking 命中的表
 
         Returns:
             list[dict]: 按 score 降序，每个元素含 table_name, score, source,
@@ -120,7 +207,7 @@ class HybridSearcher:
         )
 
         # ── 列级混合检索 -> 反推表 ──
-        column_hit_tables: set[str] = set()
+        col_results: list[tuple[int, float, dict]] = []
         if self.column_index.count > 0:
             col_params = get_search_params(csc, "column")
             q_dense_col = self.embedding.encode_query(query, "column")
@@ -129,27 +216,32 @@ class HybridSearcher:
                 query,
                 ranker=col_params.ranker,
                 recall_k=col_params.recall_limit,
-                output_fields=["table_name"],
+                output_fields=["table_name", "column_name"],
                 filter_expr=filter_expr,
                 ef_search=self._ef_search,
             )
-            for doc_id, score, entity in col_results:
-                column_hit_tables.add(entity["table_name"])
+            col_results = self._apply_final_limit(col_results, col_params.final_top_n)
 
         # ── 合并：表级 + 列级反推 bonus ──
         table_scores: dict[str, float] = {}
         for doc_id, score, entity in table_results:
             table_name = entity["table_name"]
+            if table_name not in self.table_schemas:
+                continue
             table_scores[table_name] = max(table_scores.get(table_name, 0), score)
 
-        for table_name in column_hit_tables:
-            if table_name in table_scores:
-                table_scores[table_name] += 0.01
-            else:
-                table_scores[table_name] = 0.01
+        column_hit_tables = self._add_ranked_signal(
+            table_scores,
+            [
+                result
+                for result in col_results
+                if result[2].get("table_name") in self.table_schemas
+            ],
+            COLUMN_SIGNAL_WEIGHT,
+        )
 
         # ── 枚举命中反哺表分数 ──
-        enum_boost_tables: set[str] = set()
+        enum_results: list[tuple[int, float, dict]] = []
         if self.enum_index.count > 0:
             enum_params = get_search_params(csc, "enum")
             q_dense_enum = self.embedding.encode_query(query, "enum")
@@ -162,14 +254,22 @@ class HybridSearcher:
                 filter_expr=filter_expr,
                 ef_search=self._ef_search,
             )
-            for doc_id, score, entity in enum_results:
-                enum_boost_tables.add(entity["table_name"])
-            for table_name in enum_boost_tables:
-                if table_name in self.table_schemas:
-                    table_scores.setdefault(table_name, 0)
-                    table_scores[table_name] += 0.02
+            enum_results = self._apply_final_limit(
+                enum_results, enum_params.final_top_n
+            )
+            enum_boost_tables = self._add_ranked_signal(
+                table_scores,
+                [
+                    result
+                    for result in enum_results
+                    if result[2].get("table_name") in self.table_schemas
+                ],
+                ENUM_SIGNAL_WEIGHT,
+            )
             if enum_boost_tables:
                 logger.info(f"枚举反哺: {enum_boost_tables}")
+        else:
+            enum_boost_tables = set()
 
         # ── 关联表补全 ──
         current_top = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[
@@ -182,7 +282,7 @@ class HybridSearcher:
                 target_short = rel.get("target_table", "")
                 if not target_short:
                     continue
-                related = self._resolve_full_name(target_short)
+                related = self._resolve_full_name(target_short, source_table=table_name)
                 if not related or related == table_name:
                     continue
                 bonus = score * 0.1
@@ -193,8 +293,11 @@ class HybridSearcher:
             logger.info(f"关联补全: {relation_boosted}")
 
         # ── 强制召回规则 ──
-        pinned_tables = self._apply_pinned_rules(
-            query, table_scores, pinned_rules or []
+        deterministic_tables = set(required_tables or ())
+        pinned_tables = self._inject_required_tables(table_scores, deterministic_tables)
+        rule_tables = self._apply_pinned_rules(query, table_scores, pinned_rules or [])
+        pinned_tables.extend(
+            table_name for table_name in rule_tables if table_name not in pinned_tables
         )
 
         # 按分数排序，pinned 表不受 top_k 截断
@@ -208,6 +311,21 @@ class HybridSearcher:
 
         # 组装结果
         pinned_set = set(pinned_tables)
+        matched_columns_by_table: dict[str, list[dict]] = {}
+        seen_columns: dict[str, set[str]] = {}
+        for _, score, entity in col_results:
+            table_name = entity.get("table_name", "")
+            column_name = entity.get("column_name", "")
+            if not table_name or not column_name:
+                continue
+            table_seen = seen_columns.setdefault(table_name, set())
+            folded_column = str(column_name).casefold()
+            if folded_column in table_seen:
+                continue
+            table_seen.add(folded_column)
+            matched_columns_by_table.setdefault(table_name, []).append(
+                {"column_name": column_name, "score": float(score)}
+            )
         results = []
         for table_name, score in sorted_tables:
             schema = self.table_schemas.get(table_name, {})
@@ -217,7 +335,9 @@ class HybridSearcher:
                     "score": score,
                     "source": "hybrid",
                     "hit_by_column": table_name in column_hit_tables,
+                    "hit_by_enum": table_name in enum_boost_tables,
                     "pinned": table_name in pinned_set,
+                    "matched_columns": matched_columns_by_table.get(table_name, []),
                     "schema": schema,
                 }
             )
@@ -306,6 +426,7 @@ class HybridSearcher:
         top_k: int = 8,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
+        table_names: set[str] | None = None,
     ) -> list[dict]:
         """
         枚举值检索 — 将用户自然语言映射到实际枚举值。
@@ -315,16 +436,23 @@ class HybridSearcher:
             top_k: 返回的最大枚举命中数
             biz_line: 业务线过滤，为空则不过滤
             metadata_filter: 任意 KV 过滤
+            table_names: 最终命中表集合；提供时仅返回这些表的枚举
 
         Returns:
             list[dict]: table_name, column_name, enum_label_cn, sql_value, score
         """
         if self.enum_index.count == 0:
             return []
+        if table_names is not None and not table_names:
+            return []
 
         enum_params = get_search_params(self.config.collection_search_config, "enum")
+        if isinstance(enum_params.final_top_n, int):
+            top_k = min(top_k, enum_params.final_top_n)
         q_dense = self.embedding.encode_query(query, "enum")
         filter_expr = self._build_filter(biz_line or "", metadata_filter)
+        if table_names is not None:
+            filter_expr = add_table_name_filter(filter_expr, table_names)
 
         results = self.enum_index.hybrid_search(
             q_dense,
@@ -343,7 +471,9 @@ class HybridSearcher:
         )
 
         enum_hits = []
-        for doc_id, score, entity in results[:top_k]:
+        for doc_id, score, entity in results:
+            if table_names is not None and entity["table_name"] not in table_names:
+                continue
             enum_hits.append(
                 {
                     "table_name": entity["table_name"],
@@ -353,6 +483,8 @@ class HybridSearcher:
                     "score": score,
                 }
             )
+            if len(enum_hits) >= top_k:
+                break
 
         if enum_hits:
             top_hits = [

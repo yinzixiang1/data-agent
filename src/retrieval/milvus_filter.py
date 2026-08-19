@@ -38,3 +38,17 @@ def build_metadata_filter(
             f'(metadata["{key}"] == {_literal(value)} or not exists metadata["{key}"])'
         )
     return " and ".join(parts) if parts else None
+
+
+def add_table_name_filter(
+    filter_expr: str | None,
+    table_names: set[str],
+) -> str | None:
+    """Constrain an existing Milvus expression to an internal table-name set."""
+    if not table_names:
+        return filter_expr
+    table_literals = ", ".join(_literal(name) for name in sorted(table_names))
+    table_filter = f"table_name in [{table_literals}]"
+    if filter_expr:
+        return f"({filter_expr}) and ({table_filter})"
+    return table_filter

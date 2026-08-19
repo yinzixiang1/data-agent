@@ -26,7 +26,9 @@ OUTPUT_RULES = """【输出要求】
 5. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）
 6. 列别名使用中文双引号，如 COUNT(*) AS "数量"
 7. 优先用 WHERE 条件过滤，避免全表扫描
-8. 如果问题过于模糊导致无法生成精确 SQL，输出：NEED_CLARIFY: <你的澄清问题>"""
+8. 如果用户意图存在多种合理解释、无法唯一确定 SQL，输出一行 JSON：
+   NEED_CLARIFY: {"question":"需要用户确认的问题","options":[{"label":"选项文案","value":"用于补充原问题的完整含义"}]}
+   options 仅在有明确候选项时提供，最多 4 个；只是缺少开放式信息时输出空数组。不要因执行成本、SQL 风险或模型信心不足触发澄清。"""
 
 
 class SchemaFormatter:
@@ -99,6 +101,7 @@ class SchemaFormatter:
         value_hits: list[dict] | None = None,
         question: str = "",
         output_rules: str = "",
+        intent_context: str = "",
     ) -> str:
         """
         组装完整的析言风格 Prompt。
@@ -125,6 +128,9 @@ class SchemaFormatter:
         context_text = self.format_context(business_context)
         if context_text:
             sections.append(context_text)
+
+        if intent_context:
+            sections.append(f"【查询意图】\n{intent_context}")
 
         # 【枚举映射】— 合并 enum_hits + value_hits
         enum_lines = self.format_enums(enum_hits or [])
@@ -162,6 +168,8 @@ class SchemaFormatter:
         for col in schema.get("columns", []):
             if col.get("is_sensitive"):
                 continue
+            if col.get("is_skip_index") and not col.get("_context_required"):
+                continue
 
             line = f"  - `{col['name']}` {col.get('type', '')}"
 
@@ -192,8 +200,12 @@ class SchemaFormatter:
             col = rel.get("column", "")
             target_col = rel.get("target_column", "")
             join_type = rel.get("join_type", "JOIN")
+            cardinality = rel.get("cardinality", "unknown")
             if target:
-                result += f"\n  关联: {short_name}.{col} = {target}.{target_col} ({join_type})"
+                relation_meta = join_type
+                if cardinality != "unknown":
+                    relation_meta += f", {cardinality}"
+                result += f"\n  关联: {short_name}.{col} = {target}.{target_col} ({relation_meta})"
 
         # 查询注意事项
         if schema.get("query_tips"):

@@ -109,7 +109,7 @@ HANDLE="e2e-test-$(date +%s)"
 ENGINE_URL="http://10.2.2.16:9090"
 CREATE_RESP=$(curl -s --max-time 10 -X POST "$API/api/v1/agents" \
   -H "Content-Type: application/json" \
-  -d "{\"name\":\"E2E-Test-Agent\",\"handle\":\"$HANDLE\",\"description\":\"集成测试\",\"engine_type\":\"nl2sql\",\"status\":\"live\"}")
+  -d "{\"name\":\"E2E-Test-Agent\",\"handle\":\"$HANDLE\",\"description\":\"集成测试\",\"status\":\"live\"}")
 AGENT_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 
 if [ -n "$AGENT_ID" ] && [ "$AGENT_ID" != "None" ]; then

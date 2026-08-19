@@ -181,7 +181,7 @@ class IndexManager:
 
         # 1. 构建文档
         table_docs, column_docs, enum_docs = builder.build_all(schemas, enums)
-        value_docs = builder.build_value_documents(enums or [])
+        value_docs = builder.build_value_documents(enums or [], schemas)
         logger.info(
             f"文档构建: {len(table_docs)} 表级, {len(column_docs)} 列级, "
             f"{len(enum_docs)} 枚举值, {len(value_docs)} 值级"
@@ -507,7 +507,7 @@ class IndexManager:
 
         if "value" in collections:
             logger.info("重建 value 索引...")
-            value_docs = builder.build_value_documents(enums or [])
+            value_docs = builder.build_value_documents(enums or [], schemas)
             value_index = MilvusIndex(self._name(VALUE_COLLECTION), has_dense=False)
             value_index.create(VALUE_FIELDS, index_config=idx_cfg)
             value_idx = ValueIndexer(value_index)

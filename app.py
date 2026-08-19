@@ -13,6 +13,7 @@ NL2SQL Data Agent — FastAPI HTTP 服务入口。
     POST /evaluation/run        — 执行评估
 """
 
+import asyncio
 import gzip
 import logging
 import os
@@ -25,9 +26,11 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date as _date
+from functools import partial
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -63,8 +66,6 @@ from src.retrieval.config import (
     PROJECT_ROOT,
     RERANKER_MODEL,
 )
-from src.retrieval.intent_classifier import IntentClassifier
-from src.retrieval.knowledge_retriever import KnowledgeRetriever
 from src.retrieval.query_cache import QueryCache
 from src.retrieval.query_logger import QueryLogger
 from src.retrieval.retriever import SchemaRetriever
@@ -135,9 +136,10 @@ agent_config: AgentRuntimeConfig | None = None
 query_logger: QueryLogger | None = None
 config_loader: AgentConfigLoader | None = None
 
-intent_classifier: IntentClassifier = IntentClassifier()
-knowledge_retriever: KnowledgeRetriever | None = None
 query_cache: QueryCache | None = None
+codex_query_semaphore: asyncio.Semaphore | None = None
+codex_query_capacity = 0
+codex_runtime_swap_lock: asyncio.Lock | None = None
 
 
 # ── 启动配置打印 ──
@@ -386,15 +388,14 @@ def _initialize_nl2sql_runtime(config: AgentRuntimeConfig) -> None:
 
 
 def _register_engine_url(agent_id: int):
-    """启动时将本机 engine_url 写入 da_agent 表。"""
-    import socket
-
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-    except socket.gaierror:
-        ip = "127.0.0.1"
-    port = int(os.getenv("PORT", "9090"))
-    engine_url = f"http://{ip}:{port}"
+    """显式配置公共地址时，将 engine_url 写入 da_agent 表。"""
+    engine_url = os.getenv("ENGINE_PUBLIC_URL", "").strip().rstrip("/")
+    if not engine_url:
+        logger.info("未配置 ENGINE_PUBLIC_URL，保留后台绑定的 engine_url")
+        return
+    if not engine_url.startswith(("http://", "https://")):
+        logger.warning("ENGINE_PUBLIC_URL 必须以 http:// 或 https:// 开头，跳过注册")
+        return
     try:
         from sqlalchemy import create_engine, text
 
@@ -422,6 +423,110 @@ def create_llm_client(config: AgentRuntimeConfig) -> BaseChatModel:
     return create_chat_model(config)
 
 
+def _is_codex_config(config: AgentRuntimeConfig | None) -> bool:
+    return bool(config and (config.llm_provider or "").strip().lower() == "codex")
+
+
+def _new_codex_query_semaphore(
+    config: AgentRuntimeConfig,
+) -> tuple[asyncio.Semaphore | None, int]:
+    if not _is_codex_config(config):
+        return None, 0
+    return asyncio.Semaphore(config.codex_max_concurrency), config.codex_max_concurrency
+
+
+def _close_llm_client(client: BaseChatModel | None) -> None:
+    close = getattr(client, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:
+        logger.warning(
+            "LLM client cleanup failed", extra={"error_type": type(exc).__name__}
+        )
+
+
+async def _close_llm_after_queries(
+    client: BaseChatModel | None,
+    semaphore: asyncio.Semaphore | None,
+    capacity: int,
+) -> None:
+    """Wait for every old Codex pipeline slot before closing its SDK client."""
+    acquired = 0
+    try:
+        if semaphore is not None:
+            for _ in range(capacity):
+                await semaphore.acquire()
+                acquired += 1
+        await anyio.to_thread.run_sync(_close_llm_client, client)
+    finally:
+        if semaphore is not None:
+            for _ in range(acquired):
+                semaphore.release()
+
+
+async def _run_query_in_worker(
+    question: str,
+    config: AgentRuntimeConfig,
+    client: BaseChatModel,
+    *,
+    semaphore: asyncio.Semaphore | None = None,
+    runtime_swap_lock: asyncio.Lock | None = None,
+    history_summary: str = "",
+    biz_line: str = "",
+    metadata_filter: dict | None = None,
+    metadata_context: dict | None = None,
+) -> dict:
+    """Run the complete blocking pipeline outside the FastAPI event loop."""
+    call = partial(
+        run_query,
+        question,
+        config,
+        client,
+        history_summary=history_summary,
+        biz_line=biz_line,
+        metadata_filter=metadata_filter,
+        metadata_context=metadata_context,
+    )
+    if not _is_codex_config(config):
+        return await anyio.to_thread.run_sync(call)
+
+    from src.retrieval.codex_chat_model import (
+        CodexModelError,
+        CodexTimeoutError,
+        codex_query_budget,
+        codex_remaining_timeout,
+    )
+
+    with codex_query_budget(config.codex_timeout_seconds):
+        if semaphore is None:
+            return await anyio.to_thread.run_sync(call)
+        try:
+            if runtime_swap_lock is None:
+                await asyncio.wait_for(
+                    semaphore.acquire(),
+                    timeout=codex_remaining_timeout(config.codex_timeout_seconds),
+                )
+            else:
+                async with runtime_swap_lock:
+                    if (
+                        client is not llm_client
+                        or semaphore is not codex_query_semaphore
+                    ):
+                        raise CodexModelError("Codex 配置刚刚更新，请重新提交查询")
+                    await asyncio.wait_for(
+                        semaphore.acquire(),
+                        timeout=codex_remaining_timeout(config.codex_timeout_seconds),
+                    )
+        except TimeoutError:
+            raise CodexTimeoutError("Codex 查询已超过时间限制，请稍后重试") from None
+        try:
+            return await anyio.to_thread.run_sync(call)
+        finally:
+            semaphore.release()
+
+
 def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
     """加载 Agent 配置，打印配置信息。"""
     global config_loader
@@ -435,14 +540,9 @@ def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global \
-        retriever, \
-        validator, \
-        llm_client, \
-        agent_config, \
-        query_logger, \
-        knowledge_retriever, \
-        query_cache
+    global retriever, validator, llm_client, agent_config, query_logger, query_cache
+    global codex_query_semaphore, codex_query_capacity
+    global codex_runtime_swap_lock
 
     # 加载 Agent 配置（CONFIG_SOURCE + CONFIG_PROFILE 控制来源）
     if CONFIG_SOURCE == "local":
@@ -492,34 +592,23 @@ async def lifespan(app: FastAPI):
         logger.error(f"Milvus 连接失败: {milvus_uri} — {e}")
         raise SystemExit(f"启动中止: Milvus 不可达 ({milvus_uri})")
 
-    # 初始化 RAG（传入 agent_config 以使用 Agent 级 Embedding/Reranker 配置）
-    engine_type = agent_config.engine_type
-
-    if engine_type in ("nl2sql", "hybrid"):
-        try:
-            _initialize_nl2sql_runtime(agent_config)
-        except AgentDatasourceNotConfiguredError:
-            logger.info(
-                f"Agent {agent_config.agent_id} 尚未绑定执行数据库，"
-                "NL2SQL 以待配置状态启动"
-            )
+    # 初始化 NL2SQL RAG（传入 agent_config 以使用 Agent 级模型配置）
+    try:
+        _initialize_nl2sql_runtime(agent_config)
+    except AgentDatasourceNotConfiguredError:
+        logger.info(
+            f"Agent {agent_config.agent_id} 尚未绑定执行数据库，NL2SQL 以待配置状态启动"
+        )
 
     # 初始化 LLM
     llm_client = create_llm_client(agent_config)
+    codex_query_semaphore, codex_query_capacity = _new_codex_query_semaphore(
+        agent_config
+    )
+    codex_runtime_swap_lock = asyncio.Lock()
     logger.info(
         f"LLM 已就绪 (provider={agent_config.llm_provider}, model={agent_config.llm_model})"
     )
-
-    # 初始化知识库检索器（knowledge / hybrid 模式）
-    if engine_type in ("knowledge", "hybrid"):
-        from src.retrieval.embedding import get_embedding
-
-        knowledge_retriever = KnowledgeRetriever(
-            get_embedding(),
-            agent_id=agent_config.agent_id,
-        )
-        knowledge_retriever.connect()
-        logger.info(f"知识库检索器已就绪 (engine_type={engine_type})")
 
     # 初始化查询缓存（默认关闭，需在 Agent 配置中开启）
     if agent_config and agent_config.enable_query_cache:
@@ -549,9 +638,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("NL2SQL Data Agent 服务启动完成")
 
-    yield
-
-    logger.info("NL2SQL Data Agent 服务关闭")
+    try:
+        yield
+    finally:
+        await _close_llm_after_queries(
+            llm_client, codex_query_semaphore, codex_query_capacity
+        )
+        logger.info("NL2SQL Data Agent 服务关闭")
 
 
 # ── FastAPI App ──
@@ -611,6 +704,16 @@ class QueryRequest(BaseModel):
     )
 
 
+class ClarificationOption(BaseModel):
+    label: str
+    value: str
+
+
+class Clarification(BaseModel):
+    question: str
+    options: list[ClarificationOption] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     session_id: str
     question: str
@@ -619,6 +722,10 @@ class QueryResponse(BaseModel):
     matched_tables: list[str] = []
     matched_terms: list[str] = []
     enum_hits: list[dict] = []
+    retrieval_context: dict = Field(
+        default_factory=dict,
+        description="字段裁剪、Join 路径、业务口径和 Prompt 规模信息",
+    )
     is_success: bool = True
     retry_count: int = 0
     execution_time_ms: int = 0
@@ -640,6 +747,12 @@ class QueryResponse(BaseModel):
     )
     placeholder: str = Field(
         default="", description="占位符字段声明（分号分隔），按 ? 出现顺序对应"
+    )
+    needs_clarification: bool = Field(
+        default=False, description="是否需要用户澄清业务意图"
+    )
+    clarification: Clarification | None = Field(
+        default=None, description="结构化澄清问题和候选项"
     )
 
 
@@ -668,6 +781,13 @@ class ConfigReloadResponse(BaseModel):
     config_source: str = ""
 
 
+class CodexStatusResponse(BaseModel):
+    status: str
+    message: str
+    cli_version: str | None = None
+    models: list[str] | None = None
+
+
 class EvalRunRequest(BaseModel):
     run_id: int = Field(..., description="评估运行 ID")
     cases: list[dict] = Field(
@@ -690,6 +810,40 @@ class EvalRunResponse(BaseModel):
 
 
 def run_query(
+    question: str,
+    config: AgentRuntimeConfig,
+    client: BaseChatModel,
+    history_summary: str = "",
+    biz_line: str = "",
+    metadata_filter: dict | None = None,
+    metadata_context: dict | None = None,
+) -> dict:
+    """Run one pipeline with a shared cumulative deadline for Codex turns."""
+    if _is_codex_config(config):
+        from src.retrieval.codex_chat_model import codex_query_budget
+
+        with codex_query_budget(config.codex_timeout_seconds):
+            return _run_query_impl(
+                question,
+                config,
+                client,
+                history_summary=history_summary,
+                biz_line=biz_line,
+                metadata_filter=metadata_filter,
+                metadata_context=metadata_context,
+            )
+    return _run_query_impl(
+        question,
+        config,
+        client,
+        history_summary=history_summary,
+        biz_line=biz_line,
+        metadata_filter=metadata_filter,
+        metadata_context=metadata_context,
+    )
+
+
+def _run_query_impl(
     question: str,
     config: AgentRuntimeConfig,
     client: BaseChatModel,
@@ -764,17 +918,27 @@ def run_query(
     # trace: Schema 检索 + Reranker
     table_details = []
     for t in result.relevant_tables:
-        td = {"table_name": t["table_name"]}
+        td = {
+            "table_name": t["table_name"],
+            "search_score": round(float(t.get("score", 0)), 4),
+            "hit_by_column": bool(t.get("hit_by_column")),
+            "hit_by_enum": bool(t.get("hit_by_enum")),
+            "pinned": bool(t.get("pinned")),
+            "relation_bridge": bool(t.get("relation_bridge")),
+            "selected_columns": t.get("selected_columns", []),
+        }
         if "rerank_score" in t:
             td["rerank_score"] = round(t["rerank_score"], 4)
-        if "doc" in t and "score" in t["doc"]:
-            td["search_score"] = round(t["doc"]["score"], 4)
         table_details.append(td)
     trace_steps.append(
         {
             "step": "schema_retrieval",
             "tables": table_details,
             "count": len(matched_tables),
+            "join_paths": result.join_paths,
+            "inferred_biz_line": result.inferred_biz_line,
+            "context_stats": result.context_stats,
+            "query_intent": result.query_intent,
         }
     )
 
@@ -849,7 +1013,10 @@ def run_query(
             "5. 使用 Schema 中的精确列名和表名\n"
             "6. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值\n"
             "7. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）\n"
-            "8. 如果问题过于模糊导致无法生成精确 SQL，输出：NEED_CLARIFY: <你的澄清问题>"
+            "8. 只有用户业务意图有歧义且不同解释会改变查询结果时，才输出："
+            'NEED_CLARIFY: {"question":"需要确认的问题",'
+            '"options":[{"label":"选项文案","value":"用于补充原问题的含义"}]}。'
+            "候选项最多 4 个；没有可靠候选项时 options 输出空数组"
         )
         prompt_text = re.sub(
             r"【输出要求】.*", param_mode_rules, prompt_text, flags=re.DOTALL
@@ -889,7 +1056,8 @@ def run_query(
     messages.append({"role": "assistant", "content": answer})
 
     # 检测 NEED_CLARIFY
-    clarify_msg = SQLValidator.extract_clarify(answer)
+    clarification = SQLValidator.extract_clarification(answer)
+    clarify_msg = clarification["question"] if clarification else None
 
     # 提取 SQL
     extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
@@ -917,15 +1085,110 @@ def run_query(
             }
         )
         messages.append({"role": "assistant", "content": answer})
-        extracted_sql = SQLValidator.extract_sql(answer)
+        clarification = SQLValidator.extract_clarification(answer)
+        clarify_msg = clarification["question"] if clarification else None
+        extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
+
+    if not extracted_sql and not clarify_msg:
+        is_success = False
+        error_msg = "模型未生成可执行 SQL"
+
+    # 业务语义校验必须先于 EXPLAIN。语法正确不代表换汇口径正确。
+    currency_validation_attempts = []
+    if extracted_sql and result.query_intent.get("currency_conversion"):
+        max_currency_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_currency_fix_retries + 1):
+            currency_ok, currency_error, currency_detail = (
+                SQLValidator.validate_currency_conversion(
+                    extracted_sql,
+                    result.query_intent,
+                )
+            )
+            currency_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": currency_ok,
+                    "error": currency_error,
+                    **currency_detail,
+                }
+            )
+            if currency_ok:
+                break
+            if attempt >= max_currency_fix_retries:
+                is_success = False
+                error_msg = f"货币换算口径校验失败: {currency_error}"
+                break
+
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你生成的 SQL 没有完整执行货币换算口径。\n\n"
+                        f"## 口径问题\n{currency_error}\n\n"
+                        "请使用 `warehouse_sys`.`sys_exchange_rate`，按原币种关联 "
+                        "source_currency，按目标币种限定 target_currency，按交易日期关联 "
+                        "sync_time，使用 原金额 * mid 换算；原币种已经等于目标币种时直接使用原金额。"
+                        "汇率表必须 LEFT JOIN。请输出完整修复后的 Doris SQL，用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"currency_semantic_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "货币换算口径修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "currency_conversion_validate",
+                "attempts": currency_validation_attempts,
+                "final_valid": bool(
+                    currency_validation_attempts
+                    and currency_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
 
     # EXPLAIN 校验（param_mode 下跳过，? 占位符无法通过 EXPLAIN）
     explain_details = []
-    if extracted_sql and config.enable_explain and validator and not _param_mode:
+    if (
+        extracted_sql
+        and is_success
+        and config.enable_explain
+        and validator
+        and not _param_mode
+    ):
         syntax_ok = False
         check = None
         for attempt in range(config.max_fix_retries):
             check = validator.validate(answer)
+            if check["valid"] and check.get("sql"):
+                currency_ok, currency_error, _ = (
+                    SQLValidator.validate_currency_conversion(
+                        check["sql"],
+                        result.query_intent,
+                    )
+                )
+                if not currency_ok:
+                    check = {
+                        **check,
+                        "valid": False,
+                        "error": f"货币换算口径校验失败: {currency_error}",
+                    }
             explain_details.append(
                 {
                     "attempt": attempt + 1,
@@ -971,11 +1234,19 @@ def run_query(
 
         # 执行计划分析
         if syntax_ok and check and check.get("plan"):
+            plan_safety = SQLValidator.inspect_plan(
+                check["plan"], max_scan_rows=config.max_explain_scan_rows
+            )
+            trace_steps.append({"step": "plan_safety", **plan_safety})
+            if not plan_safety["safe"]:
+                is_success = False
+                error_msg = "；".join(plan_safety["warnings"])
             messages.append(
                 {
                     "role": "user",
                     "content": f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
                     f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
+                    f"## 规则检查\n{'; '.join(plan_safety['warnings']) or '未发现硬性风险'}\n\n"
                     f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
                     f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM",
                 }
@@ -995,7 +1266,29 @@ def run_query(
             if "LGTM" not in review_result.upper():
                 recheck = validator.validate(review_result)
                 if recheck["valid"]:
-                    answer = review_result
+                    optimized_safety = SQLValidator.inspect_plan(
+                        recheck.get("plan") or "",
+                        max_scan_rows=config.max_explain_scan_rows,
+                    )
+                    optimized_sql = recheck.get("sql") or ""
+                    optimized_currency_ok, optimized_currency_error, _ = (
+                        SQLValidator.validate_currency_conversion(
+                            optimized_sql,
+                            result.query_intent,
+                        )
+                    )
+                    if optimized_safety["safe"] and optimized_currency_ok:
+                        answer = review_result
+                        is_success = True
+                        error_msg = ""
+                    trace_steps.append(
+                        {
+                            "step": "optimized_plan_safety",
+                            **optimized_safety,
+                            "currency_conversion_valid": optimized_currency_ok,
+                            "currency_conversion_error": optimized_currency_error,
+                        }
+                    )
 
     # trace: LLM 调用
     trace_steps.append(
@@ -1016,7 +1309,14 @@ def run_query(
             }
         )
 
-    final_sql = SQLValidator.extract_sql(answer) or ""
+    # 澄清信号优先级高于同一回复中可能夹带的 SQL，避免在意图未确认时执行。
+    final_clarification = SQLValidator.extract_clarification(answer)
+    if final_clarification is not None:
+        clarification = final_clarification
+        clarify_msg = clarification["question"]
+    final_sql = (
+        "" if clarification is not None else SQLValidator.extract_sql(answer) or ""
+    )
 
     if final_sql:
         read_only, read_only_error = SQLValidator.validate_read_only(final_sql)
@@ -1031,8 +1331,27 @@ def run_query(
                 }
             )
 
+    if final_sql and is_success:
+        schema_allowed, schema_error, schema_detail = (
+            SQLValidator.validate_schema_references(
+                final_sql,
+                [table.get("schema", {}) for table in result.relevant_tables],
+            )
+        )
+        trace_steps.append(
+            {
+                "step": "sql_schema_guard",
+                "success": schema_allowed,
+                "error": schema_error,
+                **schema_detail,
+            }
+        )
+        if not schema_allowed:
+            is_success = False
+            error_msg = schema_error
+
     # NEED_CLARIFY: 模型认为问题模糊，需要澄清
-    if not final_sql and clarify_msg:
+    if clarification is not None and clarify_msg:
         is_success = False
         error_msg = f"NEED_CLARIFY: {clarify_msg}"
 
@@ -1084,7 +1403,15 @@ def run_query(
                 enum_fixed = False
                 if fixed_sql and validator:
                     recheck = validator.explain(fixed_sql)
-                    if recheck["valid"]:
+                    currency_ok, _, _ = SQLValidator.validate_currency_conversion(
+                        fixed_sql,
+                        result.query_intent,
+                    )
+                    schema_ok, _, _ = SQLValidator.validate_schema_references(
+                        fixed_sql,
+                        [table.get("schema", {}) for table in result.relevant_tables],
+                    )
+                    if recheck["valid"] and currency_ok and schema_ok:
                         final_sql = fixed_sql
                         answer = enum_fix_answer
                         enum_fixed = True
@@ -1096,6 +1423,35 @@ def run_query(
                         "duration_ms": _elapsed_ms(t0),
                     }
                 )
+
+    # 任意后处理都不能绕过换汇口径和检索 Schema 约束。
+    if final_sql and is_success:
+        currency_ok, currency_error, currency_detail = (
+            SQLValidator.validate_currency_conversion(
+                final_sql,
+                result.query_intent,
+            )
+        )
+        schema_ok, schema_error, schema_detail = (
+            SQLValidator.validate_schema_references(
+                final_sql,
+                [table.get("schema", {}) for table in result.relevant_tables],
+            )
+        )
+        trace_steps.append(
+            {
+                "step": "sql_post_rewrite_guard",
+                "currency_conversion_valid": currency_ok,
+                "currency_conversion_error": currency_error,
+                "currency_conversion_detail": currency_detail,
+                "schema_valid": schema_ok,
+                "schema_error": schema_error,
+                "schema_detail": schema_detail,
+            }
+        )
+        if not currency_ok or not schema_ok:
+            is_success = False
+            error_msg = currency_error or schema_error
 
     # ── param_mode: 提取 script + placeholder，跳过执行 ──
     script_text = ""
@@ -1226,6 +1582,25 @@ def run_query(
                         if not simplified:
                             break
 
+                    currency_ok, currency_error, _ = (
+                        SQLValidator.validate_currency_conversion(
+                            simplified,
+                            result.query_intent,
+                        )
+                    )
+                    if not currency_ok:
+                        trace_steps.append(
+                            {
+                                "step": "timeout_fallback",
+                                "level": level,
+                                "simplified_sql": simplified,
+                                "success": False,
+                                "error": f"货币换算口径校验失败: {currency_error}",
+                                "duration_ms": _elapsed_ms(t0),
+                            }
+                        )
+                        continue
+
                     # EXPLAIN 校验简化后的 SQL
                     access_allowed, access_error, simplified_dbs = (
                         SQLValidator.validate_database_access(
@@ -1316,6 +1691,32 @@ def run_query(
                             }
                         )
                         break
+
+                    currency_ok, currency_error, _ = (
+                        SQLValidator.validate_currency_conversion(
+                            new_sql,
+                            result.query_intent,
+                        )
+                    )
+                    if not currency_ok:
+                        trace_steps.append(
+                            {
+                                "step": "execution_fix",
+                                "attempt": exec_fix_i + 1,
+                                "success": False,
+                                "reason": (f"货币换算口径校验失败: {currency_error}"),
+                            }
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "上一版修复 SQL 破坏了货币换算口径："
+                                    f"{currency_error}。后续修复必须保留完整换汇规则。"
+                                ),
+                            }
+                        )
+                        continue
 
                     # 白名单校验
                     access_allowed, access_error, new_dbs = (
@@ -1531,6 +1932,18 @@ def run_query(
         "matched_tables": matched_tables,
         "matched_terms": matched_terms,
         "enum_hits": result.enum_hits,
+        "retrieval_context": {
+            "selected_columns": {
+                table["table_name"]: table.get("selected_columns", [])
+                for table in result.relevant_tables
+            },
+            "join_paths": result.join_paths,
+            "matched_terms": result.matched_terms,
+            "required_columns": result.required_columns,
+            "inferred_biz_line": result.inferred_biz_line,
+            "context_stats": result.context_stats,
+            "query_intent": result.query_intent,
+        },
         "is_success": is_success,
         "retry_count": retry_count,
         "error": error_msg,
@@ -1542,6 +1955,8 @@ def run_query(
         "execution_error": execution_error,
         "script": script_text,
         "placeholder": placeholder_text,
+        "needs_clarification": clarification is not None,
+        "clarification": clarification,
     }
 
 
@@ -1550,15 +1965,7 @@ def run_query(
 
 @app.get("/health")
 async def health():
-    et = agent_config.engine_type if agent_config else "nl2sql"
-    nl2sql_enabled = et in ("nl2sql", "hybrid")
-    nl2sql_ready = not nl2sql_enabled or (
-        retriever is not None and retriever._initialized and validator is not None
-    )
-    knowledge_ready = et not in ("knowledge", "hybrid") or (
-        knowledge_retriever is not None and knowledge_retriever._initialized
-    )
-    ready = nl2sql_ready and knowledge_ready
+    ready = retriever is not None and retriever._initialized and validator is not None
     return {
         "status": "ok",
         "ready": ready,
@@ -1568,12 +1975,8 @@ async def health():
         if agent_config and agent_config.agent_id
         else None,
         "config_source": agent_config.config_source if agent_config else "none",
-        "engine_type": et,
         "capabilities": {
-            "nl2sql": nl2sql_enabled,
-            "knowledge_qa": knowledge_retriever is not None
-            and knowledge_retriever._initialized,
-            "intent_classification": et == "hybrid",
+            "nl2sql": True,
             "explain_validate": validator is not None,
             "sql_execution": agent_config.enable_execute if agent_config else False,
             "query_cache": query_cache is not None,
@@ -1608,119 +2011,32 @@ def _verify_admin_token(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or missing admin token")
 
 
-# ── 知识问答管道 ──
-
-
-async def _handle_knowledge_query(
-    req: QueryRequest,
-    config: AgentRuntimeConfig,
-    client: BaseChatModel,
-    session_id: str,
-    start_time: float,
-) -> QueryResponse:
-    """处理知识问答意图的查询。"""
-    from langchain_core.messages import SystemMessage, HumanMessage
-
-    if not knowledge_retriever or not knowledge_retriever._initialized:
-        raise HTTPException(
-            status_code=503, detail="知识库未初始化，请先执行 /admin/sync"
+@app.get(
+    "/admin/codex/status",
+    response_model=CodexStatusResponse,
+    response_model_exclude_none=True,
+)
+async def codex_status(request: Request) -> CodexStatusResponse:
+    """Return live, identity-free status for the configured Codex SDK client."""
+    _verify_admin_token(request)
+    config = agent_config
+    client = llm_client
+    if not _is_codex_config(config) or client is None:
+        return CodexStatusResponse(
+            status="not_configured", message="当前 Agent 未启用 Codex"
         )
-
-    try:
-        t0 = time.time()
-        trace_steps = []
-
-        # 1. 检索相关知识 chunk
-        chunks = knowledge_retriever.retrieve(req.question, top_k=5)
-        trace_steps.append(
-            {
-                "step": "knowledge_retrieval",
-                "duration_ms": int((time.time() - t0) * 1000),
-                "chunk_count": len(chunks),
-                "sources": [
-                    {"title": c["title"], "kb_name": c["kb_name"], "score": c["score"]}
-                    for c in chunks
-                ],
-            }
-        )
-
-        # 2. 组装 Prompt 并调用 LLM
-        prompt_text = knowledge_retriever.format_prompt(req.question, chunks)
-        system_prompt = "你是一个知识问答助手，请根据提供的参考文档准确回答用户问题。回答时引用来源。"
-        if config.system_prompt and "知识" in config.system_prompt:
-            system_prompt = config.system_prompt
-
-        t0 = time.time()
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=prompt_text),
-        ]
-        resp = client.invoke(messages)
-        answer = resp.content
-        usage = getattr(resp, "usage_metadata", None)
-
-        trace_steps.append(
-            {
-                "step": "llm_generation",
-                "duration_ms": int((time.time() - t0) * 1000),
-                "model": config.llm_model,
-                "input_tokens": usage.get("input_tokens") if usage else None,
-                "output_tokens": usage.get("output_tokens") if usage else None,
-            }
-        )
-
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        source_docs = list({c["title"] for c in chunks if c.get("title")})
-
-        # 记录查询日志
-        log_id = None
-        if query_logger:
-            meta = req.metadata or QueryMetadata()
-            _kf = meta.filter or {}
-            log_id = query_logger.log(
-                session_id=session_id,
-                user_query=req.question,
-                is_success=True,
-                execution_time_ms=elapsed_ms,
-                agent_id=config.agent_id,
-                scenario=_kf.get("scenario", ""),
-                business=_kf.get("business", ""),
-                caller=meta.caller,
-                user_id=meta.user_id,
-                user_name=meta.user_name,
-                trace_id=meta.trace_id,
-            )
-
-        return QueryResponse(
-            session_id=session_id,
-            question=req.question,
-            sql="",
-            raw_answer=answer,
-            matched_tables=source_docs,
-            is_success=True,
-            execution_time_ms=elapsed_ms,
-            log_id=log_id,
-            summary=answer,
-            trace={
-                "question": req.question,
-                "intent": "knowledge",
-                "steps": trace_steps,
-                "total_duration_ms": elapsed_ms,
-            },
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"知识问答异常: {e}", exc_info=True)
-        return QueryResponse(
-            session_id=session_id,
-            question=req.question,
-            is_success=False,
-            execution_time_ms=elapsed_ms,
-            error=str(e),
-        )
+    status_reader = getattr(client, "safe_status", None)
+    if not callable(status_reader):
+        return CodexStatusResponse(status="unavailable", message="Codex 状态检查不可用")
+    raw_status = await anyio.to_thread.run_sync(status_reader)
+    cli_version = raw_status.get("cli_version")
+    models = raw_status.get("models")
+    return CodexStatusResponse(
+        status=str(raw_status.get("status", "unavailable")),
+        message=str(raw_status.get("message", "Codex 暂时不可用")),
+        cli_version=cli_version if isinstance(cli_version, str) else None,
+        models=[str(model) for model in models] if isinstance(models, list) else None,
+    )
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -1742,25 +2058,45 @@ async def query(req: QueryRequest, request: Request):
 
     config = agent_config
     client = llm_client
+    query_limit = codex_query_semaphore if _is_codex_config(config) else None
 
     # Token 鉴权
     _verify_token(request, config)
 
-    # 意图分类
-    intent = intent_classifier.classify(req.question, engine_type=config.engine_type)
-    logger.info(f"意图分类: intent={intent}, engine_type={config.engine_type}")
-
-    # 知识问答管道
-    if intent == "knowledge":
-        return await _handle_knowledge_query(
-            req, config, client, session_id, start_time
-        )
-
-    # SQL 管道（原有逻辑）
+    # NL2SQL 管道
     if not retriever or not retriever._initialized:
         raise HTTPException(status_code=503, detail="服务未就绪，NL2SQL RAG 尚未初始化")
 
     meta = req.metadata or QueryMetadata()
+    is_lark_request = bool(
+        query_logger and meta.caller == "lark" and meta.trace_id and meta.user_id
+    )
+
+    def replay_lark_response() -> QueryResponse | None:
+        if not is_lark_request:
+            return None
+        replay = query_logger.get_lark_response(
+            trace_id=meta.trace_id,
+            user_id=meta.user_id,
+            agent_id=config.agent_id,
+            user_query=req.question,
+        )
+        if replay is not None:
+            replay_log_id, replay_response = replay
+            try:
+                return QueryResponse.model_validate(
+                    {**replay_response, "log_id": replay_log_id}
+                )
+            except Exception:
+                logger.warning(
+                    "忽略无效的 Lark 幂等响应快照",
+                    extra={"trace_id": meta.trace_id, "log_id": replay_log_id},
+                )
+        return None
+
+    replayed_response = replay_lark_response()
+    if replayed_response is not None:
+        return replayed_response
 
     # 所有会影响回答的请求上下文都必须参与缓存隔离。
     _filter = meta.filter or {}
@@ -1781,12 +2117,41 @@ async def query(req: QueryRequest, request: Request):
         cached = query_cache.get(req.question, context_key=_cache_ctx)
         if cached:
             elapsed_ms = int((time.time() - start_time) * 1000)
-            return QueryResponse(
+            cached_response = QueryResponse(
                 session_id=session_id,
                 question=req.question,
                 execution_time_ms=elapsed_ms,
                 **{k: v for k, v in cached.items() if k in QueryResponse.model_fields},
             )
+            if is_lark_request:
+                snapshot = QueryLogger.lark_response_snapshot(
+                    cached_response.model_dump(mode="json", exclude={"log_id"})
+                )
+                log_id = query_logger.log(
+                    session_id=session_id,
+                    user_query=req.question,
+                    matched_tables=cached_response.matched_tables,
+                    matched_terms=cached_response.matched_terms,
+                    generated_sql=cached_response.sql,
+                    execution_result=snapshot,
+                    is_success=cached_response.is_success,
+                    execution_time_ms=elapsed_ms,
+                    retry_count=cached_response.retry_count,
+                    agent_id=config.agent_id,
+                    scenario=_filter.get("scenario", ""),
+                    business=_filter.get("business", ""),
+                    caller=meta.caller,
+                    user_id=meta.user_id,
+                    user_name=meta.user_name,
+                    trace_id=meta.trace_id,
+                    enum_hits=cached_response.enum_hits,
+                )
+                if log_id is None:
+                    replayed_response = replay_lark_response()
+                    if replayed_response is not None:
+                        return replayed_response
+                return cached_response.model_copy(update={"log_id": log_id})
+            return cached_response
 
     # 请求级配置覆盖
     overrides = {}
@@ -1808,10 +2173,12 @@ async def query(req: QueryRequest, request: Request):
         config = AgentRuntimeConfig(**{**config.__dict__, **overrides})
 
     try:
-        result = run_query(
+        result = await _run_query_in_worker(
             req.question,
             config,
             client,
+            semaphore=query_limit,
+            runtime_swap_lock=codex_runtime_swap_lock,
             history_summary=req.history_summary,
             biz_line=_filter.get("business", ""),
             metadata_filter=_filter or None,
@@ -1829,6 +2196,7 @@ async def query(req: QueryRequest, request: Request):
                     "matched_tables": result["matched_tables"],
                     "matched_terms": result["matched_terms"],
                     "enum_hits": result["enum_hits"],
+                    "retrieval_context": result.get("retrieval_context", {}),
                     "is_success": True,
                     "retry_count": result["retry_count"],
                     "error": "",
@@ -1842,15 +2210,46 @@ async def query(req: QueryRequest, request: Request):
                 context_key=_cache_ctx,
             )
 
-        # 记录查询日志
+        response = QueryResponse(
+            session_id=session_id,
+            question=req.question,
+            sql=result["sql"],
+            raw_answer=result["raw_answer"],
+            matched_tables=result["matched_tables"],
+            matched_terms=result["matched_terms"],
+            enum_hits=result["enum_hits"],
+            retrieval_context=result.get("retrieval_context", {}),
+            is_success=result["is_success"],
+            retry_count=result["retry_count"],
+            execution_time_ms=elapsed_ms,
+            error=result["error"],
+            context_summary=result.get("context_summary", ""),
+            trace=result.get("trace"),
+            summary=result.get("summary", ""),
+            query_result=result.get("query_result"),
+            execution_error=result.get("execution_error", ""),
+            script=result.get("script", ""),
+            placeholder=result.get("placeholder", ""),
+            needs_clarification=result.get("needs_clarification", False),
+            clarification=result.get("clarification"),
+        )
+
+        # Lark 请求把完整、JSON-safe 的响应快照与查询日志一起提交；Admin
+        # 在收到响应前退出时，同一 trace_id 可直接重放而不再次执行 SQL。
         log_id = None
         if query_logger:
+            execution_result = ""
+            if is_lark_request:
+                execution_result = QueryLogger.lark_response_snapshot(
+                    response.model_dump(mode="json", exclude={"log_id"})
+                )
             log_id = query_logger.log(
                 session_id=session_id,
                 user_query=req.question,
                 matched_tables=result["matched_tables"],
                 matched_terms=result["matched_terms"],
                 generated_sql=result["sql"],
+                execution_result=execution_result,
                 is_success=result["is_success"],
                 execution_time_ms=elapsed_ms,
                 retry_count=result["retry_count"],
@@ -1865,41 +2264,39 @@ async def query(req: QueryRequest, request: Request):
                 enum_hits=result.get("enum_hits"),
                 trace_detail=result.get("trace"),
             )
+            if is_lark_request and log_id is None:
+                replayed_response = replay_lark_response()
+                if replayed_response is not None:
+                    return replayed_response
 
-        return QueryResponse(
-            session_id=session_id,
-            question=req.question,
-            sql=result["sql"],
-            raw_answer=result["raw_answer"],
-            matched_tables=result["matched_tables"],
-            matched_terms=result["matched_terms"],
-            enum_hits=result["enum_hits"],
-            is_success=result["is_success"],
-            retry_count=result["retry_count"],
-            execution_time_ms=elapsed_ms,
-            error=result["error"],
-            log_id=log_id,
-            context_summary=result.get("context_summary", ""),
-            trace=result.get("trace"),
-            summary=result.get("summary", ""),
-            query_result=result.get("query_result"),
-            execution_error=result.get("execution_error", ""),
-            script=result.get("script", ""),
-            placeholder=result.get("placeholder", ""),
-        )
+        return response.model_copy(update={"log_id": log_id})
 
     except Exception as e:
         elapsed_ms = int((time.time() - start_time) * 1000)
         logger.error(f"查询处理异常: {e}", exc_info=True)
+
+        error_response = QueryResponse(
+            session_id=session_id,
+            question=req.question,
+            is_success=False,
+            execution_time_ms=elapsed_ms,
+            error=str(e),
+        )
 
         # 异常也记录日志
         log_id = None
         meta = req.metadata or QueryMetadata()
         _ef = meta.filter or {}
         if query_logger:
+            execution_result = ""
+            if is_lark_request:
+                execution_result = QueryLogger.lark_response_snapshot(
+                    error_response.model_dump(mode="json", exclude={"log_id"})
+                )
             log_id = query_logger.log(
                 session_id=session_id,
                 user_query=req.question,
+                execution_result=execution_result,
                 is_success=False,
                 execution_time_ms=elapsed_ms,
                 agent_id=config.agent_id,
@@ -1910,15 +2307,12 @@ async def query(req: QueryRequest, request: Request):
                 user_name=meta.user_name,
                 trace_id=meta.trace_id,
             )
+            if is_lark_request and log_id is None:
+                replayed_response = replay_lark_response()
+                if replayed_response is not None:
+                    return replayed_response
 
-        return QueryResponse(
-            session_id=session_id,
-            question=req.question,
-            is_success=False,
-            execution_time_ms=elapsed_ms,
-            error=str(e),
-            log_id=log_id,
-        )
+        return error_response.model_copy(update={"log_id": log_id})
 
 
 @app.post("/admin/index-rebuild", response_model=IndexRebuildResponse)
@@ -1967,7 +2361,8 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
 async def config_reload(req: ConfigReloadRequest, request: Request):
     """重新加载 Agent 配置（不重建索引）。"""
     _verify_admin_token(request)
-    global agent_config, llm_client
+    global agent_config, llm_client, codex_query_semaphore, codex_query_capacity
+    global codex_runtime_swap_lock
 
     try:
         if (
@@ -1981,16 +2376,33 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
         target_agent_id = req.agent_id
         if target_agent_id is None and agent_config:
             target_agent_id = agent_config.agent_id
-        agent_config = load_agent_config(agent_id=target_agent_id)
-        llm_client = create_llm_client(agent_config)
+        new_config = await anyio.to_thread.run_sync(
+            partial(load_agent_config, agent_id=target_agent_id)
+        )
+        new_client = await anyio.to_thread.run_sync(create_llm_client, new_config)
+        new_semaphore, new_capacity = _new_codex_query_semaphore(new_config)
 
-        # 同步更新 retriever 和 searcher 的运行时配置
-        if retriever and retriever._initialized:
-            retriever.config = agent_config
-            if retriever.searcher:
-                retriever.searcher.config = agent_config
-        if query_cache:
-            query_cache.invalidate()
+        if codex_runtime_swap_lock is None:
+            codex_runtime_swap_lock = asyncio.Lock()
+        async with codex_runtime_swap_lock:
+            old_client = llm_client
+            old_semaphore = codex_query_semaphore
+            old_capacity = codex_query_capacity
+            agent_config = new_config
+            llm_client = new_client
+            codex_query_semaphore = new_semaphore
+            codex_query_capacity = new_capacity
+
+        try:
+            # 同步更新 retriever 和 searcher 的运行时配置
+            if retriever and retriever._initialized:
+                retriever.config = agent_config
+                if retriever.searcher:
+                    retriever.searcher.config = agent_config
+            if query_cache:
+                query_cache.invalidate()
+        finally:
+            await _close_llm_after_queries(old_client, old_semaphore, old_capacity)
 
         return ConfigReloadResponse(
             status="success",
@@ -2003,73 +2415,19 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
         return ConfigReloadResponse(status="error", message=str(e))
 
 
-class KnowledgeSyncRequest(BaseModel):
-    agent_id: int | None = Field(
-        default=None, description="Agent ID，为空则同步当前绑定 Agent"
-    )
-
-
-class KnowledgeSyncResponse(BaseModel):
-    status: str
-    message: str
-
-
-@app.post("/admin/sync", response_model=KnowledgeSyncResponse)
-async def knowledge_sync(req: KnowledgeSyncRequest, request: Request):
-    """触发知识库文档同步（分块 + 向量化 → Milvus）。"""
-    _verify_admin_token(request)
-    global knowledge_retriever
-
-    if (
-        req.agent_id is not None
-        and agent_config
-        and req.agent_id != agent_config.agent_id
-    ):
-        return KnowledgeSyncResponse(
-            status="error",
-            message=(
-                f"当前引擎绑定 Agent {agent_config.agent_id}，"
-                f"不能同步 Agent {req.agent_id}"
-            ),
-        )
-
-    if knowledge_retriever is None:
-        from src.retrieval.embedding import get_embedding
-
-        knowledge_retriever = KnowledgeRetriever(
-            get_embedding(),
-            agent_id=agent_config.agent_id if agent_config else None,
-        )
-
-    try:
-        agent_id = req.agent_id or (agent_config.agent_id if agent_config else None)
-        logger.info(f"收到知识库同步请求: agent_id={agent_id}")
-        knowledge_retriever.sync_from_db(agent_id=agent_id)
-
-        # 同步后清空查询缓存
-        if query_cache:
-            query_cache.invalidate()
-
-        return KnowledgeSyncResponse(
-            status="success",
-            message=f"知识库同步完成 (agent_id={agent_id})",
-        )
-    except Exception as e:
-        logger.error(f"知识库同步失败: {e}", exc_info=True)
-        return KnowledgeSyncResponse(status="error", message=str(e))
-
-
 @app.post("/evaluation/run", response_model=EvalRunResponse)
 async def evaluation_run(req: EvalRunRequest, request: Request):
     """执行评估：逐条运行 case，返回结果。"""
     _verify_admin_token(request)
     global agent_config, llm_client
 
-    if not retriever or not retriever._initialized:
+    if (
+        not retriever
+        or not retriever._initialized
+        or agent_config is None
+        or llm_client is None
+    ):
         raise HTTPException(status_code=503, detail="服务未就绪")
-
-    config = agent_config
-    client = llm_client
     start_time = time.time()
     results = []
     pass_count = 0
@@ -2081,7 +2439,17 @@ async def evaluation_run(req: EvalRunRequest, request: Request):
         expected_sql = case.get("expected_sql", "")
 
         try:
-            query_result = run_query(question, config, client)
+            config = agent_config
+            client = llm_client
+            if config is None or client is None:
+                raise RuntimeError("服务配置正在重载，请稍后重试")
+            query_result = await _run_query_in_worker(
+                question,
+                config,
+                client,
+                semaphore=codex_query_semaphore if _is_codex_config(config) else None,
+                runtime_swap_lock=codex_runtime_swap_lock,
+            )
 
             generated_sql = query_result["sql"]
             # 简单的 SQL 匹配：去除空白后比较

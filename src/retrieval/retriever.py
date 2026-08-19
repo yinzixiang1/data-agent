@@ -31,8 +31,22 @@ from src.retrieval.value_indexer import ValueIndexer
 from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.schema_formatter import SchemaFormatter
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
+from src.retrieval.context_planner import SchemaContextPlanner
+from src.retrieval.query_analyzer import QueryAnalyzer
 
 logger = logging.getLogger(__name__)
+
+EXCHANGE_RATE_TABLE = "warehouse_sys.sys_exchange_rate"
+EXCHANGE_RATE_REQUIRED_COLUMNS = {
+    f"{EXCHANGE_RATE_TABLE}.source_currency",
+    f"{EXCHANGE_RATE_TABLE}.target_currency",
+    f"{EXCHANGE_RATE_TABLE}.sync_time",
+    f"{EXCHANGE_RATE_TABLE}.mid",
+}
+
+
+class RequiredSemanticTableMissingError(RuntimeError):
+    """查询依赖的确定性语义表尚未绑定到当前 Agent。"""
 
 
 @dataclass
@@ -57,6 +71,11 @@ class RetrievalResult:
     business_context: str = ""
     prompt_text: str = ""
     matched_terms: list[str] = field(default_factory=list)
+    required_columns: list[str] = field(default_factory=list)
+    join_paths: list[list[str]] = field(default_factory=list)
+    inferred_biz_line: str = ""
+    context_stats: dict = field(default_factory=dict)
+    query_intent: dict = field(default_factory=dict)
 
 
 class SchemaRetriever:
@@ -80,6 +99,7 @@ class SchemaRetriever:
         self.fewshot: FewShotSelector | None = None
         self.table_schemas: dict = {}
         self.config: AgentRuntimeConfig | None = None
+        self.context_planner: SchemaContextPlanner | None = None
         self._initialized = False
 
     def initialize(self, config: AgentRuntimeConfig | None = None):
@@ -159,6 +179,7 @@ class SchemaRetriever:
 
         self.fewshot = indices["fewshot_selector"]
         self.table_schemas = indices["table_schemas"]
+        self.context_planner = SchemaContextPlanner(self.table_schemas)
         self._initialized = True
 
         logger.info("=" * 60)
@@ -199,6 +220,7 @@ class SchemaRetriever:
             self.searcher.table_schemas = indices["table_schemas"]
             self.searcher._rebuild_short_map()
             self.table_schemas = indices["table_schemas"]
+            self.context_planner = SchemaContextPlanner(self.table_schemas)
         if "enum_index" in indices:
             self.searcher.enum_index = indices["enum_index"]
         if "value_indexer" in indices:
@@ -264,17 +286,27 @@ class SchemaRetriever:
         if fewshot_k is None:
             fewshot_k = cfg.fewshot_top_k
 
+        inferred_biz_line = ""
+        if not biz_line and cfg.enable_domain_routing and self.context_planner:
+            inferred_biz_line = self.context_planner.infer_biz_line(user_query)
+            biz_line = inferred_biz_line or None
+
         if biz_line:
             logger.info(f"开始检索: '{user_query}' (biz_line={biz_line})")
         else:
             logger.info(f"开始检索: '{user_query}'")
+
+        query_analysis = QueryAnalyzer.analyze(user_query)
 
         # 1. 业务术语解析
         resolve_kwargs = {}
         if glossary_score_threshold is not None:
             resolve_kwargs["score_threshold"] = glossary_score_threshold
         glossary_result = self.glossary_resolver.resolve(
-            user_query, metadata_filter=metadata_filter, **resolve_kwargs
+            user_query,
+            biz_line=biz_line,
+            metadata_filter=metadata_filter,
+            **resolve_kwargs,
         )
         enriched_query = glossary_result["enriched_query"]
         business_context = glossary_result["business_context"]
@@ -283,8 +315,26 @@ class SchemaRetriever:
         value_hits = []
         if self.value_indexer:
             value_hits = self.value_indexer.match_values(
-                user_query, biz_line=biz_line, metadata_filter=metadata_filter
+                user_query,
+                biz_line=biz_line,
+                metadata_filter=metadata_filter,
+                exact_match_boost=cfg.value_exact_match_boost,
             )
+        required_tables = {
+            hit["table_name"] for hit in value_hits if hit.get("exact_match")
+        }
+        required_tables.update(glossary_result.get("related_tables", []))
+        required_tables.update(self.searcher._find_explicit_tables(user_query))
+        required_columns = set(glossary_result.get("related_columns", []))
+
+        if query_analysis.requires_exchange_rate and cfg.exchange_rate_injection:
+            if EXCHANGE_RATE_TABLE not in self.table_schemas:
+                raise RequiredSemanticTableMissingError(
+                    "查询需要货币汇率，但当前 Agent 未绑定可用的语义表 "
+                    f"{EXCHANGE_RATE_TABLE}"
+                )
+            required_tables.add(EXCHANGE_RATE_TABLE)
+            required_columns.update(EXCHANGE_RATE_REQUIRED_COLUMNS)
 
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
@@ -299,11 +349,11 @@ class SchemaRetriever:
             biz_line=biz_line,
             metadata_filter=metadata_filter,
             pinned_rules=cfg.pinned_rules,
+            required_tables=required_tables,
         )
 
         # 4. Reranker 精排
         reranker = get_reranker()
-        all_search_candidates = {c["table_name"]: c for c in candidates}
         pinned_candidates = [c for c in candidates if c.get("pinned")]
         if (
             reranker
@@ -311,7 +361,7 @@ class SchemaRetriever:
             and table_params.rerank
             and len(candidates) > top_k
         ):
-            candidates = reranker.rerank(user_query, candidates, top_k=top_k)
+            candidates = reranker.rerank(enriched_query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
 
@@ -323,39 +373,50 @@ class SchemaRetriever:
                 hit_names.add(pc["table_name"])
                 logger.info(f"Reranker 后补回 pinned 表: {pc['table_name']}")
 
-        # 5. Reranker 后关联表补回
-        for c in list(candidates):
-            schema = c.get("schema", {})
-            for rel in schema.get("relations", []):
-                target_short = rel.get("target_table", "")
-                if not target_short:
-                    continue
-                # 解析短名为全限定名
-                related = self.searcher._resolve_full_name(target_short)
-                if (
-                    related
-                    and related in all_search_candidates
-                    and related not in hit_names
-                ):
-                    candidates.append(all_search_candidates[related])
-                    hit_names.add(related)
-                    logger.info(f"Reranker 后补回关联表: {related}")
+        # 5. 在关系图中搜索最多 N 跳最短路径，补齐中间桥接表。
+        join_paths: list[list[str]] = []
+        if self.context_planner:
+            candidates, join_paths = self.context_planner.add_join_bridges(
+                candidates,
+                max_hops=cfg.max_relation_hops,
+                max_tables=cfg.max_context_tables,
+            )
+
+        hit_tables = [c["table_name"] for c in candidates]
+        hit_table_set = set(hit_tables)
 
         # 6. 枚举值检索
         enum_hits = self.searcher.search_enums(
-            user_query, biz_line=biz_line, metadata_filter=metadata_filter
+            user_query,
+            biz_line=biz_line,
+            metadata_filter=metadata_filter,
+            table_names=hit_table_set,
         )
+        value_hits = [hit for hit in value_hits if hit["table_name"] in hit_table_set]
 
         # 7. Few-shot 示例检索
-        hit_tables = [c["table_name"] for c in candidates]
         examples = self.fewshot.select(
             query=user_query,
             tables=hit_tables,
             top_k=fewshot_k,
             metadata_filter=metadata_filter,
+            biz_line=biz_line,
+            search_params=get_search_params(cfg.collection_search_config, "fewshot"),
+            mmr_lambda=cfg.mmr_lambda,
         )
 
-        # 8. Prompt 组装
+        # 8. 字段级上下文规划：只保留问题相关字段，主键/Join/口径字段始终保留。
+        context_stats = {}
+        if self.context_planner:
+            candidates, context_stats = self.context_planner.prune_columns(
+                candidates,
+                enriched_query,
+                required_columns=required_columns,
+                per_table_limit=cfg.max_columns_per_table,
+                preserve_time_columns=query_analysis.has_time_filter,
+            )
+
+        # 9. Prompt 组装
         prompt_text = self.formatter.format_all(
             tables=candidates,
             examples=examples,
@@ -364,7 +425,10 @@ class SchemaRetriever:
             value_hits=value_hits,
             question=user_query,
             output_rules=self.config.output_rules if self.config else "",
+            intent_context=query_analysis.to_prompt_context(),
         )
+        context_stats["prompt_chars"] = len(prompt_text)
+        context_stats["prompt_tokens_estimate"] = max(1, len(prompt_text) // 3)
 
         result = RetrievalResult(
             relevant_tables=candidates,
@@ -374,6 +438,11 @@ class SchemaRetriever:
             business_context=business_context,
             prompt_text=prompt_text,
             matched_terms=glossary_result["matched_terms"],
+            required_columns=sorted(required_columns),
+            join_paths=join_paths,
+            inferred_biz_line=inferred_biz_line,
+            context_stats=context_stats,
+            query_intent=query_analysis.to_dict(),
         )
 
         logger.info(

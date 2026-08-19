@@ -110,12 +110,13 @@ class ValueIndexer:
                 candidates.add(word)
 
         candidates.discard("")
-        return list(candidates)
+        return sorted(candidates, key=lambda value: (-len(value), value.casefold()))
 
     def match_values(
         self,
         query: str,
         top_k_per_entity: int = 3,
+        exact_match_boost: float = 2.0,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
     ) -> list[dict]:
@@ -142,8 +143,7 @@ class ValueIndexer:
             return []
 
         filter_expr = build_metadata_filter(biz_line or "", metadata_filter)
-        results = []
-        seen: set[tuple] = set()
+        best_by_key: dict[tuple[str, str, str], dict] = {}
 
         for entity in candidates:
             hits = self.milvus_index.bm25_search(
@@ -158,26 +158,39 @@ class ValueIndexer:
                 filter_expr=filter_expr,
             )
             for doc_id, score, ent in hits:
-                # 完全匹配加权
-                if ent.get("enum_label_cn", "") == entity:
-                    score *= 2.0
-
-                key = (ent["table_name"], ent["column_name"], ent["sql_value"])
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                results.append(
-                    {
-                        "table_name": ent["table_name"],
-                        "column_name": ent["column_name"],
-                        "enum_label_cn": ent.get("enum_label_cn", ""),
-                        "sql_value": ent["sql_value"],
-                        "matched_entity": entity,
-                        "score": score,
-                    }
+                exact_match = any(
+                    str(value).casefold() == entity.casefold()
+                    for value in (
+                        ent.get("enum_label_cn", ""),
+                        ent.get("sql_value", ""),
+                    )
+                    if value is not None
                 )
+                if exact_match:
+                    score *= exact_match_boost
 
+                key = (
+                    ent["table_name"],
+                    ent["column_name"],
+                    str(ent["sql_value"]),
+                )
+                candidate = {
+                    "table_name": ent["table_name"],
+                    "column_name": ent["column_name"],
+                    "enum_label_cn": ent.get("enum_label_cn", ""),
+                    "sql_value": ent["sql_value"],
+                    "matched_entity": entity,
+                    "exact_match": exact_match,
+                    "score": score,
+                }
+                current = best_by_key.get(key)
+                if current is None or (candidate["exact_match"], candidate["score"]) > (
+                    current["exact_match"],
+                    current["score"],
+                ):
+                    best_by_key[key] = candidate
+
+        results = list(best_by_key.values())
         results.sort(key=lambda x: x["score"], reverse=True)
 
         if results:

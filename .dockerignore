@@ -8,6 +8,9 @@ docs/
 *.egg-info
 .env
 .env.*
+**/.codex/
+**/auth.json
+config/agent_config.json
 docker-compose*.yaml
 docker-compose*.yml
 Dockerfile

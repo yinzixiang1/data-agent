@@ -50,6 +50,13 @@ from src.retrieval.config import (
 
 logger = logging.getLogger(__name__)
 
+CODEX_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh"}
+)
+CODEX_TIMEOUT_MIN_SECONDS = 10
+CODEX_TIMEOUT_MAX_SECONDS = 110
+CODEX_MAX_CONCURRENCY_LIMIT = 8
+
 
 # ── expand 分区：校验规则 + 读取函数 ──
 
@@ -58,7 +65,6 @@ EXPAND_VALIDATORS = {
     "execute_row_limit": lambda v: isinstance(v, int) and 1 <= v <= 10000,
     "execute_timeout": lambda v: isinstance(v, int) and 1 <= v <= 300,
     "max_fix_retries": lambda v: isinstance(v, int) and 0 <= v <= 10,
-    "intent_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
     "max_tokens": lambda v: isinstance(v, int) and 1 <= v <= 32768,
     "top_p": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
     "llm_temperature": lambda v: isinstance(v, (int, float)) and 0 <= v <= 2,
@@ -68,6 +74,10 @@ EXPAND_VALIDATORS = {
     "recall_top_k": lambda v: isinstance(v, int) and 1 <= v <= 100,
     "fewshot_top_k": lambda v: isinstance(v, int) and 1 <= v <= 50,
     "glossary_score_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
+    "max_context_tables": lambda v: isinstance(v, int) and 1 <= v <= 30,
+    "max_relation_hops": lambda v: isinstance(v, int) and 0 <= v <= 4,
+    "max_columns_per_table": lambda v: isinstance(v, int) and 4 <= v <= 100,
+    "max_explain_scan_rows": lambda v: isinstance(v, int) and v >= 0,
 }
 
 
@@ -118,14 +128,15 @@ class AgentRuntimeConfig:
     agent_id: int | None = None
     agent_name: str = ""
     agent_handle: str = ""
-    engine_type: str = "nl2sql"  # 从 da_agent_source 推导: nl2sql / knowledge / hybrid
-
     # LLM 配置（来自 agent_config.model 分区 + sys_resource provider）
     llm_provider: str = ""
     llm_model: str = "deepseek-chat"
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_temperature: float = 0.0
+    codex_reasoning_effort: str = "low"
+    codex_timeout_seconds: int = 90
+    codex_max_concurrency: int = 1
 
     # Prompt 配置（来自 agent_config.prompt 分区）
     system_prompt: str = ""
@@ -142,6 +153,12 @@ class AgentRuntimeConfig:
     mmr_lambda: float = MMR_LAMBDA
     enable_reranker: bool = ENABLE_RERANKER
     glossary_score_threshold: float = GLOSSARY_SCORE_THRESHOLD
+    max_context_tables: int = 8
+    max_relation_hops: int = 2
+    max_columns_per_table: int = 16
+    enable_domain_routing: bool = True
+    value_exact_match_boost: float = 2.0
+    max_explain_scan_rows: int = 100_000_000
 
     # EXPLAIN 配置
     max_fix_retries: int = 5
@@ -162,6 +179,7 @@ class AgentRuntimeConfig:
     enable_enum_validate: bool = True
     enable_result_check: bool = True
     enable_timeout_fallback: bool = False
+    exchange_rate_injection: bool = True
 
     # 强制召回规则（from retrieval.pinned_rules）
     pinned_rules: list[dict] = field(default_factory=list)
@@ -300,8 +318,6 @@ class AgentConfigLoader:
                 config.agent_name = agent_info.get("name", "")
                 config.agent_handle = agent_info.get("handle", "")
                 config.token = agent_info.get("token", "")
-                config.engine_type = self._derive_engine_type(agent_id)
-
                 agent_configs = self._load_agent_configs(agent_id)
                 agent_refs = self._load_agent_refs(agent_id)
 
@@ -356,34 +372,6 @@ class AgentConfigLoader:
         except Exception as e:
             logger.warning(f"加载 Agent 信息失败: {e}")
             return None
-
-    def _derive_engine_type(self, agent_id: int) -> str:
-        """从 da_agent_source 推导引擎类型。
-
-        source_type=1 (业务库) → nl2sql 能力
-        source_type=2 (知识库) → knowledge 能力
-        两者都有 → hybrid
-        """
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT DISTINCT source_type FROM da_agent_source "
-                        "WHERE agent_id = :id AND status = 1"
-                    ),
-                    {"id": agent_id},
-                ).fetchall()
-            types = {row[0] for row in rows}
-            has_db = 1 in types
-            has_kb = 2 in types
-            if has_db and has_kb:
-                return "hybrid"
-            if has_kb:
-                return "knowledge"
-            return "nl2sql"
-        except Exception as e:
-            logger.warning(f"推导 engine_type 失败: {e}，默认 nl2sql")
-            return "nl2sql"
 
     def _load_agent_configs(self, agent_id: int) -> dict[str, dict]:
         """加载 Agent 分段配置 → {section: config_dict}"""
@@ -534,6 +522,38 @@ class AgentConfigLoader:
                 config.llm_api_key = model_cfg["api_key"]
             if "base_url" in model_cfg:
                 config.llm_base_url = model_cfg["base_url"]
+            if "codex_reasoning_effort" in model_cfg:
+                effort = str(model_cfg["codex_reasoning_effort"]).strip().lower()
+                if effort in CODEX_REASONING_EFFORTS:
+                    config.codex_reasoning_effort = effort
+                else:
+                    logger.warning("codex_reasoning_effort 不合法，使用默认值 low")
+            if "codex_timeout_seconds" in model_cfg:
+                try:
+                    raw_timeout = model_cfg["codex_timeout_seconds"]
+                    if isinstance(raw_timeout, bool):
+                        raise TypeError
+                    timeout_seconds = int(raw_timeout)
+                    if not (
+                        CODEX_TIMEOUT_MIN_SECONDS
+                        <= timeout_seconds
+                        <= CODEX_TIMEOUT_MAX_SECONDS
+                    ):
+                        raise ValueError
+                    config.codex_timeout_seconds = timeout_seconds
+                except (ValueError, TypeError):
+                    logger.warning("codex_timeout_seconds 不合法，使用默认值 90")
+            if "codex_max_concurrency" in model_cfg:
+                try:
+                    raw_concurrency = model_cfg["codex_max_concurrency"]
+                    if isinstance(raw_concurrency, bool):
+                        raise TypeError
+                    max_concurrency = int(raw_concurrency)
+                    if not 1 <= max_concurrency <= CODEX_MAX_CONCURRENCY_LIMIT:
+                        raise ValueError
+                    config.codex_max_concurrency = max_concurrency
+                except (ValueError, TypeError):
+                    logger.warning("codex_max_concurrency 不合法，使用默认值 1")
             if "max_fix_retries" in model_cfg:
                 try:
                     config.max_fix_retries = int(model_cfg["max_fix_retries"])
@@ -605,6 +625,9 @@ class AgentConfigLoader:
         # retrieval 分区
         retrieval_cfg = agent_configs.get("retrieval", {})
         if retrieval_cfg:
+            retrieval_cfg = dict(retrieval_cfg)
+            if "fewshot_k" in retrieval_cfg and "fewshot_top_k" not in retrieval_cfg:
+                retrieval_cfg["fewshot_top_k"] = retrieval_cfg["fewshot_k"]
             int_fields = [
                 "table_search_top_k",
                 "column_search_top_k",
@@ -613,6 +636,9 @@ class AgentConfigLoader:
                 "fewshot_top_k",
                 "rrf_k",
                 "max_fix_retries",
+                "max_context_tables",
+                "max_relation_hops",
+                "max_columns_per_table",
             ]
             for f in int_fields:
                 if f in retrieval_cfg:
@@ -635,6 +661,11 @@ class AgentConfigLoader:
             if "enable_reranker" in retrieval_cfg:
                 v = retrieval_cfg["enable_reranker"]
                 config.enable_reranker = (
+                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
+                )
+            if "enable_domain_routing" in retrieval_cfg:
+                v = retrieval_cfg["enable_domain_routing"]
+                config.enable_domain_routing = (
                     v if isinstance(v, bool) else str(v).lower() in ("true", "1")
                 )
             if "enable_explain" in retrieval_cfg:
@@ -682,6 +713,7 @@ class AgentConfigLoader:
                 "enable_enum_validate",
                 "enable_result_check",
                 "enable_timeout_fallback",
+                "exchange_rate_injection",
             ):
                 if bool_key in flow_cfg:
                     v = flow_cfg[bool_key]
@@ -743,10 +775,18 @@ class AgentConfigLoader:
             if key in explicit_keys:
                 logger.debug(f"expand 配置 {key}={value} 被显式字段覆盖，已跳过")
                 continue
-            validated = get_expand(expand_cfg, key, default=None)
-            if validated is None:
-                continue
             if hasattr(config, key):
+                current_value = getattr(config, key)
+                value_type = type(current_value)
+                cast = value_type if value_type in (int, float, bool) else None
+                validated = get_expand(
+                    expand_cfg,
+                    key,
+                    default=None,
+                    cast=cast,
+                )
+                if validated is None:
+                    continue
                 setattr(config, key, validated)
             else:
                 logger.warning(
@@ -855,7 +895,7 @@ class AgentConfigLoader:
                 "sparse_weight": 0.2,
                 "recall_limit": 10,
                 "rerank": True,
-                "rerank_top_n": 3,
+                "rerank_top_n": 10,
                 "final_top_n": 3,
             },
             "glossary": {
@@ -886,7 +926,7 @@ class AgentConfigLoader:
                 f"    ID:       {config.agent_id}",
                 f"    Name:     {config.agent_name}",
                 f"    Handle:   {config.agent_handle}",
-                f"    Engine:   {config.engine_type} (derived from da_agent_source)",
+                "    Engine:   nl2sql",
             ]
 
         lines += [
@@ -897,6 +937,9 @@ class AgentConfigLoader:
             f"    Base URL:    {config.llm_base_url or '(未配置)'}",
             f"    API Key:     {'***' + config.llm_api_key[-4:] if config.llm_api_key else '(未配置)'}",
             f"    Temperature: {config.llm_temperature}",
+            f"    Codex Effort: {config.codex_reasoning_effort}",
+            f"    Codex Timeout: {config.codex_timeout_seconds}s",
+            f"    Codex Concurrency: {config.codex_max_concurrency}",
             "",
             "  [Prompt]",
             f"    System Prompt: {config.system_prompt[:60]}..."

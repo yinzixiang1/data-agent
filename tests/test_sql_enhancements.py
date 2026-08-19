@@ -125,6 +125,124 @@ class TestDatabaseAccessGuard:
         assert expected_message in reason
 
 
+class TestCurrencyConversionGuard:
+    INTENT = {
+        "currency_conversion": True,
+        "requires_exchange_rate": True,
+        "target_currency": "USD",
+    }
+
+    def test_accepts_complete_daily_mid_conversion(self):
+        sql = """
+        SELECT DATE(t.create_time) AS day,
+               SUM(
+                 CASE
+                   WHEN t.currency = 'USD' THEN t.amount
+                   ELSE t.amount * r.mid
+                 END
+               ) AS usd_amount,
+               SUM(
+                 CASE
+                   WHEN t.currency <> 'USD' AND r.mid IS NULL THEN 1
+                   ELSE 0
+                 END
+               ) AS missing_rate_count
+        FROM dwd_bi_banking.pmt_finance_transactions AS t
+        LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = t.currency
+         AND r.target_currency = 'USD'
+         AND DATE(r.sync_time) = DATE(t.create_time)
+        GROUP BY DATE(t.create_time)
+        """
+
+        valid, error, detail = SQLValidator.validate_currency_conversion(
+            sql,
+            self.INTENT,
+        )
+
+        assert valid is True, error
+        assert detail["target_currency"] == "USD"
+        assert detail["rate_fallback_found"] is False
+        assert detail["missing_rate_indicator_found"] is True
+        assert detail["issues"] == []
+
+    def test_rejects_silent_unit_rate_fallback(self):
+        sql = """
+        SELECT SUM(
+                 CASE
+                   WHEN t.currency = 'USD' THEN t.amount
+                   ELSE t.amount * COALESCE(r.mid, 1)
+                 END
+               ) AS usd_amount,
+               SUM(
+                 CASE
+                   WHEN t.currency <> 'USD' AND r.mid IS NULL THEN 1
+                   ELSE 0
+                 END
+               ) AS missing_rate_count
+        FROM dwd_bi_banking.pmt_finance_transactions AS t
+        LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = t.currency
+         AND r.target_currency = 'USD'
+         AND DATE(r.sync_time) = DATE(t.create_time)
+        """
+
+        valid, error, detail = SQLValidator.validate_currency_conversion(
+            sql,
+            self.INTENT,
+        )
+
+        assert valid is False
+        assert "COALESCE/IFNULL" in error
+        assert detail["rate_fallback_found"] is True
+
+    def test_rejects_filtering_only_target_currency(self):
+        sql = """
+        SELECT SUM(CASE WHEN currency = 'USD' THEN amount ELSE 0 END) AS usd_amount
+        FROM dwd_bi_banking.pmt_finance_transactions
+        """
+
+        valid, error, detail = SQLValidator.validate_currency_conversion(
+            sql,
+            self.INTENT,
+        )
+
+        assert valid is False
+        assert "warehouse_sys.sys_exchange_rate" in error
+        assert "原金额 * mid" in error
+        assert detail["issues"]
+
+    def test_rejects_inner_join_that_drops_native_target_currency_rows(self):
+        sql = """
+        SELECT SUM(
+                 CASE
+                   WHEN t.currency = 'USD' THEN t.amount
+                   ELSE t.amount * r.mid
+                 END
+               ) AS usd_amount
+        FROM dwd_bi_banking.pmt_finance_transactions AS t
+        JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = t.currency
+         AND r.target_currency = 'USD'
+         AND DATE(r.sync_time) = DATE(t.create_time)
+        """
+
+        valid, error, _ = SQLValidator.validate_currency_conversion(sql, self.INTENT)
+
+        assert valid is False
+        assert "LEFT JOIN" in error
+
+    def test_skips_non_conversion_queries(self):
+        valid, error, detail = SQLValidator.validate_currency_conversion(
+            "SELECT 1",
+            {"currency_conversion": False},
+        )
+
+        assert valid is True
+        assert error == ""
+        assert detail == {"required": False}
+
+
 class TestMilvusFilterGuard:
     def test_escapes_values_and_supports_scalars(self):
         expression = build_metadata_filter(
@@ -625,10 +743,6 @@ class TestGetExpand:
         cfg = {"custom_flag": True}
         assert get_expand(cfg, "custom_flag", default=False, cast=bool) is True
 
-    def test_float_cast(self):
-        cfg = {"intent_threshold": "0.8"}
-        assert get_expand(cfg, "intent_threshold", default=0.7, cast=float) == 0.8
-
 
 # ════════════════════════════════════════════
 # _apply_expand 优先级
@@ -675,6 +789,17 @@ class TestApplyExpandPriority:
         AgentConfigLoader._apply_expand(config, expand_cfg, set())
         assert not hasattr(config, "totally_unknown_key")
 
+    def test_expand_casts_exchange_rate_toggle(self):
+        config = AgentRuntimeConfig()
+
+        AgentConfigLoader._apply_expand(
+            config,
+            {"exchange_rate_injection": "false"},
+            set(),
+        )
+
+        assert config.exchange_rate_injection is False
+
 
 # ════════════════════════════════════════════
 # AgentRuntimeConfig 新字段默认值
@@ -689,6 +814,7 @@ class TestAgentRuntimeConfigDefaults:
         assert config.enable_enum_validate is True
         assert config.enable_result_check is True
         assert config.enable_timeout_fallback is False
+        assert config.exchange_rate_injection is True
 
 
 if __name__ == "__main__":

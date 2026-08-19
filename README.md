@@ -19,15 +19,15 @@
   ├─❸ Schema 混合检索 (hybrid_searcher)
   │    Qwen3-Embedding 编码 → Dense + BM25 双路召回
   │    ├── 表级: Milvus hybrid_search → Weighted/RRF 融合
-  │    ├── 列级: hybrid_search → 反推表 (+0.01)
-  │    ├── 枚举反哺: 枚举命中的表加分 (+0.02)
+  │    ├── 列级: hybrid_search → 归一化后反推表
+  │    ├── 枚举反哺: 枚举命中按相对分数加权
   │    └── 关联补全: top 表的 relations 关联表加分 (×0.1)
   │
   ├─❹ Reranker 精排 (reranker)
   │    交叉编码器从 top N → top K
   │    + 被 Reranker 淘汰但与 top 表有关联的表补回
   │
-  ├─❺ Schema Linking 值匹配 (value_indexer)
+  ├─❺ Schema Linking 值匹配 (value_indexer，精确命中表保底)
   │    jieba 实体抽取 → BM25 枚举值搜索
   │    "CIMB" → pmt_account.bank_name = 'CIMB'
   │
@@ -339,3 +339,37 @@ sys_config（全局默认）            ← 管理后台「系统配置」
 ```
 
 admin-api 通过 `DATA_AGENT_BASE_URL=http://localhost:9090` 连接本服务。
+
+## Codex 订阅模式
+
+内部少量用户可把 Agent 的 `model` 分区切到 Codex，同一台 data-agen
+实例复用一次 ChatGPT 订阅登录。Codex 不使用 `api_key` 或 `base_url`，也不会
+在 DeepSeek/OpenAI 路径失败时自动回退。
+
+```json
+{
+  "provider": "codex",
+  "model": "从状态接口返回的模型 ID",
+  "codex_reasoning_effort": "low",
+  "codex_timeout_seconds": 90,
+  "codex_max_concurrency": 1
+}
+```
+
+首次部署或订阅失效时，在服务器上执行一次设备登录：
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm data-agen codex login --device-auth
+```
+
+认证文件只保存在 `codex-home` 命名卷中，不进入镜像或 Agent 配置。Agent 绑定
+Codex 后，可通过管理令牌检查实时状态和当前账号可用的模型列表：
+
+```bash
+curl -H 'Authorization: Bearer <ADMIN_TOKEN>' \
+  http://127.0.0.1:9090/admin/codex/status
+```
+
+每个查询使用独立的临时 Codex 会话、空工作目录、只读沙盒且禁止工具与审批。
+90 秒是包含排队和多轮 SQL 修复在内的整条查询累计预算；默认只允许一条 Codex
+查询管道并发执行。修改 Agent 配置后调用 `/admin/config-reload` 即可切换。

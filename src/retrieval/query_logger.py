@@ -34,6 +34,8 @@ from src.retrieval.config import (
 
 logger = logging.getLogger(__name__)
 
+_LARK_RESPONSE_SNAPSHOT_KEY = "_lumen_lark_response_v1"
+
 
 class QueryLogger:
     """将查询结果写入 MySQL sys_query_log 表。"""
@@ -47,6 +49,83 @@ class QueryLogger:
         self.engine = create_engine(
             mysql_connection_string, pool_size=2, pool_recycle=3600
         )
+
+    @staticmethod
+    def lark_response_snapshot(response: dict) -> dict:
+        """Wrap a JSON-safe response so a retried Lark event can replay it."""
+        replay_fields = {
+            "session_id",
+            "question",
+            "is_success",
+            "retry_count",
+            "execution_time_ms",
+            "error",
+            "context_summary",
+            "summary",
+            "query_result",
+            "execution_error",
+            "needs_clarification",
+            "clarification",
+        }
+        snapshot = {
+            key: value for key, value in response.items() if key in replay_fields
+        }
+        query_result = snapshot.get("query_result")
+        if isinstance(query_result, dict):
+            columns = list(query_result.get("columns") or [])[:6]
+            rows = []
+            for row in list(query_result.get("rows") or [])[:8]:
+                rows.append(list(row)[:6] if isinstance(row, (list, tuple)) else [])
+            snapshot["query_result"] = {
+                "columns": columns,
+                "rows": rows,
+                "row_count": query_result.get("row_count", len(rows)),
+                "truncated": bool(query_result.get("truncated")),
+            }
+        return {_LARK_RESPONSE_SNAPSHOT_KEY: snapshot}
+
+    def get_lark_response(
+        self,
+        *,
+        trace_id: str,
+        user_id: str,
+        agent_id: int,
+        user_query: str,
+    ) -> tuple[int, dict] | None:
+        """Load the completed response for the same authenticated Lark request."""
+        if not trace_id or not user_id or agent_id <= 0 or not user_query:
+            return None
+        try:
+            with self.engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        text(
+                            "SELECT id, execution_result FROM sys_query_log "
+                            "WHERE caller = 'lark' AND trace_id = :trace_id "
+                            "AND user_id = :user_id AND agent_id = :agent_id "
+                            "AND user_query = :user_query "
+                            "ORDER BY id DESC LIMIT 1"
+                        ),
+                        {
+                            "trace_id": trace_id,
+                            "user_id": user_id,
+                            "agent_id": agent_id,
+                            "user_query": user_query,
+                        },
+                    )
+                    .mappings()
+                    .first()
+                )
+            if row is None:
+                return None
+            payload = json.loads(row["execution_result"] or "{}")
+            response = payload.get(_LARK_RESPONSE_SNAPSHOT_KEY)
+            if not isinstance(response, dict):
+                return None
+            return int(row["id"]), response
+        except Exception as exc:
+            logger.warning("读取 Lark 幂等查询结果失败: %s", exc)
+            return None
 
     def log(
         self,
@@ -94,12 +173,12 @@ class QueryLogger:
                         "INSERT INTO sys_query_log "
                         "(session_id, user_query, intent, matched_tables, matched_terms, "
                         "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
-                        "user_feedback, feedback_score, feedback_comment, "
+                        "user_feedback, feedback_score, feedback_reason, feedback_comment, "
                         "agent_id, scenario, business, caller, user_id, user_name, trace_id, "
                         "matched_fewshot, enum_hits, trace_detail) "
                         "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
                         ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
-                        "'', 0, '', "
+                        "'', 0, '', '', "
                         ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, "
                         ":matched_fewshot, :enum_hits, :trace_detail)"
                     ),

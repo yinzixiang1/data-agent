@@ -1,10 +1,10 @@
 """
-Few-shot 示例检索 — Dense 检索 + 表重叠度加权 + MMR 多样性选择。
+Few-shot 示例检索 — 混合召回 + 多特征排序 + MMR 多样性选择。
 
 选择流程:
-    1. Dense 语义检索: 召回语义最接近的候选示例池
-    2. 表重叠加权: 候选示例涉及的表和当前检索命中的表有交集时加分 (+0.1/表)
-    3. MMR 多样性选择: 在相关性和多样性之间平衡，避免选出高度相似的示例
+    1. Dense + BM25 混合召回候选池
+    2. 综合问题语义、表集合、查询结构、示例质量和方言一致性排序
+    3. MMR 多样性选择，避免重复示例占满上下文
 
 使用示例::
 
@@ -21,6 +21,7 @@ Few-shot 示例检索 — Dense 检索 + 表重叠度加权 + MMR 多样性选�
 """
 
 import logging
+import re
 
 import numpy as np
 from pymilvus import DataType
@@ -29,6 +30,7 @@ from src.retrieval.config import FEWSHOT_TOP_K, MMR_LAMBDA
 from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.embedding import Qwen3Embedding
+from src.retrieval.ranker_strategy import CollectionSearchParams
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,9 @@ class FewShotSelector:
         tables: list[str] | None = None,
         top_k: int = FEWSHOT_TOP_K,
         metadata_filter: dict | None = None,
+        biz_line: str | None = None,
+        search_params: CollectionSearchParams | None = None,
+        mmr_lambda: float = MMR_LAMBDA,
     ) -> list[dict]:
         """
         选择最相关且多样化的 Few-shot 示例。
@@ -121,37 +126,86 @@ class FewShotSelector:
         if not self.examples:
             return []
 
-        filter_expr = build_metadata_filter(metadata_filter=metadata_filter)
+        effective_filter = dict(metadata_filter or {})
+        if biz_line:
+            effective_filter.setdefault("business", biz_line)
+        filter_expr = build_metadata_filter(metadata_filter=effective_filter or None)
 
-        # Dense 检索候选池
+        # 按配置执行混合召回；无配置时兼容旧的 Dense-only 行为。
         q_dense = self.embedding.encode_query(query, collection_type="fewshot")
-
-        candidate_k = min(len(self.examples), top_k * 3)
+        recall_limit = search_params.recall_limit if search_params else top_k * 5
+        candidate_k = min(len(self.examples), max(top_k * 5, recall_limit))
 
         if self.milvus_index and self.milvus_index.count > 0:
-            results = self.milvus_index.dense_search(
-                q_dense, top_k=candidate_k, filter_expr=filter_expr
-            )
+            if search_params and search_params.ranker is not None:
+                results = self.milvus_index.hybrid_search(
+                    q_dense,
+                    query,
+                    ranker=search_params.ranker,
+                    recall_k=candidate_k,
+                    output_fields=["involved_tables", "difficulty", "metadata"],
+                    filter_expr=filter_expr,
+                )
+            else:
+                results = self.milvus_index.dense_search(
+                    q_dense, top_k=candidate_k, filter_expr=filter_expr
+                )
             n = len(self.examples)
             candidate_indices = [doc_id for doc_id, score, _ in results if doc_id < n]
+            if search_params and search_params.rerank:
+                rerank_limit = max(top_k, search_params.rerank_top_n)
+                candidate_indices = candidate_indices[:rerank_limit]
             similarities = np.zeros(n)
+            valid_scores = [float(score) for doc_id, score, _ in results if doc_id < n]
+            min_score = min(valid_scores, default=0.0)
+            max_score = max(valid_scores, default=1.0)
             for doc_id, score, _ in results:
                 if doc_id < n:
-                    similarities[doc_id] = score
+                    denominator = max_score - min_score
+                    similarities[doc_id] = (
+                        (float(score) - min_score) / denominator
+                        if denominator > 1e-9
+                        else 1.0
+                    )
         else:
             return []
 
-        # 表重叠度加权
-        if tables:
-            query_tables = set(tables)
+        if search_params is None or search_params.rerank:
+            query_tables = self._normalized_table_set(tables or [])
+            query_signature = self._question_signature(query)
             for idx in candidate_indices:
-                if idx < len(self.example_table_sets):
-                    overlap = len(query_tables & self.example_table_sets[idx])
-                    if overlap > 0:
-                        similarities[idx] += 0.1 * overlap
+                example = self.examples[idx]
+                example_tables = self._normalized_table_set(example.get("tables", []))
+                table_union = query_tables | example_tables
+                table_score = (
+                    len(query_tables & example_tables) / len(table_union)
+                    if table_union
+                    else 0.0
+                )
+                example_signature = self._sql_signature(example.get("sql", ""))
+                structure_union = query_signature | example_signature
+                structure_score = (
+                    len(query_signature & example_signature) / len(structure_union)
+                    if structure_union
+                    else 0.0
+                )
+                metadata = example.get("metadata") or {}
+                dialect = str(metadata.get("dialect") or "doris").casefold()
+                similarities[idx] = (
+                    0.40 * similarities[idx]
+                    + 0.25 * table_score
+                    + 0.20 * structure_score
+                    + 0.10 * self._quality_score(example, metadata)
+                    + 0.05 * (1.0 if dialect in {"doris", "mysql"} else 0.0)
+                )
 
         # MMR 多样性选择
-        selected = self._mmr_select(candidate_indices, similarities, top_k)
+        effective_top_k = top_k
+        if search_params and isinstance(search_params.final_top_n, int):
+            effective_top_k = min(effective_top_k, search_params.final_top_n)
+        selected = self._mmr_select(
+            candidate_indices, similarities, effective_top_k, lambda_param=mmr_lambda
+        )
         result = []
         for i in selected:
             ex = self.examples[i].copy()
@@ -164,6 +218,58 @@ class FewShotSelector:
             f"questions={[ex['question'][:30] for ex in result]}"
         )
         return result
+
+    @staticmethod
+    def _normalized_table_set(tables: list[str]) -> set[str]:
+        normalized: set[str] = set()
+        for table in tables:
+            value = str(table).replace("`", "").casefold().strip()
+            if value:
+                normalized.update((value, value.rsplit(".", 1)[-1]))
+        return normalized
+
+    @staticmethod
+    def _question_signature(question: str) -> set[str]:
+        signature: set[str] = set()
+        rules = {
+            "aggregate": r"多少|数量|总计|合计|总额|平均|均值|汇总|统计|count|sum|avg",
+            "ranking": r"排名|排行|top\s*\d*|最高|最低|最多|最少",
+            "trend": r"趋势|按(?:日|天|周|月|季|年)|每天|每月|同比|环比",
+            "detail": r"明细|列表|哪些|逐笔|每一笔|详情",
+            "distinct": r"去重|不同|唯一|distinct",
+        }
+        for name, pattern in rules.items():
+            if re.search(pattern, question, re.IGNORECASE):
+                signature.add(name)
+        return signature
+
+    @staticmethod
+    def _sql_signature(sql: str) -> set[str]:
+        signature: set[str] = set()
+        rules = {
+            "aggregate": r"\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(",
+            "ranking": r"\bORDER\s+BY\b.*\bLIMIT\b|\bROW_NUMBER\s*\(",
+            "trend": r"\b(?:DATE_FORMAT|DATE_TRUNC)\s*\(|\bGROUP\s+BY\b.*(?:date|time|month|day)",
+            "distinct": r"\bDISTINCT\b",
+            "join": r"\bJOIN\b",
+        }
+        for name, pattern in rules.items():
+            if re.search(pattern, sql, re.IGNORECASE | re.DOTALL):
+                signature.add(name)
+        if "aggregate" not in signature:
+            signature.add("detail")
+        return signature
+
+    @staticmethod
+    def _quality_score(example: dict, metadata: dict) -> float:
+        raw_score = example.get("quality_score", metadata.get("quality_score", 1.0))
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            return 1.0
+        if score > 1.0:
+            score /= 100.0
+        return max(0.0, min(score, 1.0))
 
     def _mmr_select(
         self,
