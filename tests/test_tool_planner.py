@@ -11,6 +11,7 @@ from src.retrieval.tool_planner import (
 TOOLS = [
     {
         "name": "export_result",
+        "display_name": "Download data",
         "description": "Export the current query result.",
         "requires_query_result": True,
         "input_schema": {
@@ -66,6 +67,7 @@ def test_planning_messages_only_use_registered_tool_evidence() -> None:
 
     assert [message["role"] for message in messages] == ["system", "user"]
     assert "export_result" in messages[1]["content"]
+    assert "Download data" in messages[1]["content"]
     assert "Export the current query result." in messages[1]["content"]
     assert "requires_query_result" not in messages[1]["content"]
 

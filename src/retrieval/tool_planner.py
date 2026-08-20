@@ -12,7 +12,9 @@ _SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
 _TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果动作规划器。
 只判断本轮用户是否要求使用已注册的结果工具，不生成 SQL，也不补充业务语义。
-只能依据用户请求和提供的工具描述做决定；不得调用未提供的工具。
+只能依据用户请求和提供的工具名称、显示名称及描述做决定；不得调用未提供的工具。
+如果请求中的结果呈现、交付、保存或传递意图与某项工具的能力语义匹配，必须选择该工具；
+请求同时包含数据查询不影响工具选择，也不要求用户逐字说出工具名称。
 返回且只返回一个 JSON 对象，格式为 {"calls":[{"name":"工具名","arguments":{}}]}。
 没有符合条件的动作时返回 {"calls":[]}。"""
 
@@ -54,7 +56,10 @@ def tool_planning_messages(
     decision_rule = (
         "必须选择至少一个最符合请求的工具。"
         if choice == "required"
-        else "只有用户明确要求或语义强烈指向某项结果动作时才选择；普通查询返回空数组。"
+        else (
+            "用户的结果动作意图与任一工具能力匹配时必须选择；"
+            "只有完全没有结果动作意图时才返回空数组。"
+        )
     )
     request = {
         "user_request": question,
@@ -114,6 +119,7 @@ def _public_tool_contracts(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         contracts.append(
             {
                 "name": name,
+                "display_name": str(tool.get("display_name") or name).strip(),
                 "description": str(tool.get("description") or "").strip(),
                 "input_schema": tool.get("input_schema")
                 or {"type": "object", "properties": {}},
