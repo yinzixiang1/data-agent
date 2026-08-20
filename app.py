@@ -1875,7 +1875,7 @@ def _run_query_impl(
         planner_attempts: list[str] = []
         try:
             planner_messages = tool_planning_messages(
-                question,
+                effective_question,
                 available_tools,
                 choice=config.tool_choice,
             )

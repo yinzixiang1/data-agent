@@ -17,6 +17,7 @@ _TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果交付方式分类器。
 请求同时包含数据查询不影响动作选择，也不要求用户逐字说出动作名称。
 每个 arguments 必须满足对应 input_schema：不得遗漏 required 字段，枚举值必须来自 enum，
 additionalProperties 为 false 时不得增加未声明字段。
+input_schema 中的可选参数在用户请求存在明确依据时应一并填写；没有依据时不得猜测。
 返回且只返回一个 JSON 对象，格式为 {"actions":[{"name":"动作名称","arguments":{}}]}。
 没有符合条件的动作时返回 {"actions":[]}。"""
 
