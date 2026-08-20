@@ -10,13 +10,13 @@ from typing import Any
 _TOOL_CALLS_PATTERN = re.compile(r"(?:^|\n)TOOL_CALLS\s*:\s*", re.IGNORECASE)
 _SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
-_TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果动作规划器。
-只判断本轮用户是否要求使用已注册的结果工具，不生成 SQL，也不补充业务语义。
-只能依据用户请求和提供的工具名称、显示名称及描述做决定；不得调用未提供的工具。
-如果请求中的结果呈现、交付、保存或传递意图与某项工具的能力语义匹配，必须选择该工具；
-请求同时包含数据查询不影响工具选择，也不要求用户逐字说出工具名称。
-返回且只返回一个 JSON 对象，格式为 {"calls":[{"name":"工具名","arguments":{}}]}。
-没有符合条件的动作时返回 {"calls":[]}。"""
+_TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果交付方式分类器。
+只做声明式分类，不执行任何操作，不生成 SQL，也不补充业务语义。
+只能依据用户请求和提供的动作名称、显示名称及描述做决定。
+如果请求中的结果呈现、交付、保存或传递意图与某项动作的能力语义匹配，必须选择该动作；
+请求同时包含数据查询不影响动作选择，也不要求用户逐字说出动作名称。
+返回且只返回一个 JSON 对象，格式为 {"actions":[{"name":"动作名称","arguments":{}}]}。
+没有符合条件的动作时返回 {"actions":[]}。"""
 
 
 def tool_instructions(
@@ -63,7 +63,7 @@ def tool_planning_messages(
     )
     request = {
         "user_request": question,
-        "available_tools": public_tools,
+        "available_actions": public_tools,
         "selection_rule": decision_rule,
     }
     return [
@@ -83,9 +83,12 @@ def extract_planned_tool_calls(
 ) -> list[dict[str, Any]]:
     """Parse and validate the dedicated planner's JSON response."""
     payload = _decode_planner_payload(answer)
-    if not isinstance(payload, dict) or not isinstance(payload.get("calls"), list):
+    if not isinstance(payload, dict):
         return []
-    return _validate_tool_calls(payload["calls"], tools, max_calls=max_calls)
+    actions = payload.get("actions")
+    if not isinstance(actions, list):
+        return []
+    return _validate_tool_calls(actions, tools, max_calls=max_calls)
 
 
 def extract_tool_calls(

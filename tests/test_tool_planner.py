@@ -74,7 +74,7 @@ def test_planning_messages_only_use_registered_tool_evidence() -> None:
 
 def test_extract_planned_tool_calls_accepts_validated_json_object() -> None:
     answer = (
-        '```json\n{"calls":[{"name":"export_result","arguments":'
+        '```json\n{"actions":[{"name":"export_result","arguments":'
         '{"format":"xlsx","file_name":"result"}}]}\n```'
     )
 
@@ -89,7 +89,7 @@ def test_extract_planned_tool_calls_accepts_validated_json_object() -> None:
 
 def test_extract_planned_tool_calls_rejects_unregistered_or_invalid_calls() -> None:
     answer = (
-        '{"calls":[{"name":"unknown","arguments":{}},'
+        '{"actions":[{"name":"unknown","arguments":{}},'
         '{"name":"export_result","arguments":{"format":"pdf"}}]}'
     )
 
