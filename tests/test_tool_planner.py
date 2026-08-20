@@ -1,6 +1,11 @@
 """Structured result tool planning tests."""
 
-from src.retrieval.tool_planner import extract_tool_calls, tool_instructions
+from src.retrieval.tool_planner import (
+    extract_planned_tool_calls,
+    extract_tool_calls,
+    tool_instructions,
+    tool_planning_messages,
+)
 
 
 TOOLS = [
@@ -54,3 +59,36 @@ def test_extract_tool_calls_rejects_unknown_or_invalid_calls() -> None:
     )
 
     assert extract_tool_calls(answer, TOOLS) == []
+
+
+def test_planning_messages_only_use_registered_tool_evidence() -> None:
+    messages = tool_planning_messages("Please provide the result as a file", TOOLS)
+
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert "export_result" in messages[1]["content"]
+    assert "Export the current query result." in messages[1]["content"]
+    assert "requires_query_result" not in messages[1]["content"]
+
+
+def test_extract_planned_tool_calls_accepts_validated_json_object() -> None:
+    answer = (
+        '```json\n{"calls":[{"name":"export_result","arguments":'
+        '{"format":"xlsx","file_name":"result"}}]}\n```'
+    )
+
+    assert extract_planned_tool_calls(answer, TOOLS) == [
+        {
+            "name": "export_result",
+            "arguments": {"format": "xlsx", "file_name": "result"},
+            "requires_query_result": True,
+        }
+    ]
+
+
+def test_extract_planned_tool_calls_rejects_unregistered_or_invalid_calls() -> None:
+    answer = (
+        '{"calls":[{"name":"unknown","arguments":{}},'
+        '{"name":"export_result","arguments":{"format":"pdf"}}]}'
+    )
+
+    assert extract_planned_tool_calls(answer, TOOLS) == []

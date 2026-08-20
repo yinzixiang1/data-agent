@@ -72,7 +72,10 @@ from src.retrieval.query_logger import QueryLogger
 from src.retrieval.retriever import SchemaRetriever
 from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
-from src.retrieval.tool_planner import extract_tool_calls, tool_instructions
+from src.retrieval.tool_planner import (
+    extract_planned_tool_calls,
+    tool_planning_messages,
+)
 
 
 # gRPC 后台线程可能阻止默认信号处理完成，服务进程必须直接退出。
@@ -1166,8 +1169,6 @@ def _run_query_impl(
         prompt_text = re.sub(
             r"【输出要求】.*", param_mode_rules, prompt_text, flags=re.DOTALL
         )
-    prompt_text += tool_instructions(available_tools, choice=config.tool_choice)
-
     # 构建对话（注入当前日期，避免 LLM 因知识截止而误判年份）
     current_date = _datetime.now().astimezone().date().isoformat()
     _system_content = f"{config.system_prompt}\n\n当前日期: {current_date}"
@@ -1272,11 +1273,7 @@ def _run_query_impl(
         clarify_msg = clarification["question"] if clarification else None
         extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
 
-    tool_calls = extract_tool_calls(
-        answer,
-        available_tools,
-        max_calls=config.tool_max_calls,
-    )
+    tool_calls: list[dict] = []
 
     if not extracted_sql and not clarify_msg:
         is_success = False
@@ -1868,6 +1865,55 @@ def _run_query_impl(
             error_msg = (
                 currency_error or schema_error or projection_error or entity_error
             )
+
+    if final_sql and is_success and available_tools and config.tool_choice != "none":
+        t0 = _time.monotonic()
+        planner_answer = ""
+        planner_error = ""
+        planner_usage = None
+        try:
+            planner_answer, planner_usage = _invoke(
+                tool_planning_messages(
+                    question,
+                    available_tools,
+                    choice=config.tool_choice,
+                )
+            )
+            tool_calls = extract_planned_tool_calls(
+                planner_answer,
+                available_tools,
+                max_calls=config.tool_max_calls,
+            )
+        except Exception as exc:
+            planner_error = type(exc).__name__
+            logger.warning(
+                "result tool planning failed",
+                extra={
+                    "agent_id": config.agent_id,
+                    "model": config.llm_model,
+                    "tool_count": len(available_tools),
+                    "error_type": planner_error,
+                },
+            )
+        trace_steps.append(
+            {
+                "step": "tool_planning",
+                "duration_ms": _elapsed_ms(t0),
+                "model": config.llm_model,
+                "available_tools": [
+                    str(tool.get("name") or "") for tool in available_tools
+                ],
+                "selected_tools": [call["name"] for call in tool_calls],
+                "output": planner_answer,
+                "error": planner_error,
+                "input_tokens": planner_usage.get("input_tokens")
+                if planner_usage
+                else None,
+                "output_tokens": planner_usage.get("output_tokens")
+                if planner_usage
+                else None,
+            }
+        )
 
     # ── param_mode: 提取 script + placeholder，跳过执行 ──
     script_text = ""

@@ -10,6 +10,12 @@ from typing import Any
 _TOOL_CALLS_PATTERN = re.compile(r"(?:^|\n)TOOL_CALLS\s*:\s*", re.IGNORECASE)
 _SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
+_TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果动作规划器。
+只判断本轮用户是否要求使用已注册的结果工具，不生成 SQL，也不补充业务语义。
+只能依据用户请求和提供的工具描述做决定；不得调用未提供的工具。
+返回且只返回一个 JSON 对象，格式为 {"calls":[{"name":"工具名","arguments":{}}]}。
+没有符合条件的动作时返回 {"calls":[]}。"""
+
 
 def tool_instructions(
     tools: list[dict[str, Any]],
@@ -17,22 +23,7 @@ def tool_instructions(
     choice: str = "auto",
 ) -> str:
     """Return a compact prompt section containing only callable tool evidence."""
-    public_tools = []
-    for tool in tools:
-        name = str(tool.get("name") or "").strip()
-        if not name:
-            continue
-        public_tools.append(
-            {
-                "name": name,
-                "description": str(tool.get("description") or "").strip(),
-                "input_schema": tool.get("input_schema")
-                or {
-                    "type": "object",
-                    "properties": {},
-                },
-            }
-        )
+    public_tools = _public_tool_contracts(tools)
     if not public_tools:
         return ""
     rendered = json.dumps(public_tools, ensure_ascii=False, separators=(",", ":"))
@@ -50,6 +41,46 @@ def tool_instructions(
         "arguments 必须遵守对应 input_schema；不得调用未列出的工具。"
         f"{ordinary_rule}"
     )
+
+
+def tool_planning_messages(
+    question: str,
+    tools: list[dict[str, Any]],
+    *,
+    choice: str = "auto",
+) -> list[dict[str, str]]:
+    """Build a focused, business-agnostic result-action planning request."""
+    public_tools = _public_tool_contracts(tools)
+    decision_rule = (
+        "必须选择至少一个最符合请求的工具。"
+        if choice == "required"
+        else "只有用户明确要求或语义强烈指向某项结果动作时才选择；普通查询返回空数组。"
+    )
+    request = {
+        "user_request": question,
+        "available_tools": public_tools,
+        "selection_rule": decision_rule,
+    }
+    return [
+        {"role": "system", "content": _TOOL_PLANNER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+        },
+    ]
+
+
+def extract_planned_tool_calls(
+    answer: str,
+    tools: list[dict[str, Any]],
+    *,
+    max_calls: int = 5,
+) -> list[dict[str, Any]]:
+    """Parse and validate the dedicated planner's JSON response."""
+    payload = _decode_planner_payload(answer)
+    if not isinstance(payload, dict) or not isinstance(payload.get("calls"), list):
+        return []
+    return _validate_tool_calls(payload["calls"], tools, max_calls=max_calls)
 
 
 def extract_tool_calls(
@@ -71,6 +102,50 @@ def extract_tool_calls(
     if not isinstance(payload, list):
         return []
 
+    return _validate_tool_calls(payload, tools, max_calls=max_calls)
+
+
+def _public_tool_contracts(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contracts = []
+    for tool in tools:
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            continue
+        contracts.append(
+            {
+                "name": name,
+                "description": str(tool.get("description") or "").strip(),
+                "input_schema": tool.get("input_schema")
+                or {"type": "object", "properties": {}},
+            }
+        )
+    return contracts
+
+
+def _decode_planner_payload(answer: str) -> Any:
+    rendered = (answer or "").strip()
+    if rendered.startswith("```"):
+        first_line, separator, remainder = rendered.partition("\n")
+        if separator and first_line.lower() in {"```", "```json"}:
+            rendered = remainder
+        if rendered.rstrip().endswith("```"):
+            rendered = rendered.rstrip()[:-3].rstrip()
+    object_start = rendered.find("{")
+    if object_start < 0:
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(rendered[object_start:])
+        return payload
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _validate_tool_calls(
+    payload: list[Any],
+    tools: list[dict[str, Any]],
+    *,
+    max_calls: int,
+) -> list[dict[str, Any]]:
     registry = {
         str(tool.get("name") or "").strip(): tool
         for tool in tools
