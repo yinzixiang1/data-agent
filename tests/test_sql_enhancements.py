@@ -14,21 +14,22 @@ SQL 纠错增强 — 单元测试。
 
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-from src.retrieval.sql_validator import SQLValidator
-from src.retrieval.agent_config import get_expand, AgentRuntimeConfig, AgentConfigLoader
+
+from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig, get_expand
 from src.retrieval.collection_names import agent_collection_name
 from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.query_cache import QueryCache
 from src.retrieval.schema_loader import (
     AgentDatasourceNotConfiguredError,
-    SchemaLoadIncompleteError,
     SchemaLoader,
+    SchemaLoadIncompleteError,
 )
-
+from src.retrieval.sql_validator import SQLValidator
 
 # ════════════════════════════════════════════
 # security guards
@@ -40,6 +41,42 @@ class _NoConnectionEngine:
         raise AssertionError(
             "unsafe SQL must be rejected before opening a database connection"
         )
+
+
+class _ExplainResult:
+    def fetchall(self):
+        return [("PLAN",)]
+
+
+class _ExplainConnection:
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, statement):
+        sql = str(statement)
+        self.engine.statements.append(sql)
+        if len(self.engine.statements) <= self.engine.reset_count:
+            raise ConnectionResetError("connection reset by peer")
+        return _ExplainResult()
+
+
+class _ResettingEngine:
+    def __init__(self, reset_count=1):
+        self.reset_count = reset_count
+        self.statements = []
+        self.dispose_count = 0
+
+    def connect(self):
+        return _ExplainConnection(self)
+
+    def dispose(self):
+        self.dispose_count += 1
 
 
 class TestReadOnlySQLGuard:
@@ -80,9 +117,26 @@ class TestReadOnlySQLGuard:
             is False
         )
 
+    def test_explain_retries_same_sql_after_connection_reset(self):
+        engine = _ResettingEngine(reset_count=1)
+
+        result = SQLValidator(engine).explain("SELECT 1")
+
+        assert result["valid"] is True
+        assert result["connection_retries"] == 1
+        assert engine.dispose_count == 1
+        assert engine.statements == ["EXPLAIN SELECT 1", "EXPLAIN SELECT 1"]
+
+    def test_explain_marks_repeated_connection_reset_as_infrastructure_error(self):
+        result = SQLValidator(_ResettingEngine(reset_count=2)).explain("SELECT 1")
+
+        assert result["valid"] is False
+        assert result["infrastructure_error"] is True
+        assert result["connection_retries"] == 1
+
 
 class TestDatabaseAccessGuard:
-    AUTHORIZED = {"analytics", "shared"}
+    AUTHORIZED: ClassVar[set[str]] = {"analytics", "shared"}
 
     @pytest.mark.parametrize(
         "sql",
@@ -126,7 +180,7 @@ class TestDatabaseAccessGuard:
 
 
 class TestCurrencyConversionGuard:
-    INTENT = {
+    INTENT: ClassVar[dict] = {
         "currency_conversion": True,
         "requires_exchange_rate": True,
         "target_currency": "USD",
@@ -165,6 +219,37 @@ class TestCurrencyConversionGuard:
         assert detail["rate_fallback_found"] is False
         assert detail["missing_rate_indicator_found"] is True
         assert detail["issues"] == []
+
+    def test_accepts_source_currency_on_both_join_aliases(self):
+        sql = """
+        SELECT o.channel_code,
+               SUM(
+                 CASE
+                   WHEN o.source_currency = 'USD' THEN o.source_amount
+                   ELSE o.source_amount * r.mid
+                 END
+               ) AS usd_amount,
+               SUM(
+                 CASE
+                   WHEN o.source_currency <> 'USD' AND r.mid IS NULL THEN 1
+                   ELSE 0
+                 END
+               ) AS missing_rate_count
+        FROM dwd_bi_banking.banking_order_requests AS o
+        LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+          ON r.source_currency = o.source_currency
+         AND r.target_currency = 'USD'
+         AND DATE(r.sync_time) = DATE(o.create_time)
+        GROUP BY o.channel_code
+        """
+
+        valid, error, detail = SQLValidator.validate_currency_conversion(
+            sql,
+            self.INTENT,
+        )
+
+        assert valid is True, error
+        assert detail["exchange_rate_aliases"] == ["r", "sys_exchange_rate"]
 
     def test_rejects_silent_unit_rate_fallback(self):
         sql = """
@@ -265,7 +350,7 @@ class TestCurrencyConversionGuard:
 
 
 class TestRequestedProjectionGuard:
-    REQUIREMENTS = [
+    REQUIREMENTS: ClassVar[list[dict]] = [
         {
             "field": "邮箱",
             "columns": [
@@ -321,7 +406,7 @@ class TestRequestedProjectionGuard:
 
 
 class TestMetricProjectionGuard:
-    INTENT = {"count_only": True}
+    INTENT: ClassVar[dict] = {"count_only": True}
 
     def test_accepts_single_count_projection(self):
         valid, error, detail = SQLValidator.validate_metric_projection(
@@ -351,8 +436,9 @@ class TestMetricProjectionGuard:
         assert detail["has_group_by"] is True
         assert detail["has_exchange_rate"] is True
 
+
 class TestEntityFilterGuard:
-    REQUIREMENTS = [
+    REQUIREMENTS: ClassVar[list[dict]] = [
         {
             "table": "dwd_bi_banking.banking_account",
             "column": "short_account_id",
@@ -656,7 +742,7 @@ class TestExtractWhereValues:
 class TestValidateEnumValues:
     """enum_hits 是扁平结构，每条一个枚举值。"""
 
-    ENUM_HITS = [
+    ENUM_HITS: ClassVar[list[dict]] = [
         {
             "table_name": "t1",
             "column_name": "status",
@@ -973,9 +1059,7 @@ class TestAgentRuntimeConfigDefaults:
     def test_enhancement_defaults(self):
         config = AgentRuntimeConfig()
         assert config.max_execute_fix_retries == 2
-        assert config.enable_empty_analysis is True
         assert config.enable_enum_validate is True
-        assert config.enable_result_check is True
         assert config.enable_timeout_fallback is False
         assert config.exchange_rate_injection is True
 

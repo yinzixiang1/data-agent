@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 from src.retrieval.config import (
     MYSQL_HOST,
@@ -56,6 +56,7 @@ CODEX_REASONING_EFFORTS = frozenset(
 CODEX_TIMEOUT_MIN_SECONDS = 10
 CODEX_TIMEOUT_MAX_SECONDS = 110
 CODEX_MAX_CONCURRENCY_LIMIT = 8
+CODEX_DEFAULT_MAX_CONCURRENCY = 4
 
 
 # ── expand 分区：校验规则 + 读取函数 ──
@@ -136,7 +137,7 @@ class AgentRuntimeConfig:
     llm_temperature: float = 0.0
     codex_reasoning_effort: str = "low"
     codex_timeout_seconds: int = 90
-    codex_max_concurrency: int = 1
+    codex_max_concurrency: int = CODEX_DEFAULT_MAX_CONCURRENCY
 
     # Prompt 配置（来自 agent_config.prompt 分区）
     system_prompt: str = ""
@@ -164,20 +165,22 @@ class AgentRuntimeConfig:
     max_fix_retries: int = 5
     enable_explain: bool = True
 
-    # SQL 执行 & 结果总结配置
+    # SQL 执行配置
     enable_execute: bool = False
     execute_row_limit: int = 200
     execute_timeout: int = 30
-    enable_summarize: bool = False
+
+    # 结构化结果工具（来自 Agent tool 配置 + tool 资源）
+    tool_choice: str = "auto"
+    tool_max_calls: int = 5
+    tools: list[dict] = field(default_factory=list)
 
     # 查询缓存
     enable_query_cache: bool = False
 
     # 纠错增强配置
     max_execute_fix_retries: int = 2
-    enable_empty_analysis: bool = True
     enable_enum_validate: bool = True
-    enable_result_check: bool = True
     enable_timeout_fallback: bool = False
     exchange_rate_injection: bool = True
 
@@ -433,6 +436,47 @@ class AgentConfigLoader:
             logger.warning(f"加载资源 {resource_type}/{name} 失败: {e}")
             return {}
 
+    def _load_tool_resources(self, names: list[str]) -> list[dict]:
+        """Load public tool definitions without exposing executor configuration."""
+        normalized = [
+            name.strip() for name in names if isinstance(name, str) and name.strip()
+        ]
+        if not normalized:
+            return []
+        try:
+            with self.engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT name, display_name, description, config_json "
+                        "FROM sys_resource WHERE resource_type = 'tool' "
+                        "AND status = 1 AND name IN :names"
+                    ).bindparams(bindparam("names", expanding=True)),
+                    {"names": normalized},
+                ).fetchall()
+        except Exception as exc:
+            logger.warning("加载 Agent 工具资源失败: %s", exc)
+            return []
+
+        by_name = {}
+        for name, display_name, description, raw_config in rows:
+            try:
+                config = json.loads(raw_config or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(config, dict):
+                continue
+            input_schema = config.get("input_schema")
+            if not isinstance(input_schema, dict):
+                continue
+            by_name[name] = {
+                "name": name,
+                "display_name": display_name or name,
+                "description": description or "",
+                "input_schema": input_schema,
+                "requires_query_result": bool(config.get("requires_query_result")),
+            }
+        return [by_name[name] for name in normalized if name in by_name]
+
     def _apply_sys_configs(
         self, config: AgentRuntimeConfig, sys_configs: dict[str, str]
     ):
@@ -555,7 +599,10 @@ class AgentConfigLoader:
                         raise ValueError
                     config.codex_max_concurrency = max_concurrency
                 except (ValueError, TypeError):
-                    logger.warning("codex_max_concurrency 不合法，使用默认值 1")
+                    logger.warning(
+                        "codex_max_concurrency 不合法，使用默认值 %s",
+                        CODEX_DEFAULT_MAX_CONCURRENCY,
+                    )
             if "max_fix_retries" in model_cfg:
                 try:
                     config.max_fix_retries = int(model_cfg["max_fix_retries"])
@@ -693,7 +740,7 @@ class AgentConfigLoader:
                     else str(value).lower() in ("true", "1")
                 )
 
-        # flow 分区（SQL 执行 & 结果总结）
+        # flow 分区（SQL 执行）
         flow_cfg = agent_configs.get("flow", {})
         if flow_cfg:
             if "enable_execute" in flow_cfg:
@@ -711,11 +758,6 @@ class AgentConfigLoader:
                     config.execute_timeout = int(flow_cfg["execute_timeout"])
                 except (ValueError, TypeError):
                     pass
-            if "enable_summarize" in flow_cfg:
-                v = flow_cfg["enable_summarize"]
-                config.enable_summarize = (
-                    v if isinstance(v, bool) else str(v).lower() in ("true", "1")
-                )
             if "max_execute_fix_retries" in flow_cfg:
                 try:
                     config.max_execute_fix_retries = int(
@@ -724,9 +766,7 @@ class AgentConfigLoader:
                 except (ValueError, TypeError):
                     pass
             for bool_key in (
-                "enable_empty_analysis",
                 "enable_enum_validate",
-                "enable_result_check",
                 "enable_timeout_fallback",
                 "exchange_rate_injection",
             ):
@@ -737,6 +777,20 @@ class AgentConfigLoader:
                         bool_key,
                         v if isinstance(v, bool) else str(v).lower() in ("true", "1"),
                     )
+
+        # tool 分区：只向模型暴露已启用资源的公开描述和输入 Schema。
+        tool_cfg = agent_configs.get("tool", {})
+        choice = str(tool_cfg.get("choice") or "auto").strip().lower()
+        config.tool_choice = (
+            choice if choice in {"auto", "required", "none"} else "auto"
+        )
+        try:
+            config.tool_max_calls = max(1, min(int(tool_cfg.get("max_iter", 5)), 20))
+        except (TypeError, ValueError):
+            config.tool_max_calls = 5
+        enabled_tools = tool_cfg.get("enabled_tools")
+        if config.tool_choice != "none" and isinstance(enabled_tools, list):
+            config.tools = self._load_tool_resources(enabled_tools)
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)

@@ -18,8 +18,8 @@
     # "张3今天有多少笔交易，不包含手续费，一次兑换属于一笔交易"
 """
 
-import logging
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -34,6 +34,7 @@ COMPRESS_PROMPT = """你是一个查询状态更新助手。不要机械拼接�
 
 规则:
 1. 查询状态分为：查询对象、时间范围、筛选条件、指标、展示维度、币种换算、排除项。
+   上一轮已验证 SQL 是本轮修改的结构基线；除非用户明确替换、删除或开始新问题，必须继承其中的表、字段、展示维度、聚合方式和过滤条件。
 2. “再展示/加上/带上”表示增量追加；“只要/仅查询/不要/去掉/改为”表示替换或移除对应状态。
 3. 修改指标或展示维度时，可以保留仍适用的时间和筛选条件，但不能保留用户明确移除的金额、币种、换算或维度。
 4. 新问题与历史无关时 relation=new_question，只使用本轮输入。
@@ -74,22 +75,6 @@ _RELATIONS = {
     "correction_override",
     "new_question",
 }
-_COUNT_ONLY_RE = re.compile(
-    r"(?:只|仅)(?:需|要|查询|查看|统计|返回|展示)?[^，。；！？\n]{0,20}"
-    r"(?:次数|笔数|数量|个数)|\bonly\b[^,.;!?\n]{0,30}\b(?:count|number)\b",
-    re.IGNORECASE,
-)
-_COUNT_RE = re.compile(r"次数|笔数|数量|个数|\bcount\b|\bnumber\b", re.IGNORECASE)
-_AMOUNT_OR_CURRENCY_RE = re.compile(
-    r"金额|币种|货币|汇率|折(?:算)?(?:美元|美金)|换算|兑换|"
-    r"\bamount\b|\bcurrency\b|exchange\s+rate",
-    re.IGNORECASE,
-)
-_REMOVE_AMOUNT_RE = re.compile(
-    r"(?:不要|不需要|无需|去掉|移除|不返回|不展示)[^，。；！？\n]{0,12}"
-    r"(?:金额|币种|货币|汇率|换算)|without\s+(?:amount|currency)",
-    re.IGNORECASE,
-)
 _TIME_PATTERNS = (
     re.compile(
         r"(?:最近|近|过去)\s*"
@@ -196,6 +181,7 @@ class ContextCompressor:
         prev_question = summary["question"]
         prev_tables = ",".join(summary["tables"])
         prev_sql = summary["sql"]
+        prev_sql_context = summary["sql_context"]
         previous_query_state = QueryState.from_value(summary.get("query_state"))
 
         history_text = f"问题: {prev_question}"
@@ -206,6 +192,12 @@ class ContextCompressor:
             history_text += f"\n涉及表: {prev_tables}"
         if prev_sql:
             history_text += f"\n上一轮已验证 SQL:\n```sql\n{prev_sql}\n```"
+        if any(prev_sql_context.values()):
+            history_text += "\n上一轮 SQL 结构: " + json.dumps(
+                prev_sql_context,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
 
         prompt = self.prompt_template.format(
             history=history_text, current=current_question
@@ -227,7 +219,7 @@ class ContextCompressor:
                 },
             )
             return result
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.warning(
                 "context state merge fallback",
                 extra={"error": str(exc)},
@@ -249,14 +241,9 @@ class ContextCompressor:
         try:
             payload = json.loads(stripped)
         except (json.JSONDecodeError, TypeError):
-            result = ContextMergeResult(
+            return ContextMergeResult(
                 effective_question=stripped or current_question,
                 query_state=cls.infer_state(stripped or current_question),
-            )
-            return cls._apply_deterministic_overrides(
-                result,
-                current_question=current_question,
-                previous_question=previous_question,
             )
         if not isinstance(payload, dict):
             return cls._fallback_result(current_question, previous_question)
@@ -278,7 +265,7 @@ class ContextCompressor:
                 "question": "你希望保留上一轮哪些查询条件？",
                 "options": [],
             }
-        result = ContextMergeResult(
+        return ContextMergeResult(
             effective_question=effective_question,
             query_state=QueryState.from_value(payload.get("query_state")),
             relation=relation,
@@ -287,11 +274,6 @@ class ContextCompressor:
             needs_clarification=needs_clarification,
             clarification=clarification,
             changes=cls._normalize_changes(payload.get("changes")),
-        )
-        return cls._apply_deterministic_overrides(
-            result,
-            current_question=current_question,
-            previous_question=previous_question,
         )
 
     @staticmethod
@@ -329,16 +311,11 @@ class ContextCompressor:
         current_question: str,
         previous_question: str,
     ) -> ContextMergeResult:
-        result = ContextMergeResult(
+        return ContextMergeResult(
             effective_question=current_question,
             query_state=cls.infer_state(current_question),
             relation="follow_up_modify",
             confidence=0.5,
-        )
-        return cls._apply_deterministic_overrides(
-            result,
-            current_question=current_question,
-            previous_question=previous_question,
         )
 
     @classmethod
@@ -362,66 +339,68 @@ class ContextCompressor:
                 return match.group(0).strip()
         return ""
 
-    @classmethod
-    def _apply_deterministic_overrides(
-        cls,
-        result: ContextMergeResult,
-        *,
-        current_question: str,
-        previous_question: str,
-    ) -> ContextMergeResult:
-        has_count = bool(_COUNT_RE.search(current_question))
-        explicit_count_only = bool(_COUNT_ONLY_RE.search(current_question))
-        mentions_amount = bool(_AMOUNT_OR_CURRENCY_RE.search(current_question))
-        removes_amount = bool(_REMOVE_AMOUNT_RE.search(current_question))
-        if not (
-            has_count
-            and explicit_count_only
-            and (not mentions_amount or removes_amount)
-        ):
-            return result
+    @staticmethod
+    def extract_sql_context(sql: str) -> dict[str, list[str]]:
+        """Extract reusable SQL structure without interpreting business meaning."""
+        empty = {
+            "tables": [],
+            "columns": [],
+            "projections": [],
+            "dimensions": [],
+            "filters": [],
+        }
+        if not sql.strip():
+            return empty
+        try:
+            import sqlglot
+            from sqlglot import expressions as exp
 
-        time_range = (
-            result.query_state.time_range
-            or cls._extract_time_range(current_question)
-            or cls._extract_time_range(previous_question)
-        )
-        exclusions = tuple(
-            dict.fromkeys(
-                (*result.query_state.exclusions, "金额", "币种维度", "币种换算")
+            tree = sqlglot.parse_one(sql, read="mysql")
+        except (ImportError, ValueError):
+            return empty
+        except sqlglot.errors.SqlglotError as exc:
+            logger.info(
+                "SQL context extraction skipped",
+                extra={"error_type": type(exc).__name__},
             )
-        )
-        query_state = QueryState(
-            subject=result.query_state.subject,
-            time_range=time_range,
-            filters=result.query_state.filters,
-            metrics=("count",),
-            dimensions=(),
-            currency_conversion="",
-            exclusions=exclusions,
-        )
-        time_prefix = ""
-        if time_range and time_range not in current_question:
-            time_prefix = f"{time_range}，"
-        effective_question = (
-            f"{time_prefix}{current_question.strip('，。； ')}；"
-            "仅返回交易次数，不返回金额，不按币种分组，不进行币种换算"
-        )
-        return ContextMergeResult(
-            effective_question=effective_question[:2000],
-            query_state=query_state,
-            relation="correction_override",
-            interpretation=(f"已保留“{time_range}”；" if time_range else "")
-            + "已改为仅统计交易次数，并移除金额、币种维度和币种换算。",
-            confidence=max(result.confidence, 0.95),
-            needs_clarification=False,
-            clarification={},
-            changes={
-                "kept": [time_range] if time_range else [],
-                "set": ["仅统计交易次数"],
-                "removed": ["金额", "币种维度", "币种换算"],
-            },
-        )
+            return empty
+
+        aliases: dict[str, str] = {}
+        tables: list[str] = []
+        for table in tree.find_all(exp.Table):
+            if not table.db:
+                continue
+            full_name = f"{table.db}.{table.name}"
+            tables.append(full_name)
+            aliases[table.alias_or_name.casefold()] = full_name
+            aliases[table.name.casefold()] = full_name
+        tables = list(dict.fromkeys(tables))
+        single_table = tables[0] if len(tables) == 1 else None
+
+        columns: list[str] = []
+        for column in tree.find_all(exp.Column):
+            owner = (
+                aliases.get(str(column.table).casefold())
+                if column.table
+                else single_table
+            )
+            if owner:
+                columns.append(f"{owner}.{column.name}")
+
+        group = tree.args.get("group")
+        where = tree.args.get("where")
+        return {
+            "tables": tables,
+            "columns": list(dict.fromkeys(columns)),
+            "projections": [
+                expression.sql(dialect="mysql") for expression in tree.expressions
+            ],
+            "dimensions": [
+                expression.sql(dialect="mysql")
+                for expression in (group.expressions if group else [])
+            ],
+            "filters": [where.this.sql(dialect="mysql")] if where else [],
+        }
 
     @staticmethod
     def build_summary(
@@ -452,6 +431,7 @@ class ContextCompressor:
                 "question": question,
                 "tables": tables,
                 "sql": sql,
+                "sql_context": ContextCompressor.extract_sql_context(sql),
                 "query_state": state.to_dict(),
             },
             ensure_ascii=False,
@@ -467,10 +447,24 @@ class ContextCompressor:
             payload = None
         if isinstance(payload, dict):
             tables = payload.get("tables") or []
+            sql = str(payload.get("sql") or "")
+            sql_context = payload.get("sql_context")
+            if not isinstance(sql_context, dict):
+                sql_context = ContextCompressor.extract_sql_context(sql)
             return {
                 "question": str(payload.get("question") or ""),
                 "tables": [str(table) for table in tables if table],
-                "sql": str(payload.get("sql") or ""),
+                "sql": sql,
+                "sql_context": {
+                    key: [str(item) for item in sql_context.get(key, []) if item]
+                    for key in (
+                        "tables",
+                        "columns",
+                        "projections",
+                        "dimensions",
+                        "filters",
+                    )
+                },
                 "query_state": QueryState.from_value(
                     payload.get("query_state")
                 ).to_dict(),
@@ -485,5 +479,6 @@ class ContextCompressor:
                 if table
             ],
             "sql": "",
+            "sql_context": ContextCompressor.extract_sql_context(""),
             "query_state": QueryState().to_dict(),
         }

@@ -153,13 +153,10 @@ class E2ETest:
             {
                 "config_json": {
                     "enable_execute": True,
-                    "enable_summarize": True,
                     "execute_row_limit": 100,
                     "execute_timeout": 30,
                     "max_execute_fix_retries": 2,
-                    "enable_empty_analysis": True,
                     "enable_enum_validate": True,
-                    "enable_result_check": True,
                     "enable_timeout_fallback": False,
                 }
             },
@@ -186,8 +183,7 @@ class E2ETest:
         cfg = data.get("config_json", {})
         log_test(
             "flow 分区读回",
-            cfg.get("max_execute_fix_retries") == 2
-            and cfg.get("enable_empty_analysis") is True,
+            cfg.get("max_execute_fix_retries") == 2,
         )
 
         resp = self.api("GET", f"/api/v1/agents/{self.agent_id}/config/expand")
@@ -356,11 +352,6 @@ class E2ETest:
         else:
             log_skip("query_result", "enable_execute 可能未生效（引擎未 reload）")
 
-        if data.get("summary"):
-            log_test("summary 非空", True, f"summary={data['summary'][:60]}")
-        else:
-            log_skip("summary", "enable_summarize 可能未生效")
-
         return data
 
     def test_expand_info_override(self):
@@ -378,7 +369,6 @@ class E2ETest:
                 "enable_explain": False,
                 "expand_info": {
                     "enable_execute": False,
-                    "enable_summarize": False,
                 },
             },
             timeout=120,
@@ -394,11 +384,6 @@ class E2ETest:
             "expand_info enable_execute=false → 无 query_result",
             data.get("query_result") is None,
             f"query_result={'有' if data.get('query_result') else '无'}",
-        )
-        log_test(
-            "expand_info enable_summarize=false → 无 summary",
-            not data.get("summary"),
-            f"summary={'有' if data.get('summary') else '无'}",
         )
 
     # ────────────────────────────────────────
@@ -488,20 +473,6 @@ class E2ETest:
             log_test("trace 含 sql_execution 步骤", True)
             exec_step = next(s for s in steps if s["step"] == "sql_execution")
             log_test("sql_execution 有 success 字段", "success" in exec_step)
-
-            if "result_summarize" in step_names:
-                log_test("trace 含 result_summarize 步骤", True)
-                sum_step = next(s for s in steps if s["step"] == "result_summarize")
-                # 如果 enable_result_check，trace 中可能有 result_warnings
-                if "result_warnings" in sum_step:
-                    log_test(
-                        "result_summarize 含 result_warnings",
-                        True,
-                        f"warnings={sum_step['result_warnings']}",
-                    )
-
-            if "empty_analysis" in step_names:
-                log_test("trace 含 empty_analysis 步骤（空结果分析）", True)
 
             if "execution_fix" in step_names:
                 log_test("trace 含 execution_fix 步骤（执行纠错）", True)

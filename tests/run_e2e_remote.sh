@@ -1,20 +1,18 @@
 #!/bin/bash
-# 远程 E2E 测试 — 通过跳板机在 node1 上执行 curl 测试
+# 远程 E2E 测试 — 在 Admin 节点执行 curl 测试
 # 用法: bash tests/run_e2e_remote.sh
 
 set -e
 
-BASTION_KEY="$HOME/company/BI/uat-infra-msk-bastion.pem"
-NODE_KEY="$HOME/company/BI/nl2sql/sg-sandbox-private.pem"
-BASTION="rocky@13.228.165.213"
-NODE1="rocky@10.2.2.35"
-PROXY_CMD="ssh -o StrictHostKeyChecking=no -i $BASTION_KEY -W %h:%p $BASTION"
+ADMIN_HOST="${ADMIN_HOST:-admin}"
+SSH_CONFIG="${DEPLOY_SSH_CONFIG:-$HOME/.ssh/config}"
 
 API="http://localhost:8090"
-TOKEN="c3a84d46c8f72279653fd92e3dbecbabc2959e9964665660dbf30cc2a246c36f"
+TOKEN="${E2E_TOKEN:?请通过 E2E_TOKEN 提供测试 Agent Token}"
+ENGINE_URL="${ENGINE_URL:?请通过 ENGINE_URL 提供当前 Agent 地址}"
 
 do_ssh() {
-  ssh -o StrictHostKeyChecking=no -o "ProxyCommand=$PROXY_CMD" -i "$NODE_KEY" "$NODE1" "$@"
+  ssh -F "$SSH_CONFIG" "$ADMIN_HOST" "$@"
 }
 
 GREEN='\033[92m'
@@ -54,9 +52,10 @@ section() {
 }
 
 # 把所有测试命令打包到 node1 上执行
-do_ssh bash -s "$API" "$TOKEN" << 'REMOTE_SCRIPT'
+do_ssh bash -s "$API" "$TOKEN" "$ENGINE_URL" << 'REMOTE_SCRIPT'
 API=$1
 TOKEN=$2
+ENGINE_URL=$3
 GREEN='\033[92m'
 RED='\033[91m'
 YELLOW='\033[93m'
@@ -106,7 +105,6 @@ section "Phase 2: 创建测试 Agent"
 # ─────────────────────────────────────────────
 
 HANDLE="e2e-test-$(date +%s)"
-ENGINE_URL="http://10.2.2.16:9090"
 CREATE_RESP=$(curl -s --max-time 10 -X POST "$API/api/v1/agents" \
   -H "Content-Type: application/json" \
   -d "{\"name\":\"E2E-Test-Agent\",\"handle\":\"$HANDLE\",\"description\":\"集成测试\",\"status\":\"live\"}")

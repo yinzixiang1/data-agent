@@ -22,10 +22,13 @@ EXPLAIN 不会真正执行 SQL，只检查语法和生成执行计划，因此�
 """
 
 import json
-import re
 import logging
+import re
+from typing import ClassVar
+
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +149,7 @@ class SQLValidator:
         re.IGNORECASE,
     )
     _EXCHANGE_RATE_TABLE = "warehouse_sys.sys_exchange_rate"
+    _TRANSIENT_DBAPI_CODES: ClassVar[frozenset[int]] = frozenset({2006, 2013, 2055})
 
     @staticmethod
     def _strip_literals_and_comments(
@@ -544,7 +548,9 @@ class SQLValidator:
                 flags=re.IGNORECASE,
             )
             invalid_projections = [] if count_only_projection else [projection.strip()]
-            has_group_by = bool(re.search(r"\bGROUP\s+BY\b", structural_sql, re.I))
+            has_group_by = bool(
+                re.search(r"\bGROUP\s+BY\b", structural_sql, re.IGNORECASE)
+            )
             has_exchange_rate = "sys_exchange_rate" in structural_sql.casefold()
 
         detail = {
@@ -784,6 +790,7 @@ class SQLValidator:
 
         rate_table_found = False
         rate_join_is_left = False
+        rate_aliases: set[str] = set()
         for table in tree.find_all(exp.Table):
             full_name = (
                 f"{table.db}.{table.name}" if table.db else str(table.name)
@@ -791,6 +798,8 @@ class SQLValidator:
             if full_name != cls._EXCHANGE_RATE_TABLE:
                 continue
             rate_table_found = True
+            rate_aliases.add(table.alias_or_name.casefold())
+            rate_aliases.add(table.name.casefold())
 
         for join in tree.find_all(exp.Join):
             joined_table = join.this
@@ -811,6 +820,19 @@ class SQLValidator:
             if isinstance(expression, exp.Literal):
                 return str(expression.this).upper()
             return None
+
+        def is_rate_column(column, name: str | None = None) -> bool:
+            if not isinstance(column, exp.Column):
+                return False
+            if name and column.name.casefold() != name:
+                return False
+            return str(column.table or "").casefold() in rate_aliases
+
+        def is_fact_currency_column(column) -> bool:
+            if not isinstance(column, exp.Column) or is_rate_column(column):
+                return False
+            name = column.name.casefold()
+            return "currency" in name or name in {"ccy", "currency_code"}
 
         target_filter_found = False
         source_join_found = False
@@ -833,45 +855,46 @@ class SQLValidator:
                 if not isinstance(column_expr, exp.Column):
                     continue
                 if (
-                    column_expr.name.casefold() == "target_currency"
+                    is_rate_column(column_expr, "target_currency")
                     and literal_value(value_expr) == target_currency
                 ):
                     target_filter_found = True
 
             equality_columns = list(equality.find_all(exp.Column))
-            equality_names = {column.name.casefold() for column in equality_columns}
-            equality_aliases = {
-                str(column.table).casefold()
-                for column in equality_columns
-                if column.table
-            }
-            non_rate_currency_columns = [
+            rate_source_columns = [
                 column
                 for column in equality_columns
-                if column.name.casefold() != "source_currency"
+                if is_rate_column(column, "source_currency")
+            ]
+            fact_currency_columns = [
+                column for column in equality_columns if is_fact_currency_column(column)
+            ]
+            if rate_source_columns and fact_currency_columns:
+                source_join_found = True
+            rate_time_columns = [
+                column
+                for column in equality_columns
+                if is_rate_column(column, "sync_time")
+            ]
+            fact_time_columns = [
+                column
+                for column in equality_columns
+                if not is_rate_column(column)
                 and (
-                    "currency" in column.name.casefold()
-                    or column.name.casefold() in {"ccy", "currency_code"}
+                    column.name.casefold() in time_names
+                    or column.name.casefold().endswith("_time")
+                    or column.name.casefold().endswith("_date")
+                    or column.name.casefold().endswith("_at")
                 )
             ]
-            if (
-                "source_currency" in equality_names
-                and non_rate_currency_columns
-                and len(equality_aliases) >= 2
-            ):
-                source_join_found = True
-            if "sync_time" in equality_names and any(
-                name in time_names or name.endswith("_time") or name.endswith("_date")
-                for name in equality_names - {"sync_time"}
-            ):
+            if rate_time_columns and fact_time_columns:
                 date_join_found = True
 
         for case in tree.find_all(exp.Case):
             for equality in case.find_all(exp.EQ):
                 equality_columns = list(equality.find_all(exp.Column))
                 if not any(
-                    column.name.casefold() != "target_currency"
-                    for column in equality_columns
+                    is_fact_currency_column(column) for column in equality_columns
                 ):
                     continue
                 if any(
@@ -884,21 +907,21 @@ class SQLValidator:
         mid_multiplication_found = False
         for multiplication in tree.find_all(exp.Mul):
             multiplication_columns = list(multiplication.find_all(exp.Column))
-            names = {column.name.casefold() for column in multiplication_columns}
-            if "mid" in names and len(multiplication_columns) >= 2:
+            if any(
+                is_rate_column(column, "mid") for column in multiplication_columns
+            ) and any(not is_rate_column(column) for column in multiplication_columns):
                 mid_multiplication_found = True
                 break
 
         rate_fallback_found = any(
             any(
-                column.name.casefold() == "mid"
+                is_rate_column(column, "mid")
                 for column in function.find_all(exp.Column)
             )
             for function in tree.find_all(exp.Coalesce)
         )
         missing_rate_indicator_found = any(
-            isinstance(condition.this, exp.Column)
-            and condition.this.name.casefold() == "mid"
+            is_rate_column(condition.this, "mid")
             and isinstance(condition.expression, exp.Null)
             for condition in tree.find_all(exp.Is)
         )
@@ -929,6 +952,7 @@ class SQLValidator:
             "required": True,
             "target_currency": target_currency,
             "exchange_rate_table": cls._EXCHANGE_RATE_TABLE,
+            "exchange_rate_aliases": sorted(rate_aliases),
             "rate_fallback_found": rate_fallback_found,
             "missing_rate_indicator_found": missing_rate_indicator_found,
             "issues": issues,
@@ -1061,6 +1085,27 @@ class SQLValidator:
             return match.group(1).strip()
         return ""
 
+    @classmethod
+    def _is_retryable_connection_error(cls, exc: BaseException) -> bool:
+        if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+            return True
+        original = exc.orig if isinstance(exc, DBAPIError) else exc
+        if isinstance(original, ConnectionResetError):
+            return True
+        args = getattr(original, "args", ())
+        return bool(args and args[0] in cls._TRANSIENT_DBAPI_CODES)
+
+    @staticmethod
+    def _format_database_error(exc: BaseException) -> str:
+        error_msg = str(exc)
+        inner = re.search(
+            r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)",
+            error_msg,
+        )
+        if inner:
+            return f"Error {inner.group(1)}: {inner.group(2)}"
+        return error_msg
+
     def explain(self, sql: str) -> dict:
         """
         执行 EXPLAIN 校验（不会真正执行 SQL）。
@@ -1078,35 +1123,54 @@ class SQLValidator:
         if not read_only:
             return {"valid": False, "error": reason, "plan": None}
 
-        try:
-            with self.engine.connect() as conn:
-                rows = conn.execute(text(f"EXPLAIN {sql}")).fetchall()
+        connection_retries = 0
+        while True:
+            try:
+                with self.engine.connect() as conn:
+                    rows = conn.execute(text(f"EXPLAIN {sql}")).fetchall()
 
-            plan_lines = [str(row[0]) if len(row) == 1 else str(row) for row in rows]
-            plan_text = "\n".join(plan_lines)
+                plan_lines = [
+                    str(row[0]) if len(row) == 1 else str(row) for row in rows
+                ]
+                plan_text = "\n".join(plan_lines)
 
-            logger.info(f"EXPLAIN 通过, 执行计划 {len(plan_lines)} 行")
-            return {
-                "valid": True,
-                "error": None,
-                "plan": plan_text,
-            }
+                logger.info(f"EXPLAIN 通过, 执行计划 {len(plan_lines)} 行")
+                return {
+                    "valid": True,
+                    "error": None,
+                    "plan": plan_text,
+                    "connection_retries": connection_retries,
+                }
+            except (DBAPIError, OSError) as exc:
+                connection_error = self._is_retryable_connection_error(exc)
+                if connection_error and connection_retries == 0:
+                    connection_retries += 1
+                    logger.warning(
+                        "EXPLAIN connection reset; retrying original SQL",
+                        extra={
+                            "connection_retries": connection_retries,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    self.engine.dispose()
+                    continue
 
-        except Exception as e:
-            error_msg = str(e)
-            # 提取核心错误信息（去掉 SQLAlchemy 包装）
-            inner = re.search(
-                r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg
-            )
-            if inner:
-                error_msg = f"Error {inner.group(1)}: {inner.group(2)}"
-
-            logger.warning(f"EXPLAIN 失败: {error_msg}")
-            return {
-                "valid": False,
-                "error": error_msg,
-                "plan": None,
-            }
+                error_msg = self._format_database_error(exc)
+                logger.warning(
+                    "EXPLAIN failed",
+                    extra={
+                        "error": error_msg,
+                        "error_type": type(exc).__name__,
+                        "connection_retries": connection_retries,
+                    },
+                )
+                return {
+                    "valid": False,
+                    "error": error_msg,
+                    "plan": None,
+                    "connection_retries": connection_retries,
+                    "infrastructure_error": connection_error,
+                }
 
     @staticmethod
     def extract_databases(sql: str) -> set[str]:
@@ -1246,10 +1310,10 @@ class SQLValidator:
         try:
             # 添加 LIMIT 防止返回过多数据（仅对 SELECT 生效）
             exec_sql = sql.rstrip().rstrip(";")
-            if re.match(r"^\s*(SELECT|WITH)\b", exec_sql, re.IGNORECASE):
-                # 检查是否已有 LIMIT
-                if not re.search(r"\bLIMIT\s+\d+", exec_sql, re.IGNORECASE):
-                    exec_sql = f"{exec_sql} LIMIT {row_limit + 1}"
+            if re.match(
+                r"^\s*(SELECT|WITH)\b", exec_sql, re.IGNORECASE
+            ) and not re.search(r"\bLIMIT\s+\d+", exec_sql, re.IGNORECASE):
+                exec_sql = f"{exec_sql} LIMIT {row_limit + 1}"
 
             with self.engine.connect() as conn:
                 result = conn.execute(
@@ -1276,7 +1340,7 @@ class SQLValidator:
                 "error": None,
             }
 
-        except Exception as e:
+        except (DBAPIError, OSError) as e:
             error_msg = str(e)
             inner = re.search(
                 r"\(pymysql\.err\.\w+\)\s*\((\d+),\s*[\"'](.+?)[\"']\)", error_msg
@@ -1443,13 +1507,12 @@ class SQLValidator:
 
         # 2. 问时间范围但 SQL 无时间条件
         time_keywords = ["本月", "今天", "本周", "今日", "当月", "昨天", "昨日"]
-        if any(kw in question for kw in time_keywords):
-            if not re.search(
-                r"WHERE.*(?:date|time|created|updated|create_time|complete_time)",
-                sql,
-                re.IGNORECASE,
-            ):
-                warnings.append("问题涉及时间范围，但 SQL 未包含时间条件")
+        if any(kw in question for kw in time_keywords) and not re.search(
+            r"WHERE.*(?:date|time|created|updated|create_time|complete_time)",
+            sql,
+            re.IGNORECASE,
+        ):
+            warnings.append("问题涉及时间范围，但 SQL 未包含时间条件")
 
         # 3. 预期多行但只有 1 行
         multi_keywords = [r"排名", r"top\s*\d", r"分组", r"按.*统计", r"各", r"每"]

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 try:
-    import pymilvus  # noqa: F401
+    import pymilvus
 except ModuleNotFoundError:
     pymilvus = types.ModuleType("pymilvus")
 
@@ -21,12 +21,13 @@ except ModuleNotFoundError:
     pymilvus.WeightedRanker = FakeRanker
     sys.modules["pymilvus"] = pymilvus
 
+from src.retrieval.fewshot_selector import FewShotSelector
 from src.retrieval.glossary_resolver import GlossaryResolver
 from src.retrieval.hybrid_searcher import HybridSearcher
 from src.retrieval.milvus_filter import add_table_name_filter
 from src.retrieval.ranker_strategy import CollectionSearchParams
+from src.retrieval.retriever import SchemaRetriever
 from src.retrieval.value_indexer import ValueIndexer
-from src.retrieval.fewshot_selector import FewShotSelector
 
 
 class FakeEmbedding:
@@ -167,6 +168,70 @@ def test_enum_results_are_filtered_before_top_k_is_applied():
     assert [item["table_name"] for item in results] == ["sales.orders"]
 
 
+def test_low_rerank_score_without_column_evidence_is_removed():
+    candidates = [
+        {
+            "table_name": "sales.orders",
+            "rerank_score": 0.82,
+            "hit_by_column": True,
+        },
+        {
+            "table_name": "sales.column_evidence",
+            "rerank_score": 0.12,
+            "hit_by_column": True,
+        },
+        {
+            "table_name": "sales.semantic_decoy",
+            "rerank_score": 0.12,
+            "hit_by_column": False,
+        },
+        {
+            "table_name": "sales.required_context",
+            "rerank_score": 0.05,
+            "hit_by_column": False,
+            "pinned": True,
+        },
+    ]
+
+    kept, dropped = SchemaRetriever._drop_weak_table_candidates(candidates, 0.3)
+
+    assert {candidate["table_name"] for candidate in kept} == {
+        "sales.orders",
+        "sales.column_evidence",
+        "sales.required_context",
+    }
+    assert dropped == ["sales.semantic_decoy"]
+
+
+def test_enums_are_limited_to_columns_kept_in_schema_context():
+    enum_hits = [
+        {
+            "table_name": "sales.orders",
+            "column_name": "status",
+            "enum_label_cn": "已完成",
+        },
+        {
+            "table_name": "sales.orders",
+            "column_name": "internal_type",
+            "enum_label_cn": "无关类型",
+        },
+    ]
+    candidates = [
+        {
+            "table_name": "sales.orders",
+            "selected_columns": ["status", "amount"],
+        }
+    ]
+
+    kept, dropped_count = SchemaRetriever._filter_enums_by_selected_columns(
+        enum_hits,
+        candidates,
+    )
+
+    assert [hit["column_name"] for hit in kept] == ["status"]
+    assert dropped_count == 1
+
+
 def test_table_filter_is_escaped_and_combined_with_metadata_filter():
     result = add_table_name_filter(
         '(metadata["tenant"] == "uat")',
@@ -257,6 +322,8 @@ def test_glossary_requires_term_or_synonym_to_appear_in_query():
                     "term": "转账",
                     "definition": "转账交易",
                     "synonyms": '["transfer"]',
+                    "related_tables": '["sales.transfers"]',
+                    "related_columns": '["sales.transfers.transfer_type"]',
                 },
             ),
         ]
@@ -272,6 +339,8 @@ def test_glossary_requires_term_or_synonym_to_appear_in_query():
 
     assert result["matched_terms"] == ["转账"]
     assert result["rejected_terms"] == ["FX账户", "AC账户"]
+    assert result["related_tables"] == ["sales.transfers"]
+    assert result["related_columns"] == ["sales.transfers.transfer_type"]
 
 
 def test_fewshot_uses_table_structure_and_quality_after_hybrid_recall():

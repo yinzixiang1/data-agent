@@ -20,20 +20,20 @@ SchemaRetriever 是外部调用的唯一接口，封装了完整的检索流程:
 import logging
 from dataclasses import dataclass, field
 
-from src.retrieval.schema_loader import SchemaLoader
-from src.retrieval.embedding import get_embedding
-from src.retrieval.index_manager import IndexManager
-from src.retrieval.hybrid_searcher import HybridSearcher
-from src.retrieval.reranker import get_reranker
-from src.retrieval.fewshot_selector import FewShotSelector
-from src.retrieval.glossary_resolver import GlossaryResolver
-from src.retrieval.value_indexer import ValueIndexer
-from src.retrieval.ranker_strategy import get_search_params
-from src.retrieval.schema_formatter import SchemaFormatter
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.context_planner import SchemaContextPlanner
+from src.retrieval.embedding import get_embedding
 from src.retrieval.entity_resolver import EntityResolver
+from src.retrieval.fewshot_selector import FewShotSelector
+from src.retrieval.glossary_resolver import GlossaryResolver
+from src.retrieval.hybrid_searcher import HybridSearcher
+from src.retrieval.index_manager import IndexManager
 from src.retrieval.query_analyzer import QueryAnalyzer
+from src.retrieval.ranker_strategy import get_search_params
+from src.retrieval.reranker import get_reranker
+from src.retrieval.schema_formatter import SchemaFormatter
+from src.retrieval.schema_loader import SchemaLoader
+from src.retrieval.value_indexer import ValueIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +250,52 @@ class SchemaRetriever:
         logger.info(f"局部索引重建完成: [{rebuilt}]")
         return len(self.table_schemas)
 
+    @staticmethod
+    def _drop_weak_table_candidates(
+        candidates: list[dict],
+        score_threshold: float | None,
+    ) -> tuple[list[dict], list[str]]:
+        """Drop reranked tables that have neither score nor column evidence."""
+        if score_threshold is None:
+            return candidates, []
+        kept: list[dict] = []
+        dropped: list[str] = []
+        for candidate in candidates:
+            rerank_score = candidate.get("rerank_score")
+            is_weak = (
+                rerank_score is not None
+                and float(rerank_score) < score_threshold
+                and not candidate.get("hit_by_column")
+                and not candidate.get("pinned")
+            )
+            if is_weak:
+                dropped.append(str(candidate.get("table_name") or ""))
+            else:
+                kept.append(candidate)
+        return kept, dropped
+
+    @staticmethod
+    def _filter_enums_by_selected_columns(
+        enum_hits: list[dict],
+        candidates: list[dict],
+    ) -> tuple[list[dict], int]:
+        """Keep enum evidence only when its owning column remains in context."""
+        selected_by_table = {
+            str(candidate.get("table_name") or ""): {
+                str(column).casefold()
+                for column in candidate.get("selected_columns", [])
+                if column
+            }
+            for candidate in candidates
+        }
+        filtered = [
+            hit
+            for hit in enum_hits
+            if str(hit.get("column_name") or "").casefold()
+            in selected_by_table.get(str(hit.get("table_name") or ""), set())
+        ]
+        return filtered, len(enum_hits) - len(filtered)
+
     def retrieve(
         self,
         user_query: str,
@@ -259,6 +305,8 @@ class SchemaRetriever:
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
         requested_field_query: str | None = None,
+        inherited_tables: set[str] | None = None,
+        inherited_columns: set[str] | None = None,
     ) -> RetrievalResult:
         """
         完整 RAG 检索流程。
@@ -279,6 +327,8 @@ class SchemaRetriever:
             fewshot_k: Few-shot 示例数量，None 时用 config 值
             glossary_score_threshold: 术语匹配阈值
             biz_line: 业务线过滤（如 "banking"、"issuing"），为空则不过滤
+            inherited_tables: 上一轮已验证 SQL 中仍适用的表
+            inherited_columns: 上一轮已验证 SQL 中仍适用的列
 
         Returns:
             RetrievalResult
@@ -342,7 +392,16 @@ class SchemaRetriever:
         }
         required_tables.update(glossary_result.get("related_tables", []))
         required_tables.update(self.searcher._find_explicit_tables(user_query))
+        required_tables.update(inherited_tables or set())
         required_columns = set(glossary_result.get("related_columns", []))
+        required_columns.update(inherited_columns or set())
+        required_columns.update(
+            f"{hit['table_name']}.{hit['column_name']}"
+            for hit in value_hits
+            if hit.get("exact_match")
+            and hit.get("table_name")
+            and hit.get("column_name")
+        )
         required_tables.update(item["table"] for item in entity_filters)
         required_columns.update(item["qualified_column"] for item in entity_filters)
 
@@ -383,6 +442,19 @@ class SchemaRetriever:
             candidates = reranker.rerank(enriched_query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
+
+        candidates, dropped_tables = self._drop_weak_table_candidates(
+            candidates,
+            reranker.score_threshold if reranker and cfg.enable_reranker else None,
+        )
+        if dropped_tables:
+            logger.info(
+                "Low-evidence table candidates removed",
+                extra={
+                    "dropped_count": len(dropped_tables),
+                    "dropped_tables": dropped_tables,
+                },
+            )
 
         # 4b. 补回被 Reranker 砍掉的 pinned 表（如汇率表）
         hit_names = {c["table_name"] for c in candidates}
@@ -442,6 +514,12 @@ class SchemaRetriever:
                 per_table_limit=cfg.max_columns_per_table,
                 preserve_time_columns=query_analysis.has_time_filter,
             )
+            enum_hits, dropped_enum_count = self._filter_enums_by_selected_columns(
+                enum_hits,
+                candidates,
+            )
+            context_stats["weak_tables_dropped"] = len(dropped_tables)
+            context_stats["unrelated_enums_dropped"] = dropped_enum_count
 
         # 9. Prompt 组装
         intent_context = query_analysis.to_prompt_context()

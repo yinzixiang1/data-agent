@@ -1,5 +1,6 @@
 from src.retrieval.context_planner import SchemaContextPlanner
 from src.retrieval.document_builder import DocumentBuilder
+from src.retrieval.schema_formatter import OUTPUT_RULES, SchemaFormatter
 
 
 def _schemas():
@@ -245,6 +246,39 @@ def test_table_document_indexes_column_descriptions_and_business_logic():
 
     assert "amount(订单金额): 主订单的原币交易金额，不是账户余额" in document["text"]
     assert "按渠道汇总订单交易金额时使用" in document["text"]
+
+
+def test_sql_prompt_exposes_column_business_logic_and_grain_rules():
+    schema = _schemas()["sales.orders"]
+    schema["database"] = "sales"
+    schema["description"] = "每行一笔订单"
+    schema["columns"][2].update(
+        {
+            "description": "主订单的原币交易金额",
+            "business_logic": "订单粒度的金额统计字段",
+        }
+    )
+
+    prompt = SchemaFormatter().format_tables([{"schema": schema}])
+
+    assert "业务逻辑: 订单粒度的金额统计字段" in prompt
+    assert "先按表描述确认每张表的行粒度" in OUTPUT_RULES
+    assert "同一张表已经直接包含所需指标和筛选维度" in OUTPUT_RULES
+
+
+def test_fewshot_is_labeled_as_syntax_reference_not_schema_authority():
+    prompt = SchemaFormatter().format_fewshot(
+        [
+            {
+                "question": "最近一个月入金金额",
+                "sql": "SELECT SUM(amount) FROM ledger",
+            }
+        ]
+    )
+
+    assert "只展示 SQL 写法" in prompt
+    assert "不代表当前问题应使用相同的表或字段" in prompt
+    assert "示例与当前问题粒度或维度不一致时不得照搬" in OUTPUT_RULES
 
 
 def test_inline_enum_values_are_added_to_entity_value_index():

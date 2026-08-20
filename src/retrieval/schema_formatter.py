@@ -21,12 +21,16 @@ Prompt 格式化 — 析言风格，M-Schema + 【】结构化标记。
 OUTPUT_RULES = """【输出要求】
 1. 输出可执行的 SQL，用 ```sql ``` 包裹，不要任何多余解释
 2. 使用 Schema 中的精确列名和表名
-3. 优先使用已提供表中的字段，避免不必要的 JOIN
-4. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值
-5. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）
-6. 列别名使用中文双引号，如 COUNT(*) AS "数量"
-7. 优先用 WHERE 条件过滤，避免全表扫描
-8. 如果用户意图存在多种合理解释、无法唯一确定 SQL，输出一行 JSON：
+3. 先按表描述确认每张表的行粒度，选择与用户所问事实粒度一致的表
+4. 如果同一张表已经直接包含所需指标和筛选维度，直接使用该表，不要通过其他表间接推导
+5. amount、name、status 等通用字段必须按字段描述和业务逻辑解释，不能仅凭字段名猜测含义
+6. 参考示例只用于学习 SQL 写法，不能替代当前 Schema 决定表和字段；示例与当前问题粒度或维度不一致时不得照搬
+7. 优先使用已提供表中的字段，避免不必要的 JOIN
+8. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值
+9. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）
+10. 列别名使用中文双引号，如 COUNT(*) AS "数量"
+11. 优先用 WHERE 条件过滤，避免全表扫描
+12. 如果用户意图存在多种合理解释、无法唯一确定 SQL，输出一行 JSON：
    NEED_CLARIFY: {"question":"需要用户确认的问题","options":[{"label":"选项文案","value":"用于补充原问题的完整含义"}]}
    options 仅在有明确候选项时提供，最多 4 个；只是缺少开放式信息时输出空数组。不要因执行成本、SQL 风险或模型信心不足触发澄清。"""
 
@@ -51,7 +55,11 @@ class SchemaFormatter:
         if not examples:
             return ""
 
-        parts = ["【参考示例】"]
+        parts = [
+            "【参考示例】",
+            "以下示例只展示 SQL 写法，不代表当前问题应使用相同的表或字段；"
+            "当前问题的事实粒度、指标和筛选维度以本次 Schema 为准。",
+        ]
         for i, ex in enumerate(examples, 1):
             parts.append(f"示例 {i}:")
             parts.append(f"  问题：{ex['question']}")
@@ -180,6 +188,9 @@ class SchemaFormatter:
             desc = col.get("description", "")
             if desc and desc != display:
                 comment_parts.append(desc)
+            business_logic = col.get("business_logic", "")
+            if business_logic and business_logic not in comment_parts:
+                comment_parts.append(f"业务逻辑: {business_logic}")
             if col.get("enum_values"):
                 enum_str = self._format_enum_inline(col["enum_values"])
                 comment_parts.append(f"[{enum_str}]")

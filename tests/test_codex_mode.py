@@ -146,7 +146,7 @@ def test_codex_model_config_defaults_and_validation():
     )
     assert invalid.codex_reasoning_effort == "low"
     assert invalid.codex_timeout_seconds == 90
-    assert invalid.codex_max_concurrency == 1
+    assert invalid.codex_max_concurrency == 4
 
 
 def test_codex_structured_response_and_isolated_turns(monkeypatch):
@@ -241,6 +241,28 @@ def test_status_endpoint_filters_unknown_sensitive_fields(monkeypatch):
     response = asyncio.run(service.codex_status(object()))
     payload = response.model_dump(exclude_none=True)
     assert payload == {"status": "ready", "message": "ok", "models": ["model-a"]}
+
+
+def test_codex_test_runs_selected_model_without_leaking_response(monkeypatch):
+    import app as service
+
+    tested_models = []
+
+    monkeypatch.setattr(service, "_verify_admin_token", lambda request: None)
+    monkeypatch.setattr(
+        service,
+        "_run_codex_smoke_test",
+        lambda model_name: tested_models.append(model_name),
+    )
+
+    response = asyncio.run(
+        service.codex_test(service.CodexTestRequest(model=" model-a "), object())
+    )
+
+    assert tested_models == ["model-a"]
+    assert response.status == "success"
+    assert response.message == "model-a 调用成功"
+    assert response.latency_ms is not None
 
 
 def test_full_query_runs_in_worker_and_respects_concurrency(monkeypatch):

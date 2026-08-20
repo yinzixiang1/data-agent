@@ -15,9 +15,9 @@ NL2SQL Data Agent — FastAPI HTTP 服务入口。
 
 import asyncio
 import gzip
+import json
 import logging
 import os
-import json
 import re
 import secrets
 import shutil
@@ -25,7 +25,7 @@ import signal
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date as _date
+from datetime import datetime as _datetime
 from functools import partial
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -35,9 +35,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.config import (
@@ -71,6 +72,7 @@ from src.retrieval.query_logger import QueryLogger
 from src.retrieval.retriever import SchemaRetriever
 from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
+from src.retrieval.tool_planner import extract_tool_calls, tool_instructions
 
 
 # gRPC 后台线程可能阻止默认信号处理完成，服务进程必须直接退出。
@@ -265,7 +267,7 @@ def load_agent_databases(
             + (f" (filter={metadata_filter})" if metadata_filter else "")
         )
         return result
-    except Exception as e:
+    except (OSError, SQLAlchemyError, ValueError) as e:
         logger.error(f"加载 Agent 授权数据库失败: agent_id={agent_id}, error={e}")
         raise RuntimeError("无法确认 Agent 的数据库授权范围") from e
 
@@ -412,7 +414,7 @@ def _register_engine_url(agent_id: int):
             conn.commit()
         eng.dispose()
         logger.info(f"engine_url 已注册: agent_id={agent_id}, url={engine_url}")
-    except Exception as e:
+    except (OSError, SQLAlchemyError, ValueError) as e:
         logger.warning(f"engine_url 注册失败 (非致命): {e}")
 
 
@@ -441,7 +443,7 @@ def _close_llm_client(client: BaseChatModel | None) -> None:
         return
     try:
         close()
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         logger.warning(
             "LLM client cleanup failed", extra={"error_type": type(exc).__name__}
         )
@@ -540,7 +542,7 @@ def load_agent_config(agent_id: int | None = None) -> AgentRuntimeConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global retriever, validator, llm_client, agent_config, query_logger, query_cache
+    global llm_client, agent_config, query_logger, query_cache
     global codex_query_semaphore, codex_query_capacity
     global codex_runtime_swap_lock
 
@@ -588,7 +590,7 @@ async def lifespan(app: FastAPI):
         sock = socket.create_connection((m_host, m_port), timeout=5)
         sock.close()
         logger.info("Milvus 连接成功")
-    except (socket.timeout, OSError) as e:
+    except (TimeoutError, OSError) as e:
         logger.error(f"Milvus 连接失败: {milvus_uri} — {e}")
         raise SystemExit(f"启动中止: Milvus 不可达 ({milvus_uri})")
 
@@ -684,7 +686,9 @@ class QueryMetadata(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(..., description="用户自然语言问题")
-    session_id: str = Field(default="", description="会话 ID，为空则自动生成")
+    session_id: str = Field(
+        default="", max_length=32, description="32 位会话 ID，为空则自动生成"
+    )
     agent_id: int | None = Field(
         default=None, description="Agent ID，为空则使用默认配置"
     )
@@ -760,6 +764,10 @@ class QueryResponse(BaseModel):
     query_state: dict = Field(
         default_factory=dict, description="合并后的结构化查询状态"
     )
+    tool_calls: list[dict] = Field(
+        default_factory=list,
+        description="经注册表与输入 Schema 校验后的结果工具调用",
+    )
 
 
 class IndexRebuildRequest(BaseModel):
@@ -792,6 +800,22 @@ class CodexStatusResponse(BaseModel):
     message: str
     cli_version: str | None = None
     models: list[str] | None = None
+
+
+class CodexTestRequest(BaseModel):
+    model: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        pattern=r".*\S.*",
+        description="要实际调用的 Codex 模型名称",
+    )
+
+
+class CodexTestResponse(BaseModel):
+    status: str
+    message: str
+    latency_ms: int | None = None
 
 
 class EvalRunRequest(BaseModel):
@@ -884,6 +908,9 @@ def _run_query_impl(
 
     effective_question = question
     previous_sql = ""
+    previous_sql_context: dict[str, list[str]] = {}
+    inherited_tables: set[str] = set()
+    inherited_columns: set[str] = set()
     query_state = ContextCompressor.infer_state(question)
     interpretation = ""
     context_relation = "new_question"
@@ -891,6 +918,7 @@ def _run_query_impl(
         t0 = _time.monotonic()
         previous_state = ContextCompressor.parse_summary(history_summary)
         previous_sql = previous_state["sql"]
+        previous_sql_context = previous_state["sql_context"]
         compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
         merge_result = compressor.merge(history_summary, question)
         effective_question = merge_result.effective_question
@@ -942,6 +970,10 @@ def _run_query_impl(
                 "interpretation": interpretation,
                 "query_state": query_state.to_dict(),
             }
+        if merge_result.relation != "new_question":
+            inherited_tables.update(previous_state["tables"])
+            inherited_tables.update(previous_sql_context.get("tables", []))
+            inherited_columns.update(previous_sql_context.get("columns", []))
 
     # RAG 检索（用压缩后的完整问题）
     t0 = _time.monotonic()
@@ -953,6 +985,8 @@ def _run_query_impl(
         biz_line=biz_line,
         metadata_filter=metadata_filter,
         requested_field_query=question,
+        inherited_tables=inherited_tables,
+        inherited_columns=inherited_columns,
     )
     retrieval_ms = _elapsed_ms(t0)
 
@@ -1092,12 +1126,25 @@ def _run_query_impl(
     _ctx = metadata_context or {}
     _param_mode = _ctx.get("param_mode", False)
     _placeholder_fields = _ctx.get("placeholder_fields", [])
+    allowed_tool_names = _ctx.get("enabled_tools")
+    available_tools = list(config.tools)
+    if isinstance(allowed_tool_names, list):
+        allowed = {
+            str(name).strip()
+            for name in allowed_tool_names
+            if isinstance(name, str) and name.strip()
+        }
+        available_tools = [
+            tool for tool in available_tools if str(tool.get("name") or "") in allowed
+        ]
 
     prompt_text = result.prompt_text
-    if previous_sql and context_relation == "follow_up_add":
+    if previous_sql and context_relation != "new_question":
         prompt_text += (
-            "\n\n【上一轮成功结果（本轮补充材料）】\n"
-            "本轮已识别为增量追加；保留原有查询条件、展示维度和指标后再增加新内容。\n"
+            "\n\n【上一轮成功结果（本轮结构基线）】\n"
+            "根据本轮完整查询状态修改此 SQL。用户未明确替换或删除的表、字段、"
+            "展示维度、聚合方式和过滤条件必须保留；用户明确修改的内容以本轮为准。\n"
+            f"上一轮 SQL 结构：{json.dumps(previous_sql_context, ensure_ascii=False)}\n"
             f"```sql\n{previous_sql}\n```"
         )
     if _param_mode and _placeholder_fields:
@@ -1119,9 +1166,11 @@ def _run_query_impl(
         prompt_text = re.sub(
             r"【输出要求】.*", param_mode_rules, prompt_text, flags=re.DOTALL
         )
+    prompt_text += tool_instructions(available_tools, choice=config.tool_choice)
 
     # 构建对话（注入当前日期，避免 LLM 因知识截止而误判年份）
-    _system_content = f"{config.system_prompt}\n\n当前日期: {_date.today().isoformat()}"
+    current_date = _datetime.now().astimezone().date().isoformat()
+    _system_content = f"{config.system_prompt}\n\n当前日期: {current_date}"
     messages = [
         {"role": "system", "content": _system_content},
         {"role": "user", "content": prompt_text},
@@ -1223,6 +1272,12 @@ def _run_query_impl(
         clarify_msg = clarification["question"] if clarification else None
         extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
 
+    tool_calls = extract_tool_calls(
+        answer,
+        available_tools,
+        max_calls=config.tool_max_calls,
+    )
+
     if not extracted_sql and not clarify_msg:
         is_success = False
         error_msg = "模型未生成可执行 SQL"
@@ -1301,10 +1356,7 @@ def _run_query_impl(
     projection_validation_attempts = []
     if (
         extracted_sql
-        and (
-            result.requested_fields
-            or result.query_intent.get("count_only")
-        )
+        and (result.requested_fields or result.query_intent.get("count_only"))
         and is_success
     ):
         max_projection_fix_retries = min(max(config.max_fix_retries, 0), 2)
@@ -1330,7 +1382,7 @@ def _run_query_impl(
             if result.query_intent.get("count_only"):
                 repair_instruction = (
                     "请把最终 SELECT 改为唯一一个 COUNT 结果列，移除金额、币种、汇率等其他结果列，"
-                    "移除 GROUP BY 和汇率表关联；保留仍适用的时间范围与出金等筛选条件。"
+                    "移除 GROUP BY 和汇率表关联；保留当前查询状态中仍适用的筛选条件。"
                 )
             else:
                 repair_instruction = (
@@ -1519,6 +1571,8 @@ def _run_query_impl(
                     "attempt": attempt + 1,
                     "valid": check["valid"],
                     "error": check.get("error", ""),
+                    "connection_retries": check.get("connection_retries", 0),
+                    "infrastructure_error": bool(check.get("infrastructure_error")),
                 }
             )
             if check["valid"]:
@@ -1529,6 +1583,9 @@ def _run_query_impl(
             logger.info(
                 f"EXPLAIN 失败 (第 {retry_count}/{config.max_fix_retries} 次): {check['error']}"
             )
+
+            if check.get("infrastructure_error"):
+                break
 
             if attempt < config.max_fix_retries - 1:
                 messages.append(
@@ -1558,7 +1615,7 @@ def _run_query_impl(
             is_success = False
             error_msg = check["error"] if check else "EXPLAIN 校验失败"
 
-        # 执行计划分析
+        # 执行计划规则检查；仅在规则判定不安全时调用模型修复。
         if syntax_ok and check and check.get("plan"):
             plan_safety = SQLValidator.inspect_plan(
                 check["plan"], max_scan_rows=config.max_explain_scan_rows
@@ -1567,29 +1624,27 @@ def _run_query_impl(
             if not plan_safety["safe"]:
                 is_success = False
                 error_msg = "；".join(plan_safety["warnings"])
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"请分析这条 SQL 的 EXPLAIN 执行计划，判断是否有明显性能问题。\n\n"
-                    f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
-                    f"## 规则检查\n{'; '.join(plan_safety['warnings']) or '未发现硬性风险'}\n\n"
-                    f"关注：笛卡尔积、扫描行数过大、缺少分区裁剪、JOIN 顺序。\n"
-                    f"如果有优化空间，输出优化后的 SQL，用 ```sql ``` 包裹。如果没问题，只回复：LGTM",
-                }
-            )
-            t0 = _time.monotonic()
-            review_result, usage = _invoke(messages)
-            llm_calls.append(
-                {
-                    "role": "plan_review",
-                    "duration_ms": _elapsed_ms(t0),
-                    "model": config.llm_model,
-                    "output": review_result,
-                    "input_tokens": usage.get("input_tokens") if usage else None,
-                    "output_tokens": usage.get("output_tokens") if usage else None,
-                }
-            )
-            if "LGTM" not in review_result.upper():
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"这条 SQL 的 EXPLAIN 执行计划存在明确风险。\n\n"
+                        f"## EXPLAIN 执行计划\n```\n{check['plan']}\n```\n\n"
+                        f"## 规则检查\n{'; '.join(plan_safety['warnings'])}\n\n"
+                        "请修复这些风险并输出优化后的 SQL，用 ```sql ``` 包裹。",
+                    }
+                )
+                t0 = _time.monotonic()
+                review_result, usage = _invoke(messages)
+                llm_calls.append(
+                    {
+                        "role": "plan_fix",
+                        "duration_ms": _elapsed_ms(t0),
+                        "model": config.llm_model,
+                        "output": review_result,
+                        "input_tokens": usage.get("input_tokens") if usage else None,
+                        "output_tokens": usage.get("output_tokens") if usage else None,
+                    }
+                )
                 recheck = validator.validate(review_result)
                 if recheck["valid"]:
                     optimized_safety = SQLValidator.inspect_plan(
@@ -1830,7 +1885,7 @@ def _run_query_impl(
             }
         )
 
-    # SQL 执行 & 结果总结（param_mode 下跳过执行，? 占位符无法直接执行）
+    # SQL 执行（param_mode 下跳过执行，? 占位符无法直接执行）
     query_result_data = None
     execution_error = ""
     summary = ""
@@ -1838,7 +1893,10 @@ def _run_query_impl(
     if (
         final_sql
         and is_success
-        and config.enable_execute
+        and (
+            config.enable_execute
+            or any(call.get("requires_query_result") for call in tool_calls)
+        )
         and not _param_mode
         and validator
     ):
@@ -1927,7 +1985,7 @@ def _run_query_impl(
                             f"输出简化后的 SQL，用 ```sql ``` 包裹。保持查询意图不变。"
                         )
                         messages.append({"role": "user", "content": timeout_prompt})
-                        timeout_answer, t_usage = _invoke(messages)
+                        timeout_answer, _t_usage = _invoke(messages)
                         llm_calls.append(
                             {
                                 "role": "timeout_simplify",
@@ -2223,117 +2281,6 @@ def _run_query_impl(
                     "row_count": exec_result["row_count"],
                     "truncated": exec_result["truncated"],
                 }
-
-                # ── P1: 空结果智能分析 ──
-                if exec_result["row_count"] == 0 and config.enable_empty_analysis:
-                    t0 = _time.monotonic()
-                    empty_prompt = (
-                        f"用户问题：{effective_question}\n\n"
-                        f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
-                        f"查询结果为空（0 行）。请分析可能的原因：\n"
-                        f"1. WHERE 条件是否过于严格？（时间范围、状态值、币种等）\n"
-                        f"2. 表或字段是否选择正确？\n"
-                        f"3. JOIN 条件是否导致数据被过滤？\n\n"
-                        f"请给出可能的原因（1-3 条），用简洁的自然语言回答。"
-                    )
-                    empty_msgs = [
-                        {
-                            "role": "system",
-                            "content": "你是一个数据分析助手，负责分析 SQL 查询结果为空的原因。",
-                        },
-                        {"role": "user", "content": empty_prompt},
-                    ]
-                    try:
-                        summary, e_usage = _invoke(empty_msgs)
-                        trace_steps.append(
-                            {
-                                "step": "empty_analysis",
-                                "duration_ms": _elapsed_ms(t0),
-                                "output": summary,
-                            }
-                        )
-                    except Exception as e:
-                        logger.warning(f"空结果分析失败: {e}")
-
-                # ── P3: 结果合理性检验 + LLM 总结 ──
-                elif config.enable_summarize and exec_result["row_count"] > 0:
-                    t0 = _time.monotonic()
-                    summary_rows = exec_result["rows"][:50]
-                    result_text = " | ".join(exec_result["columns"]) + "\n"
-                    for row in summary_rows:
-                        result_text += " | ".join(str(c) for c in row) + "\n"
-                    if len(exec_result["rows"]) > 50:
-                        result_text += (
-                            f"... (共 {exec_result['row_count']} 行，仅展示前 50 行)\n"
-                        )
-
-                    # 规则型预检
-                    result_warnings = []
-                    if config.enable_result_check:
-                        result_warnings = SQLValidator.check_result_anomalies(
-                            effective_question,
-                            final_sql,
-                            exec_result["columns"],
-                            exec_result["rows"],
-                        )
-
-                    # 构建总结 Prompt（含合理性审查指令）
-                    if config.enable_result_check:
-                        summarize_prompt = (
-                            f"用户问题：{effective_question}\n\n"
-                            f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
-                            f"查询结果：\n{result_text}\n\n"
-                        )
-                        if result_warnings:
-                            summarize_prompt += (
-                                "规则预检发现以下异常：\n"
-                                + "\n".join(f"- {w}" for w in result_warnings)
-                                + "\n\n"
-                            )
-                        summarize_prompt += (
-                            "请完成两项任务：\n\n"
-                            "**1. 合理性审查**\n"
-                            "检查：数值是否合理、时间范围是否与问题一致、结果行数是否匹配查询意图、是否有异常。\n"
-                            "如发现异常，在回答开头用 [数据提示] 标注。\n\n"
-                            "**2. 结果总结**\n"
-                            "用简洁的自然语言回答用户的问题。如果数据量较多，概括关键数据点。不要重复 SQL。"
-                        )
-                    else:
-                        summarize_prompt = (
-                            f"用户问题：{effective_question}\n\n"
-                            f"执行的 SQL：\n```sql\n{final_sql}\n```\n\n"
-                            f"查询结果：\n{result_text}\n\n"
-                            f"请用简洁的自然语言总结以上查询结果，直接回答用户的问题。"
-                            f"如果数据量较多，概括关键数据点。不要重复 SQL。"
-                        )
-
-                    summarize_msgs = [
-                        {
-                            "role": "system",
-                            "content": "你是一个数据分析助手，负责将 SQL 查询结果转化为用户易懂的自然语言回答。",
-                        },
-                        {"role": "user", "content": summarize_prompt},
-                    ]
-                    try:
-                        summary, s_usage = _invoke(summarize_msgs)
-                        summarize_ms = _elapsed_ms(t0)
-                        trace_data = {
-                            "step": "result_summarize",
-                            "duration_ms": summarize_ms,
-                            "output": summary,
-                            "tokens": (
-                                s_usage.get("input_tokens", 0)
-                                + s_usage.get("output_tokens", 0)
-                            )
-                            if s_usage
-                            else 0,
-                        }
-                        if result_warnings:
-                            trace_data["result_warnings"] = result_warnings
-                        trace_steps.append(trace_data)
-                    except Exception as e:
-                        logger.warning(f"结果总结失败: {e}")
-                        summary = ""
             else:
                 execution_error = exec_result["error"] or "SQL 执行失败"
 
@@ -2360,6 +2307,7 @@ def _run_query_impl(
         "effective_question": effective_question,
         "steps": trace_steps,
         "total_duration_ms": _elapsed_ms(t_start),
+        "tool_calls": tool_calls,
     }
 
     return {
@@ -2396,6 +2344,7 @@ def _run_query_impl(
         "clarification": clarification,
         "interpretation": interpretation,
         "query_state": query_state.to_dict(),
+        "tool_calls": tool_calls,
     }
 
 
@@ -2478,10 +2427,70 @@ async def codex_status(request: Request) -> CodexStatusResponse:
     )
 
 
+def _run_codex_smoke_test(model_name: str) -> None:
+    from src.retrieval.codex_chat_model import (
+        CodexChatModel,
+        CodexModelError,
+        codex_query_budget,
+    )
+
+    client = CodexChatModel(
+        model_name=model_name,
+        reasoning_effort="low",
+        timeout_seconds=60,
+        max_concurrency=1,
+    )
+    try:
+        with codex_query_budget(60):
+            response = client.invoke([HumanMessage(content="只回复 OK。")])
+        if not str(response.content).strip():
+            raise CodexModelError("Codex 未返回有效结果，请稍后重试")
+    finally:
+        client.close()
+
+
+@app.post(
+    "/admin/codex/test",
+    response_model=CodexTestResponse,
+    response_model_exclude_none=True,
+)
+async def codex_test(req: CodexTestRequest, request: Request) -> CodexTestResponse:
+    """Run an isolated minimal generation with the selected Codex model."""
+    _verify_admin_token(request)
+    model_name = req.model.strip()
+    start = time.monotonic()
+    try:
+        await anyio.to_thread.run_sync(partial(_run_codex_smoke_test, model_name))
+    except (OSError, RuntimeError, ValueError) as exc:
+        from src.retrieval.codex_chat_model import CodexModelError
+
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if isinstance(exc, CodexModelError):
+            return CodexTestResponse(
+                status="error",
+                message=str(exc),
+                latency_ms=latency_ms,
+            )
+        logger.error(
+            "Codex model test failed",
+            extra={"model": model_name, "error_type": type(exc).__name__},
+        )
+        return CodexTestResponse(
+            status="error",
+            message="Codex 测试请求无法完成",
+            latency_ms=latency_ms,
+        )
+    return CodexTestResponse(
+        status="success",
+        message=f"{model_name} 调用成功",
+        latency_ms=int((time.monotonic() - start) * 1000),
+    )
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
     start_time = time.time()
-    session_id = req.session_id or str(uuid.uuid4())[:8]
+    session_id = req.session_id or uuid.uuid4().hex
 
     if not agent_config or not llm_client:
         raise HTTPException(status_code=503, detail="服务尚未完成初始化")
@@ -2526,7 +2535,7 @@ async def query(req: QueryRequest, request: Request):
                 return QueryResponse.model_validate(
                     {**replay_response, "log_id": replay_log_id}
                 )
-            except Exception:
+            except ValidationError:
                 logger.warning(
                     "忽略无效的 Lark 幂等响应快照",
                     extra={"trace_id": meta.trace_id, "log_id": replay_log_id},
@@ -2647,6 +2656,7 @@ async def query(req: QueryRequest, request: Request):
                     "placeholder": result.get("placeholder", ""),
                     "interpretation": result.get("interpretation", ""),
                     "query_state": result.get("query_state", {}),
+                    "tool_calls": result.get("tool_calls", []),
                 },
                 context_key=_cache_ctx,
             )
@@ -2675,6 +2685,7 @@ async def query(req: QueryRequest, request: Request):
             clarification=result.get("clarification"),
             interpretation=result.get("interpretation", ""),
             query_state=result.get("query_state", {}),
+            tool_calls=result.get("tool_calls", []),
         )
 
         # Lark 请求把完整、JSON-safe 的响应快照与查询日志一起提交；Admin
@@ -2714,9 +2725,9 @@ async def query(req: QueryRequest, request: Request):
 
         return response.model_copy(update={"log_id": log_id})
 
-    except Exception as e:
+    except (OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as e:
         elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"查询处理异常: {e}", exc_info=True)
+        logger.exception("查询处理异常")
 
         error_response = QueryResponse(
             session_id=session_id,
@@ -2795,8 +2806,8 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
     except AgentDatasourceNotConfiguredError as e:
         logger.info(f"索引重建等待数据源配置: {e}")
         return IndexRebuildResponse(status="error", message=str(e))
-    except Exception as e:
-        logger.error(f"索引重建失败: {e}", exc_info=True)
+    except (OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as e:
+        logger.exception("索引重建失败")
         return IndexRebuildResponse(status="error", message=str(e))
 
 
@@ -2853,8 +2864,8 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
             agent_name=agent_config.agent_name,
             config_source=agent_config.config_source,
         )
-    except Exception as e:
-        logger.error(f"配置重载失败: {e}", exc_info=True)
+    except (OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as e:
+        logger.exception("配置重载失败")
         return ConfigReloadResponse(status="error", message=str(e))
 
 
@@ -2862,8 +2873,6 @@ async def config_reload(req: ConfigReloadRequest, request: Request):
 async def evaluation_run(req: EvalRunRequest, request: Request):
     """执行评估：逐条运行 case，返回结果。"""
     _verify_admin_token(request)
-    global agent_config, llm_client
-
     if (
         not retriever
         or not retriever._initialized
@@ -2929,7 +2938,7 @@ async def evaluation_run(req: EvalRunRequest, request: Request):
                 }
             )
 
-        except Exception as e:
+        except (OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as e:
             fail_count += 1
             results.append(
                 {

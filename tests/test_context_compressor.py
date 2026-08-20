@@ -18,6 +18,13 @@ def test_context_summary_roundtrip_preserves_verified_sql():
         "question": "查询最近一个月交易",
         "tables": ["banking.transactions"],
         "sql": "SELECT transaction_type, COUNT(*) FROM banking.transactions",
+        "sql_context": {
+            "tables": ["banking.transactions"],
+            "columns": ["banking.transactions.transaction_type"],
+            "projections": ["transaction_type", "COUNT(*)"],
+            "dimensions": [],
+            "filters": [],
+        },
         "query_state": {
             "subject": "",
             "time_range": "最近一个月",
@@ -30,6 +37,19 @@ def test_context_summary_roundtrip_preserves_verified_sql():
     }
 
 
+def test_extract_sql_context_assigns_unqualified_columns_for_single_table():
+    context = ContextCompressor.extract_sql_context(
+        "SELECT channel, COUNT(*) FROM analytics.orders "
+        "WHERE status = 'SUCCESS' GROUP BY channel"
+    )
+
+    assert context["tables"] == ["analytics.orders"]
+    assert {
+        "analytics.orders.channel",
+        "analytics.orders.status",
+    } <= set(context["columns"])
+
+
 def test_context_summary_parser_supports_legacy_format():
     payload = ContextCompressor.parse_summary(
         "查询最近一个月交易|||banking.transactions,banking.accounts"
@@ -39,6 +59,13 @@ def test_context_summary_parser_supports_legacy_format():
         "question": "查询最近一个月交易",
         "tables": ["banking.transactions", "banking.accounts"],
         "sql": "",
+        "sql_context": {
+            "tables": [],
+            "columns": [],
+            "projections": [],
+            "dimensions": [],
+            "filters": [],
+        },
         "query_state": {
             "subject": "",
             "time_range": "",
@@ -67,22 +94,26 @@ def test_count_only_correction_removes_previous_amount_and_currency_state():
     )
     model = _FakeModel(
         {
-            "relation": "follow_up_modify",
+            "relation": "correction_override",
             "query_state": {
                 "subject": "出金交易",
                 "time_range": "最近一个月",
                 "filters": ["交易类型为出金"],
-                "metrics": ["交易次数", "原币金额", "折美元金额"],
-                "dimensions": ["原币种"],
-                "currency_conversion": "USD",
-                "exclusions": [],
+                "metrics": ["count"],
+                "dimensions": [],
+                "currency_conversion": "",
+                "exclusions": ["金额", "币种维度", "币种换算"],
             },
-            "changes": {"kept": ["最近一个月"], "set": [], "removed": []},
+            "changes": {
+                "kept": ["最近一个月", "交易类型为出金"],
+                "set": ["仅统计交易次数"],
+                "removed": ["金额", "币种维度", "币种换算"],
+            },
             "effective_question": (
-                "最近一个月统计出金交易次数、原币金额和折美元金额，按币种分组"
+                "最近一个月只统计出金交易次数，不返回金额，不按币种分组，不进行币种换算"
             ),
-            "interpretation": "保留上一轮统计方式。",
-            "confidence": 0.8,
+            "interpretation": "保留时间和出金筛选，改为只统计次数。",
+            "confidence": 0.95,
             "needs_clarification": False,
             "clarification": {"question": "", "options": []},
         }
