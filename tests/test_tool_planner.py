@@ -1,6 +1,7 @@
 """Structured result tool planning tests."""
 
 from src.retrieval.tool_planner import (
+    declared_action_count,
     extract_planned_tool_calls,
     extract_tool_calls,
     tool_instructions,
@@ -94,3 +95,4 @@ def test_extract_planned_tool_calls_rejects_unregistered_or_invalid_calls() -> N
     )
 
     assert extract_planned_tool_calls(answer, TOOLS) == []
+    assert declared_action_count(answer) == 2

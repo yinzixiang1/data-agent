@@ -73,6 +73,7 @@ from src.retrieval.retriever import SchemaRetriever
 from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
 from src.retrieval.tool_planner import (
+    declared_action_count,
     extract_planned_tool_calls,
     tool_planning_messages,
 )
@@ -1871,19 +1872,45 @@ def _run_query_impl(
         planner_answer = ""
         planner_error = ""
         planner_usage = None
+        planner_attempts: list[str] = []
         try:
-            planner_answer, planner_usage = _invoke(
-                tool_planning_messages(
-                    question,
-                    available_tools,
-                    choice=config.tool_choice,
-                )
+            planner_messages = tool_planning_messages(
+                question,
+                available_tools,
+                choice=config.tool_choice,
             )
+            planner_answer, planner_usage = _invoke(planner_messages)
+            planner_attempts.append(planner_answer)
             tool_calls = extract_planned_tool_calls(
                 planner_answer,
                 available_tools,
                 max_calls=config.tool_max_calls,
             )
+            if not tool_calls and (
+                declared_action_count(planner_answer) > 0
+                or config.tool_choice == "required"
+            ):
+                planner_messages.extend(
+                    [
+                        {"role": "assistant", "content": planner_answer},
+                        {
+                            "role": "user",
+                            "content": (
+                                "上一条 JSON 未通过输入 Schema 的结构校验。"
+                                "保留动作语义，只修复结构：arguments 必须包含全部 required "
+                                "字段；枚举值只能来自 enum；additionalProperties 为 false 时"
+                                "不得增加未声明字段。返回完整 JSON。"
+                            ),
+                        },
+                    ]
+                )
+                planner_answer, planner_usage = _invoke(planner_messages)
+                planner_attempts.append(planner_answer)
+                tool_calls = extract_planned_tool_calls(
+                    planner_answer,
+                    available_tools,
+                    max_calls=config.tool_max_calls,
+                )
         except Exception as exc:
             planner_error = type(exc).__name__
             logger.warning(
@@ -1905,6 +1932,7 @@ def _run_query_impl(
                 ],
                 "selected_tools": [call["name"] for call in tool_calls],
                 "output": planner_answer,
+                "attempts": planner_attempts,
                 "error": planner_error,
                 "input_tokens": planner_usage.get("input_tokens")
                 if planner_usage
