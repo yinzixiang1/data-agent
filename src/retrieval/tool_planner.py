@@ -12,12 +12,15 @@ _SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
 _TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果交付方式分类器。
 只做声明式分类，不执行任何操作，不生成 SQL，也不补充业务语义。
-只能依据用户请求和提供的动作名称、显示名称及描述做决定。
+latest_user_request 是用户本轮的原始请求，必须优先用它判断动作意图；
+query_context 只说明动作所作用的数据查询，不得覆盖或改写本轮动作意图。
+只能依据这些请求信息和提供的动作名称、显示名称、描述及意图短语做决定。
 如果请求中的结果呈现、交付、保存或传递意图与某项动作的能力语义匹配，必须选择该动作；
 请求同时包含数据查询不影响动作选择，也不要求用户逐字说出动作名称。
 每个 arguments 必须满足对应 input_schema：不得遗漏 required 字段，枚举值必须来自 enum，
-additionalProperties 为 false 时不得增加未声明字段。
+additionalProperties 为 false 时不得增加未声明字段，数组数量必须满足 minItems 和 maxItems。
 input_schema 中的可选参数在用户请求存在明确依据时应一并填写；没有依据时不得猜测。
+query_projection 非空时，它是本轮查询的输出字段证据；动作参数引用字段时必须逐字使用其中的输出别名。
 返回且只返回一个 JSON 对象，格式为 {"actions":[{"name":"动作名称","arguments":{}}]}。
 没有符合条件的动作时返回 {"actions":[]}。"""
 
@@ -53,6 +56,8 @@ def tool_planning_messages(
     tools: list[dict[str, Any]],
     *,
     choice: str = "auto",
+    query_projection: list[str] | None = None,
+    query_context: str = "",
 ) -> list[dict[str, str]]:
     """Build a focused, business-agnostic result-action planning request."""
     public_tools = _public_tool_contracts(tools)
@@ -65,8 +70,12 @@ def tool_planning_messages(
         )
     )
     request = {
-        "user_request": question,
+        "latest_user_request": question,
+        "query_context": query_context,
         "available_actions": public_tools,
+        "query_projection": [
+            str(item) for item in (query_projection or []) if str(item).strip()
+        ],
         "selection_rule": decision_rule,
     }
     return [
@@ -76,6 +85,29 @@ def tool_planning_messages(
             "content": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
         },
     ]
+
+
+def explicitly_requested_tools(
+    question: str,
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return tools whose registered action phrases occur in the latest request."""
+    normalized_question = _normalize_intent_text(question)
+    if not normalized_question:
+        return []
+
+    matched = []
+    for tool in tools:
+        phrases = tool.get("intent_phrases")
+        if not isinstance(phrases, list):
+            continue
+        if any(
+            normalized_phrase and normalized_phrase in normalized_question
+            for phrase in phrases
+            if (normalized_phrase := _normalize_intent_text(phrase))
+        ):
+            matched.append(tool)
+    return matched
 
 
 def extract_planned_tool_calls(
@@ -135,11 +167,20 @@ def _public_tool_contracts(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "name": name,
                 "display_name": str(tool.get("display_name") or name).strip(),
                 "description": str(tool.get("description") or "").strip(),
+                "intent_phrases": [
+                    str(item).strip()
+                    for item in (tool.get("intent_phrases") or [])
+                    if str(item).strip()
+                ],
                 "input_schema": tool.get("input_schema")
                 or {"type": "object", "properties": {}},
             }
         )
     return contracts
+
+
+def _normalize_intent_text(value: Any) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
 
 
 def _decode_planner_payload(answer: str) -> Any:
@@ -237,6 +278,20 @@ def _valid_value(value: Any, schema: Any) -> bool:
     if isinstance(enum, list) and value not in enum:
         return False
     if expected == "array":
+        min_items = schema.get("minItems")
+        if (
+            isinstance(min_items, int)
+            and not isinstance(min_items, bool)
+            and len(value) < min_items
+        ):
+            return False
+        max_items = schema.get("maxItems")
+        if (
+            isinstance(max_items, int)
+            and not isinstance(max_items, bool)
+            and len(value) > max_items
+        ):
+            return False
         item_schema = schema.get("items")
         return isinstance(item_schema, dict) and all(
             _valid_value(item, item_schema) for item in value

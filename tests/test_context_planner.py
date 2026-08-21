@@ -264,6 +264,7 @@ def test_sql_prompt_exposes_column_business_logic_and_grain_rules():
     assert "业务逻辑: 订单粒度的金额统计字段" in prompt
     assert "先按表描述确认每张表的行粒度" in OUTPUT_RULES
     assert "同一张表已经直接包含所需指标和筛选维度" in OUTPUT_RULES
+    assert "业务说明（database.table）" in OUTPUT_RULES
 
 
 def test_fewshot_is_labeled_as_syntax_reference_not_schema_authority():

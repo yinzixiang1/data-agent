@@ -74,6 +74,7 @@ from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
 from src.retrieval.tool_planner import (
     declared_action_count,
+    explicitly_requested_tools,
     extract_planned_tool_calls,
     tool_planning_messages,
 )
@@ -712,6 +713,21 @@ class QueryRequest(BaseModel):
     )
 
 
+class SavedQueryRequest(BaseModel):
+    """A previously validated query that only needs deterministic execution."""
+
+    sql: str = Field(..., min_length=1, max_length=50000)
+    agent_id: int | None = Field(default=None)
+    metadata: QueryMetadata | None = Field(default=None)
+    row_limit: int = Field(default=500, ge=1, le=2000)
+
+
+class SavedQueryResponse(BaseModel):
+    is_success: bool
+    query_result: dict | None = None
+    execution_error: str = ""
+
+
 class ClarificationOption(BaseModel):
     label: str
     value: str
@@ -1133,14 +1149,29 @@ def _run_query_impl(
     allowed_tool_names = _ctx.get("enabled_tools")
     available_tools = list(config.tools)
     if isinstance(allowed_tool_names, list):
-        allowed = {
+        normalized_tool_names = [
             str(name).strip()
             for name in allowed_tool_names
             if isinstance(name, str) and name.strip()
-        }
+        ]
+        allowed = set(normalized_tool_names)
+        if CONFIG_SOURCE == "mysql" and config_loader is not None:
+            refreshed_tools = config_loader.load_tool_resources(normalized_tool_names)
+            if refreshed_tools:
+                available_tools = refreshed_tools
         available_tools = [
             tool for tool in available_tools if str(tool.get("name") or "") in allowed
         ]
+    pending_result_tool_names = {
+        str(name).strip()
+        for name in _ctx.get("pending_result_tools", [])
+        if isinstance(name, str) and name.strip()
+    }
+    pending_result_tools = [
+        tool
+        for tool in available_tools
+        if str(tool.get("name") or "") in pending_result_tool_names
+    ]
 
     prompt_text = result.prompt_text
     if previous_sql and context_relation != "new_question":
@@ -1712,6 +1743,37 @@ def _run_query_impl(
         "" if clarification is not None else SQLValidator.extract_sql(answer) or ""
     )
 
+    if clarification is not None:
+        table_references = []
+        seen_table_names = set()
+        for table in result.relevant_tables:
+            if not isinstance(table, dict):
+                continue
+            schema = table.get("schema")
+            schema = schema if isinstance(schema, dict) else {}
+            table_name = str(
+                table.get("table_name") or schema.get("table_name") or ""
+            ).strip()
+            if not table_name or table_name in seen_table_names:
+                continue
+            seen_table_names.add(table_name)
+            description = str(
+                schema.get("description") or schema.get("table_comment") or ""
+            ).strip()
+            table_references.append(
+                {
+                    "name": table_name[:200],
+                    "description": description[:200],
+                }
+            )
+            if len(table_references) == 6:
+                break
+        if table_references:
+            clarification = {
+                **clarification,
+                "table_references": table_references,
+            }
+
     if final_sql:
         read_only, read_only_error = SQLValidator.validate_read_only(final_sql)
         if not read_only:
@@ -1867,7 +1929,16 @@ def _run_query_impl(
                 currency_error or schema_error or projection_error or entity_error
             )
 
-    if final_sql and is_success and available_tools and config.tool_choice != "none":
+    explicit_tools = explicitly_requested_tools(question, available_tools)
+    planner_tools = pending_result_tools or explicit_tools or available_tools
+    planner_choice = (
+        "required" if pending_result_tools or explicit_tools else config.tool_choice
+    )
+    if (
+        ((final_sql and is_success) or clarification is not None)
+        and planner_tools
+        and planner_choice != "none"
+    ):
         t0 = _time.monotonic()
         planner_answer = ""
         planner_error = ""
@@ -1875,20 +1946,30 @@ def _run_query_impl(
         planner_attempts: list[str] = []
         try:
             planner_messages = tool_planning_messages(
-                effective_question,
-                available_tools,
-                choice=config.tool_choice,
+                question,
+                planner_tools,
+                choice=planner_choice,
+                query_context=(
+                    effective_question if effective_question != question else ""
+                ),
+                query_projection=(
+                    ContextCompressor.extract_sql_context(final_sql).get(
+                        "projections", []
+                    )
+                    if final_sql
+                    else []
+                ),
             )
             planner_answer, planner_usage = _invoke(planner_messages)
             planner_attempts.append(planner_answer)
             tool_calls = extract_planned_tool_calls(
                 planner_answer,
-                available_tools,
+                planner_tools,
                 max_calls=config.tool_max_calls,
             )
             if not tool_calls and (
                 declared_action_count(planner_answer) > 0
-                or config.tool_choice == "required"
+                or planner_choice == "required"
             ):
                 planner_messages.extend(
                     [
@@ -1908,7 +1989,7 @@ def _run_query_impl(
                 planner_attempts.append(planner_answer)
                 tool_calls = extract_planned_tool_calls(
                     planner_answer,
-                    available_tools,
+                    planner_tools,
                     max_calls=config.tool_max_calls,
                 )
         except Exception as exc:
@@ -1928,7 +2009,10 @@ def _run_query_impl(
                 "duration_ms": _elapsed_ms(t0),
                 "model": config.llm_model,
                 "available_tools": [
-                    str(tool.get("name") or "") for tool in available_tools
+                    str(tool.get("name") or "") for tool in planner_tools
+                ],
+                "explicit_tools": [
+                    str(tool.get("name") or "") for tool in explicit_tools
                 ],
                 "selected_tools": [call["name"] for call in tool_calls],
                 "output": planner_answer,
@@ -2558,6 +2642,77 @@ async def codex_test(req: CodexTestRequest, request: Request) -> CodexTestRespon
         status="success",
         message=f"{model_name} 调用成功",
         latency_ms=int((time.monotonic() - start) * 1000),
+    )
+
+
+@app.post("/query/execute-saved", response_model=SavedQueryResponse)
+async def execute_saved_query(req: SavedQueryRequest, request: Request):
+    """Execute an already validated read-only query without invoking a model."""
+    config = agent_config
+    if config is None:
+        raise HTTPException(status_code=503, detail="服务尚未完成初始化")
+    if req.agent_id is not None and req.agent_id != config.agent_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"当前引擎绑定 Agent {config.agent_id}，"
+                f"不能处理 Agent {req.agent_id} 的请求"
+            ),
+        )
+    _verify_token(request, config)
+
+    read_only, read_only_error = SQLValidator.validate_read_only(req.sql)
+    if not read_only:
+        return SavedQueryResponse(
+            is_success=False,
+            execution_error=f"安全拦截: {read_only_error}",
+        )
+
+    metadata_filter = (req.metadata.filter if req.metadata else None) or {}
+    try:
+        authorized_dbs = load_agent_databases(
+            config.agent_id,
+            metadata_filter=metadata_filter,
+        )
+        access_allowed, access_error, _ = SQLValidator.validate_database_access(
+            req.sql,
+            authorized_dbs,
+        )
+    except RuntimeError as exc:
+        return SavedQueryResponse(
+            is_success=False,
+            execution_error=f"安全拦截: {exc}",
+        )
+    if not access_allowed:
+        return SavedQueryResponse(
+            is_success=False,
+            execution_error=f"安全拦截: {access_error}",
+        )
+
+    engine = create_doris_engine_for_agent(config.agent_id)
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: SQLValidator(engine).execute(
+                req.sql,
+                row_limit=req.row_limit,
+                timeout=config.execute_timeout,
+            )
+        )
+    finally:
+        engine.dispose()
+    if not result.get("success"):
+        return SavedQueryResponse(
+            is_success=False,
+            execution_error=str(result.get("error") or "查询执行失败")[:2000],
+        )
+    return SavedQueryResponse(
+        is_success=True,
+        query_result={
+            "columns": result.get("columns") or [],
+            "rows": result.get("rows") or [],
+            "row_count": int(result.get("row_count") or 0),
+            "truncated": bool(result.get("truncated")),
+        },
     )
 
 

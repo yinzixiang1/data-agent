@@ -14,7 +14,7 @@
   │
   ├─❷ 业务术语解析 (glossary_resolver)
   │    Milvus Dense+BM25 混合检索 → enriched_query + business_context
-  │    "SWIFT" → payment_method = 2000
+  │    术语仅补充业务含义；具体表、字段、JSON 路径和枚举由当前 Schema 推理
   │
   ├─❸ Schema 混合检索 (hybrid_searcher)
   │    Qwen3-Embedding 编码 → Dense + BM25 双路召回

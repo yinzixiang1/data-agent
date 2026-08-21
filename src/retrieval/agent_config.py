@@ -472,10 +472,21 @@ class AgentConfigLoader:
                 "name": name,
                 "display_name": display_name or name,
                 "description": description or "",
+                "intent_phrases": [
+                    str(item).strip()
+                    for item in (config.get("intent_phrases") or [])
+                    if str(item).strip()
+                ],
                 "input_schema": input_schema,
                 "requires_query_result": bool(config.get("requires_query_result")),
             }
         return [by_name[name] for name in normalized if name in by_name]
+
+    def load_tool_resources(self, names: list[str]) -> list[dict]:
+        """Reload the current public tool contracts for one request."""
+        if self.engine is None:
+            return []
+        return self._load_tool_resources(names)
 
     def _apply_sys_configs(
         self, config: AgentRuntimeConfig, sys_configs: dict[str, str]
@@ -790,7 +801,7 @@ class AgentConfigLoader:
             config.tool_max_calls = 5
         enabled_tools = tool_cfg.get("enabled_tools")
         if config.tool_choice != "none" and isinstance(enabled_tools, list):
-            config.tools = self._load_tool_resources(enabled_tools)
+            config.tools = self.load_tool_resources(enabled_tools)
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)
