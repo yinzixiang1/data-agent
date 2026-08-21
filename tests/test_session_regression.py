@@ -67,6 +67,7 @@ class _SessionRetriever:
         schema = {
             "table_name": "analytics.orders",
             "table_name_short": "orders",
+            "display_name": "订单事实表",
             "columns": [
                 {"name": "channel_code"},
                 {"name": "order_type"},
@@ -105,6 +106,49 @@ class _SessionRetriever:
             entity_filters=[],
             unresolved_entities=[],
             rejected_terms=[],
+        )
+
+
+class _ClarificationSessionModel:
+    def __init__(self):
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "relation": "follow_up_modify",
+                    "query_state": {
+                        "subject": "订单交易",
+                        "time_range": "最近一个月",
+                        "filters": [],
+                        "metrics": ["交易次数"],
+                        "dimensions": ["渠道"],
+                        "currency_conversion": "",
+                        "exclusions": [],
+                    },
+                    "changes": {
+                        "kept": ["最近一个月", "交易次数"],
+                        "set": ["更换渠道"],
+                        "removed": [],
+                    },
+                    "effective_question": "最近一个月按新渠道统计订单交易次数",
+                    "interpretation": "渠道对应的记录类型存在歧义。",
+                    "confidence": 0.7,
+                    "needs_clarification": True,
+                    "clarification": {
+                        "question": "要查询哪类渠道记录？",
+                        "options": [
+                            {
+                                "label": "订单记录",
+                                "value": "使用订单事实记录",
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            )
         )
 
 
@@ -175,6 +219,52 @@ def test_follow_up_pipeline_inherits_verified_sql_structure(monkeypatch):
     assert "上一轮成功结果（本轮结构基线）" in model.calls[-1]
     assert previous_sql.strip() in model.calls[-1]
     assert len(model.calls) == 2
+
+
+def test_follow_up_clarification_includes_verified_table_references(monkeypatch):
+    import app as service
+
+    history = ContextCompressor.build_summary(
+        "最近一个月按渠道统计订单交易次数",
+        ["analytics.orders"],
+        "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code",
+    )
+    model = _ClarificationSessionModel()
+    retriever = _SessionRetriever()
+    monkeypatch.setattr(service, "retriever", retriever)
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+    )
+
+    result = service._run_query_impl(
+        "换个渠道",
+        config,
+        model,
+        history_summary=history,
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["matched_tables"] == ["analytics.orders"]
+    assert result["clarification"]["table_references"] == [
+        {"name": "analytics.orders", "description": "订单事实表"}
+    ]
+    assert len(model.calls) == 1
+
+    response = service.QueryResponse(
+        session_id="session-1",
+        question="换个渠道",
+        **{
+            key: value
+            for key, value in result.items()
+            if key in service.QueryResponse.model_fields
+        },
+    )
+    assert response.model_dump()["clarification"]["table_references"] == [
+        {"name": "analytics.orders", "description": "订单事实表"}
+    ]
 
 
 def test_explain_infrastructure_failure_does_not_trigger_llm_rewrite(monkeypatch):

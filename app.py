@@ -733,9 +733,18 @@ class ClarificationOption(BaseModel):
     value: str
 
 
+class ClarificationTableReference(BaseModel):
+    name: str
+    description: str = ""
+
+
 class Clarification(BaseModel):
     question: str
     options: list[ClarificationOption] = Field(default_factory=list)
+    table_references: list[ClarificationTableReference] = Field(
+        default_factory=list,
+        description="澄清候选涉及的已检索物理表",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -893,6 +902,40 @@ def run_query(
     )
 
 
+def _build_clarification_table_references(
+    relevant_tables: list[dict],
+) -> list[dict[str, str]]:
+    """Build verified table labels from retrieval results for clarification cards."""
+    references = []
+    seen_table_names = set()
+    for table in relevant_tables:
+        if not isinstance(table, dict):
+            continue
+        schema = table.get("schema")
+        schema = schema if isinstance(schema, dict) else {}
+        table_name = str(
+            table.get("table_name") or schema.get("table_name") or ""
+        ).strip()
+        if not table_name or table_name in seen_table_names:
+            continue
+        seen_table_names.add(table_name)
+        description = str(
+            schema.get("display_name")
+            or schema.get("description")
+            or schema.get("table_comment")
+            or ""
+        ).strip()
+        references.append(
+            {
+                "name": table_name[:200],
+                "description": description[:200],
+            }
+        )
+        if len(references) == 6:
+            break
+    return references
+
+
 def _run_query_impl(
     question: str,
     config: AgentRuntimeConfig,
@@ -934,6 +977,7 @@ def _run_query_impl(
     query_state = ContextCompressor.infer_state(question)
     interpretation = ""
     context_relation = "new_question"
+    pending_clarification: dict | None = None
     if history_summary:
         t0 = _time.monotonic()
         previous_state = ContextCompressor.parse_summary(history_summary)
@@ -959,41 +1003,12 @@ def _run_query_impl(
                 "needs_clarification": merge_result.needs_clarification,
             }
         )
-        if merge_result.needs_clarification:
-            clarification = merge_result.clarification
-            return {
-                "sql": "",
-                "raw_answer": "NEED_CLARIFY: "
-                + json.dumps(clarification, ensure_ascii=False),
-                "matched_tables": [],
-                "matched_terms": [],
-                "enum_hits": [],
-                "retrieval_context": {},
-                "is_success": False,
-                "retry_count": 0,
-                "error": "NEED_CLARIFY:" + str(clarification.get("question") or ""),
-                "matched_fewshot": [],
-                "context_summary": history_summary,
-                "trace": {
-                    "question": question,
-                    "effective_question": effective_question,
-                    "steps": trace_steps,
-                    "total_duration_ms": _elapsed_ms(t_start),
-                },
-                "summary": "",
-                "query_result": None,
-                "execution_error": "",
-                "script": "",
-                "placeholder": "",
-                "needs_clarification": True,
-                "clarification": clarification,
-                "interpretation": interpretation,
-                "query_state": query_state.to_dict(),
-            }
         if merge_result.relation != "new_question":
             inherited_tables.update(previous_state["tables"])
             inherited_tables.update(previous_sql_context.get("tables", []))
             inherited_columns.update(previous_sql_context.get("columns", []))
+        if merge_result.needs_clarification:
+            pending_clarification = merge_result.clarification
 
     # RAG 检索（用压缩后的完整问题）
     t0 = _time.monotonic()
@@ -1140,6 +1155,55 @@ def _run_query_impl(
                 "count": len(fewshot_details),
             }
         )
+
+    if pending_clarification is not None:
+        table_references = _build_clarification_table_references(result.relevant_tables)
+        clarification = {
+            **pending_clarification,
+            "table_references": table_references,
+        }
+        return {
+            "sql": "",
+            "raw_answer": "NEED_CLARIFY: "
+            + json.dumps(clarification, ensure_ascii=False),
+            "matched_tables": matched_tables,
+            "matched_terms": matched_terms,
+            "enum_hits": result.enum_hits,
+            "retrieval_context": {
+                "selected_columns": {
+                    table["table_name"]: table.get("selected_columns", [])
+                    for table in result.relevant_tables
+                },
+                "join_paths": result.join_paths,
+                "matched_terms": result.matched_terms,
+                "required_columns": result.required_columns,
+                "inferred_biz_line": result.inferred_biz_line,
+                "context_stats": result.context_stats,
+                "query_intent": result.query_intent,
+                "requested_fields": result.requested_fields,
+            },
+            "is_success": False,
+            "retry_count": 0,
+            "error": "NEED_CLARIFY:" + str(pending_clarification.get("question") or ""),
+            "matched_fewshot": fewshot_details,
+            "context_summary": history_summary,
+            "trace": {
+                "question": question,
+                "effective_question": effective_question,
+                "steps": trace_steps,
+                "total_duration_ms": _elapsed_ms(t_start),
+            },
+            "summary": "",
+            "query_result": None,
+            "execution_error": "",
+            "script": "",
+            "placeholder": "",
+            "needs_clarification": True,
+            "clarification": clarification,
+            "interpretation": interpretation,
+            "query_state": query_state.to_dict(),
+            "tool_calls": [],
+        }
 
     # param_mode: 从 metadata.context 读取，替换输出规则生成 ? 占位符 SQL
     _ctx = metadata_context or {}
@@ -1743,30 +1807,7 @@ def _run_query_impl(
     )
 
     if clarification is not None:
-        table_references = []
-        seen_table_names = set()
-        for table in result.relevant_tables:
-            if not isinstance(table, dict):
-                continue
-            schema = table.get("schema")
-            schema = schema if isinstance(schema, dict) else {}
-            table_name = str(
-                table.get("table_name") or schema.get("table_name") or ""
-            ).strip()
-            if not table_name or table_name in seen_table_names:
-                continue
-            seen_table_names.add(table_name)
-            description = str(
-                schema.get("description") or schema.get("table_comment") or ""
-            ).strip()
-            table_references.append(
-                {
-                    "name": table_name[:200],
-                    "description": description[:200],
-                }
-            )
-            if len(table_references) == 6:
-                break
+        table_references = _build_clarification_table_references(result.relevant_tables)
         if table_references:
             clarification = {
                 **clarification,
