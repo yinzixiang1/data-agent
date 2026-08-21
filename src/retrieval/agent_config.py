@@ -3,7 +3,7 @@ Agent 动态配置加载 — 支持 MySQL 和本地文件两种来源。
 
 配置来源由 CONFIG_SOURCE 环境变量控制：
   - mysql: 从 da_agent + da_agent_config + sys_config 等表加载（默认）
-  - local: 从本地 JSON 文件加载（通过 config_export.py 导出）
+  - local: 从指定的本地 JSON 文件加载
 
 CONFIG_PROFILE 指定加载目标：
   - mysql 模式: Agent ID（如 "1"）
@@ -256,10 +256,7 @@ class AgentConfigLoader:
             file_path = PROJECT_ROOT / file_path
 
         if not file_path.exists():
-            raise FileNotFoundError(
-                f"配置文件不存在: {file_path}\n"
-                f"请先运行 python -m src.retrieval.config_export 导出配置"
-            )
+            raise FileNotFoundError(f"配置文件不存在: {file_path}")
 
         logger.info(f"从本地文件加载配置: {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:

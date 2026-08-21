@@ -145,8 +145,7 @@ class HybridSearcher:
             # 最强字段保留完整信号，其他不同字段按名次衰减后累积。
             # 相同列的重复召回已在上方去重，不会制造虚假覆盖度。
             normalized_score = sum(
-                signal / rank
-                for rank, signal in enumerate(normalized_signals, start=1)
+                signal / rank for rank, signal in enumerate(normalized_signals, start=1)
             )
             table_scores[table_name] = table_scores.get(table_name, 0.0) + (
                 reference_score * weight * normalized_score
