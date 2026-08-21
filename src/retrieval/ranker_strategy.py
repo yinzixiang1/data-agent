@@ -36,6 +36,7 @@ class CollectionSearchParams:
         rerank: 是否启用 Reranker 精排
         rerank_top_n: 送入 Reranker 的候选数量
         final_top_n: 最终保留数量, "all" 表示全部保留
+        rrf_k: RRF 排名平滑参数
     """
 
     ranker_type: str
@@ -44,6 +45,7 @@ class CollectionSearchParams:
     rerank: bool
     rerank_top_n: int
     final_top_n: int | str
+    rrf_k: int = 60
 
 
 def get_search_params(
@@ -85,4 +87,5 @@ def get_search_params(
         rerank=col_cfg.get("rerank", False),
         rerank_top_n=col_cfg.get("rerank_top_n", 10),
         final_top_n=col_cfg.get("final_top_n", 10),
+        rrf_k=col_cfg.get("rrf_k", 60),
     )

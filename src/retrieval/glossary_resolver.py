@@ -19,7 +19,6 @@ import json
 import logging
 import re
 
-from src.retrieval.config import GLOSSARY_SCORE_THRESHOLD
 from src.retrieval.embedding import Qwen3Embedding
 from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.milvus_filter import build_metadata_filter
@@ -54,11 +53,9 @@ class GlossaryResolver:
     def resolve(
         self,
         query: str,
-        top_k: int = 5,
-        score_threshold: float = GLOSSARY_SCORE_THRESHOLD,
+        top_k: int = 3,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
-        require_lexical_grounding: bool = True,
     ) -> dict:
         """
         通过混合检索匹配用户提问中的业务术语。
@@ -66,7 +63,6 @@ class GlossaryResolver:
         Args:
             query: 用户原始查询
             top_k: 最多返回的术语数量
-            score_threshold: 分数阈值比例，低于 max_score * threshold 的匹配被过滤
             metadata_filter: 任意 KV 过滤
 
         Returns:
@@ -114,22 +110,26 @@ class GlossaryResolver:
             ef_search=self.ef_search,
         )
 
-        # RRF 分数是相对值，用最高分 x threshold 比例作为过滤线
-        max_score = results[0][1] if results else 0
-        min_score = max_score * score_threshold
-
+        max_score = results[0][1] if results else 0.0
+        grounded_results = []
+        semantic_results = []
         rejected_terms: list[str] = []
-        for doc_id, score, entity in results[:top_k]:
-            if score < min_score:
-                continue
-
+        for result in results:
+            entity = result[2]
             term = entity["term"]
             synonyms = self._parse_synonyms(entity.get("synonyms", "[]"))
-            if require_lexical_grounding and not self._is_grounded(
-                query, term, synonyms
-            ):
+            if self._is_grounded(query, term, synonyms):
+                grounded_results.append(result)
+            elif self._passes_semantic_score(result[1], max_score):
+                semantic_results.append(result)
+            else:
                 rejected_terms.append(term)
-                continue
+
+        selected_results = (grounded_results + semantic_results)[:top_k]
+        grounded_doc_ids = {doc_id for doc_id, _, _ in grounded_results}
+
+        for doc_id, score, entity in selected_results:
+            term = entity["term"]
             definition = entity.get("definition", "")
             sql_hint = entity.get("sql_hint", "")
 
@@ -167,11 +167,14 @@ class GlossaryResolver:
 
         if matched_terms:
             logger.info(
-                f"术语混合匹配: {matched_terms} (min_score={min_score:.4f}, max_score={max_score:.4f})"
+                "术语混合匹配: matched_terms=%s grounded_count=%d candidate_count=%d",
+                matched_terms,
+                sum(doc_id in grounded_doc_ids for doc_id, _, _ in selected_results),
+                len(results),
             )
         elif results:
             top3 = [(e["term"], f"{s:.4f}") for _, s, e in results[:3]]
-            logger.info(f"术语未命中 (top3={top3}, min_score={min_score:.4f})")
+            logger.info("术语未命中: top3=%s", top3)
 
         return {
             "enriched_query": enriched_query,
@@ -199,6 +202,12 @@ class GlossaryResolver:
     @classmethod
     def _is_grounded(cls, query: str, term: str, synonyms: list[str]) -> bool:
         return any(cls._contains_phrase(query, phrase) for phrase in [term, *synonyms])
+
+    def _passes_semantic_score(self, score: float, max_score: float) -> bool:
+        if self.search_params.ranker_type == "rrf":
+            max_single_lane_score = 1 / (self.search_params.rrf_k + 1)
+            return score > max_single_lane_score
+        return bool(max_score) and score >= max_score * 0.5
 
     @staticmethod
     def _contains_phrase(query: str, phrase: str) -> bool:

@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
     for name in ("MilvusClient", "Function", "FunctionType", "AnnSearchRequest"):
         setattr(pymilvus, name, object)
-    pymilvus.DataType = SimpleNamespace(VARCHAR="VARCHAR", JSON="JSON")
+    pymilvus.DataType = SimpleNamespace(BOOL="BOOL", VARCHAR="VARCHAR", JSON="JSON")
     pymilvus.RRFRanker = FakeRanker
     pymilvus.WeightedRanker = FakeRanker
     sys.modules["pymilvus"] = pymilvus
@@ -304,13 +304,13 @@ def test_glossary_top_k_caps_query_expansion():
     params = CollectionSearchParams("weighted", object(), 10, False, 10, 10)
     resolver = GlossaryResolver(FakeEmbedding(), index, params)
 
-    result = resolver.resolve("查询术语一", top_k=1, score_threshold=0.1)
+    result = resolver.resolve("查询术语一", top_k=1)
 
     assert result["matched_terms"] == ["术语一"]
     assert "定义二" not in result["business_context"]
 
 
-def test_glossary_requires_term_or_synonym_to_appear_in_query():
+def test_glossary_prioritizes_grounded_terms_then_fills_from_hybrid_ranking():
     index = FakeIndex(
         [
             (0, 1.0, {"term": "FX账户", "definition": "外汇账户"}),
@@ -334,13 +334,54 @@ def test_glossary_requires_term_or_synonym_to_appear_in_query():
     result = resolver.resolve(
         "查询账户为 12345 的 transfer 交易",
         top_k=3,
-        score_threshold=0.1,
     )
 
-    assert result["matched_terms"] == ["转账"]
-    assert result["rejected_terms"] == ["FX账户", "AC账户"]
+    assert result["matched_terms"] == ["转账", "FX账户", "AC账户"]
+    assert result["rejected_terms"] == []
     assert result["related_tables"] == ["sales.transfers"]
     assert result["related_columns"] == ["sales.transfers.transfer_type"]
+
+
+def test_glossary_keeps_low_rrf_exact_synonym_hit_in_top_three():
+    index = FakeIndex(
+        [
+            (0, 0.095238, {"term": "payin", "definition": "入金"}),
+            (
+                1,
+                0.045455,
+                {
+                    "term": "渠道查询",
+                    "definition": "渠道统一查询口径",
+                    "synonyms": '["渠道", "渠道编码"]',
+                },
+            ),
+            (2, 0.045455, {"term": "LOCAL", "definition": "本地渠道"}),
+            (3, 0.043478, {"term": "无关术语", "definition": "无关"}),
+        ]
+    )
+    params = CollectionSearchParams("rrf", object(), 10, False, 10, 10, rrf_k=20)
+    resolver = GlossaryResolver(FakeEmbedding(), index, params)
+
+    result = resolver.resolve("查询渠道的 payin 并按 LOCAL 分组")
+
+    assert result["matched_terms"] == ["payin", "渠道查询", "LOCAL"]
+
+
+def test_glossary_does_not_fill_top_three_with_weak_single_lane_rrf_hits():
+    index = FakeIndex(
+        [
+            (0, 0.045455, {"term": "FX账户", "definition": "外汇账户"}),
+            (1, 0.043478, {"term": "AC账户", "definition": "内部账户"}),
+            (2, 0.041667, {"term": "白标", "definition": "白标客户"}),
+        ]
+    )
+    params = CollectionSearchParams("rrf", object(), 10, False, 10, 10, rrf_k=20)
+    resolver = GlossaryResolver(FakeEmbedding(), index, params)
+
+    result = resolver.resolve("查询最近一个月的交易")
+
+    assert result["matched_terms"] == []
+    assert result["rejected_terms"] == ["FX账户", "AC账户", "白标"]
 
 
 def test_fewshot_uses_table_structure_and_quality_after_hybrid_recall():

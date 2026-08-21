@@ -1001,7 +1001,6 @@ def _run_query_impl(
         effective_question,
         top_k=config.table_search_top_k,
         fewshot_k=config.fewshot_top_k,
-        glossary_score_threshold=config.glossary_score_threshold,
         biz_line=biz_line,
         metadata_filter=metadata_filter,
         requested_field_query=question,

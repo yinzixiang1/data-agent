@@ -107,10 +107,6 @@ FEWSHOT_TOP_K = int(os.getenv("FEWSHOT_TOP_K", "3"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
 
-# ── 术语检索参数 ──
-# GLOSSARY_SCORE_THRESHOLD: 术语向量检索的余弦相似度阈值，低于此分数的匹配会被过滤
-GLOSSARY_SCORE_THRESHOLD = float(os.getenv("GLOSSARY_SCORE_THRESHOLD", "0.5"))
-
 # ── 配置来源 ──
 # CONFIG_SOURCE: 配置加载方式（mysql=从数据库加载, local=从本地文件加载）
 # CONFIG_PROFILE: mysql 模式下为 Agent ID（如 "1"），local 模式下为配置文件路径

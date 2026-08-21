@@ -301,7 +301,6 @@ class SchemaRetriever:
         user_query: str,
         top_k: int | None = None,
         fewshot_k: int | None = None,
-        glossary_score_threshold: float | None = None,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
         requested_field_query: str | None = None,
@@ -325,7 +324,6 @@ class SchemaRetriever:
             user_query: 用户原始自然语言问题
             top_k: 最终返回的表数量，None 时用 config 值
             fewshot_k: Few-shot 示例数量，None 时用 config 值
-            glossary_score_threshold: 术语匹配阈值
             biz_line: 业务线过滤（如 "banking"、"issuing"），为空则不过滤
             inherited_tables: 上一轮已验证 SQL 中仍适用的表
             inherited_columns: 上一轮已验证 SQL 中仍适用的列
@@ -365,15 +363,10 @@ class SchemaRetriever:
         entity_context = EntityResolver.to_prompt_context(entity_filters)
 
         # 1. 业务术语解析
-        resolve_kwargs = {}
-        if glossary_score_threshold is not None:
-            resolve_kwargs["score_threshold"] = glossary_score_threshold
         glossary_result = self.glossary_resolver.resolve(
             user_query,
             biz_line=biz_line,
             metadata_filter=metadata_filter,
-            require_lexical_grounding=cfg.glossary_require_lexical_grounding,
-            **resolve_kwargs,
         )
         enriched_query = glossary_result["enriched_query"]
         business_context = glossary_result["business_context"]

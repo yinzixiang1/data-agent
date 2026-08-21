@@ -38,7 +38,6 @@ from src.retrieval.config import (
     RRF_K,
     MMR_LAMBDA,
     ENABLE_RERANKER,
-    GLOSSARY_SCORE_THRESHOLD,
     DEFAULT_AGENT_TOKEN,
     NL2SQL_ENV,
     DENSE_MODEL,
@@ -74,7 +73,6 @@ EXPAND_VALIDATORS = {
     "column_search_top_k": lambda v: isinstance(v, int) and 1 <= v <= 200,
     "recall_top_k": lambda v: isinstance(v, int) and 1 <= v <= 100,
     "fewshot_top_k": lambda v: isinstance(v, int) and 1 <= v <= 50,
-    "glossary_score_threshold": lambda v: isinstance(v, (int, float)) and 0 <= v <= 1,
     "max_context_tables": lambda v: isinstance(v, int) and 1 <= v <= 30,
     "max_relation_hops": lambda v: isinstance(v, int) and 0 <= v <= 4,
     "max_columns_per_table": lambda v: isinstance(v, int) and 4 <= v <= 100,
@@ -153,7 +151,6 @@ class AgentRuntimeConfig:
     rrf_k: int = RRF_K
     mmr_lambda: float = MMR_LAMBDA
     enable_reranker: bool = ENABLE_RERANKER
-    glossary_score_threshold: float = GLOSSARY_SCORE_THRESHOLD
     max_context_tables: int = 8
     max_relation_hops: int = 2
     max_columns_per_table: int = 16
@@ -187,7 +184,6 @@ class AgentRuntimeConfig:
     # 强制召回规则（from retrieval.pinned_rules）
     pinned_rules: list[dict] = field(default_factory=list)
     entity_resolution_rules: list[dict] = field(default_factory=list)
-    glossary_require_lexical_grounding: bool = True
 
     # 结构化配置（from sys_config JSON，hot-reload 可更新）
     collection_search_config: dict = field(default_factory=dict)
@@ -503,7 +499,6 @@ class AgentConfigLoader:
         }
         float_mappings = {
             "MMR_LAMBDA": "mmr_lambda",
-            "GLOSSARY_SCORE_THRESHOLD": "glossary_score_threshold",
         }
         bool_mappings = {
             "ENABLE_RERANKER": "enable_reranker",
@@ -711,13 +706,6 @@ class AgentConfigLoader:
                     config.mmr_lambda = float(retrieval_cfg["mmr_lambda"])
                 except (ValueError, TypeError):
                     pass
-            if "glossary_score_threshold" in retrieval_cfg:
-                try:
-                    config.glossary_score_threshold = float(
-                        retrieval_cfg["glossary_score_threshold"]
-                    )
-                except (ValueError, TypeError):
-                    pass
             if "enable_reranker" in retrieval_cfg:
                 v = retrieval_cfg["enable_reranker"]
                 config.enable_reranker = (
@@ -743,13 +731,6 @@ class AgentConfigLoader:
                     config.entity_resolution_rules = [
                         rule for rule in rules if isinstance(rule, dict)
                     ]
-            if "glossary_require_lexical_grounding" in retrieval_cfg:
-                value = retrieval_cfg["glossary_require_lexical_grounding"]
-                config.glossary_require_lexical_grounding = (
-                    value
-                    if isinstance(value, bool)
-                    else str(value).lower() in ("true", "1")
-                )
 
         # flow 分区（SQL 执行）
         flow_cfg = agent_configs.get("flow", {})
@@ -1035,7 +1016,6 @@ class AgentConfigLoader:
             f"    RRF_K:               {config.rrf_k}",
             f"    MMR_LAMBDA:          {config.mmr_lambda}",
             f"    ENABLE_RERANKER:     {config.enable_reranker}",
-            f"    GLOSSARY_THRESHOLD: {config.glossary_score_threshold}",
             "",
             "  [校验]",
             f"    ENABLE_EXPLAIN:      {config.enable_explain}",

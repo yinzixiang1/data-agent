@@ -85,11 +85,9 @@ def test_entity_rules_are_loaded_from_agent_retrieval_config() -> None:
         {
             "retrieval": {
                 "entity_resolution_rules": [RULE],
-                "glossary_require_lexical_grounding": False,
             }
         },
         {},
     )
 
     assert config.entity_resolution_rules == [RULE]
-    assert config.glossary_require_lexical_grounding is False
