@@ -12,7 +12,7 @@ services:
       - DENSE_DEVICE=cuda
       - CONFIG_SOURCE=mysql
       - CONFIG_PROFILE=${CONFIG_PROFILE:?CONFIG_PROFILE is required}
-      - REBUILD_INDEX_ON_STARTUP=true
+      - REBUILD_INDEX_ON_STARTUP=false
       - CODEX_HOME=/var/lib/lumen-codex
     volumes:
       - model-cache:/root/.cache
