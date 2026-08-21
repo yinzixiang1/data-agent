@@ -1,0 +1,38 @@
+services:
+  data-agen:
+    container_name: data-agen
+    image: ${DATA_AGENT_IMAGE:-data-agen:latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${DATA_AGENT_PORT:-9090}:9090"
+    environment:
+      NL2SQL_CONFIG_FILE: /etc/data-agen/config.yaml
+    volumes:
+      - ./configs/config.yaml:/etc/data-agen/config.yaml:ro
+      - model-cache:/root/.cache
+      - codex-home:/var/lib/lumen-codex
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  model-cache:
+    name: data-agen_model-cache
+  codex-home:
+    name: data-agen_codex-home

@@ -62,52 +62,30 @@ uv sync --no-dev
 
 ## 配置
 
-生产环境推荐从 MySQL 加载 Agent 配置：
+启动参数统一维护在 `configs/config.yaml`。生产环境推荐使用 MySQL 配置来源，
+至少需要填写以下项目：
 
-```bash
-NL2SQL_ENV=prod
-CONFIG_SOURCE=mysql
-CONFIG_PROFILE=1
-
-MYSQL_HOST=your-mysql-host
-MYSQL_PORT=3306
-MYSQL_USER=your-user
-MYSQL_PASSWORD=your-password
-MYSQL_DATABASE=your-admin-database
-
-MILVUS_URI=http://your-milvus-host:19530
-MILVUS_DB=nl2sql
-
-DEFAULT_AGENT_TOKEN=your-admin-token
-```
+- `CONFIG_PROFILE`：当前进程绑定的 Agent ID
+- `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`
+- `MILVUS_URI`、`MILVUS_DB`，以及按需配置的认证参数
+- `DEFAULT_AGENT_TOKEN`
 
 `CONFIG_PROFILE` 是当前进程绑定的 Agent ID。一个运行实例只服务一个 Agent；
 请求中的 `agent_id` 与实例绑定不一致时返回 `409`。
 
-本地 JSON 配置仍可通过下面的方式加载，但配置文件需要由外部安全提供：
-
-```bash
-CONFIG_SOURCE=local CONFIG_PROFILE=/path/to/agent_config.json \
-  uv run uvicorn app:app --host 0.0.0.0 --port 9090
-```
-
-`.env` 和本地配置文件可能包含凭据，已通过 `.gitignore` 排除，禁止提交。
+使用本地 JSON 配置时，在 `configs/config.yaml` 中将 `CONFIG_SOURCE` 设为
+`local`，并将 `CONFIG_PROFILE` 设为本地 JSON 文件路径。真实密钥不得提交。
 
 ## 启动
 
-复用已有 Milvus 索引：
+默认复用已有 Milvus 索引：
 
 ```bash
-CONFIG_SOURCE=mysql CONFIG_PROFILE=1 \
-  uv run uvicorn app:app --host 0.0.0.0 --port 9090
+uv run uvicorn app:app --host 0.0.0.0 --port 9090
 ```
 
-语义层发生变更，需要启动时重建索引：
-
-```bash
-CONFIG_SOURCE=mysql CONFIG_PROFILE=1 REBUILD_INDEX_ON_STARTUP=true \
-  uv run uvicorn app:app --host 0.0.0.0 --port 9090
-```
+语义层发生变更时，将 `configs/config.yaml` 中的
+`REBUILD_INDEX_ON_STARTUP` 临时设为 `true` 后重启。
 
 ## HTTP API
 

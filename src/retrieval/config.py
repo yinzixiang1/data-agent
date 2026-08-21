@@ -2,34 +2,91 @@
 全局配置 — 所有模块共享的常量和环境变量。
 
 分两层：
-  - 本文件: .env 级启动默认值（连接地址、设备、模型 fallback）
+  - 本文件: YAML / 环境变量级启动默认值（连接地址、设备、模型 fallback）
   - agent_config.py: 运行时从 MySQL sys_config 加载结构化 JSON 配置
 
-NL2SQL_ENV 环境变量控制 dev / prod 默认值差异。
+默认读取 configs/config.yaml，也可通过 NL2SQL_CONFIG_FILE 指定其他路径。
+进程环境变量优先于 YAML。
 
 使用示例::
 
     from src.retrieval.config import DORIS_HOST, MILVUS_URI, NL2SQL_ENV
 
-    print(NL2SQL_ENV)    # "dev"（默认）或 .env 中配置的值
-    print(DORIS_HOST)    # "localhost"（默认）或 .env 中配置的值
+    print(NL2SQL_ENV)    # "dev"（默认）或启动配置中的值
+    print(DORIS_HOST)    # "localhost"（默认）或启动配置中的值
 """
 
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote_plus
 
-from dotenv import load_dotenv
+import yaml
 
 # 防止 faiss-cpu 和 torch 在 ARM Mac 上的 OpenMP 冲突导致 segfault
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
-load_dotenv(override=True)
-
 # 项目根目录（推导自本文件位置: src/retrieval/config.py → 上溯两级）
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+class StartupConfigurationError(RuntimeError):
+    """Raised when startup configuration is incomplete or invalid."""
+
+
+def _config_value_to_string(key: str, value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    raise StartupConfigurationError(f"Configuration value for {key} must be a scalar")
+
+
+def _load_yaml_config() -> None:
+    configured_path = os.getenv("NL2SQL_CONFIG_FILE", "").strip()
+    config_path = (
+        Path(configured_path)
+        if configured_path
+        else PROJECT_ROOT / "configs" / "config.yaml"
+    )
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+
+    if not config_path.exists():
+        if configured_path:
+            raise StartupConfigurationError(
+                f"Configuration file does not exist: {config_path}"
+            )
+        return
+
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            values = yaml.safe_load(config_file)
+    except yaml.YAMLError as exc:
+        raise StartupConfigurationError(
+            f"Invalid YAML configuration: {config_path}"
+        ) from exc
+
+    if values is None:
+        return
+    if not isinstance(values, Mapping):
+        raise StartupConfigurationError(
+            f"Configuration root must be a mapping: {config_path}"
+        )
+
+    for key, value in values.items():
+        if not isinstance(key, str) or not key.isupper():
+            raise StartupConfigurationError(
+                "Configuration keys must be uppercase environment variable names"
+            )
+        os.environ.setdefault(key, _config_value_to_string(key, value))
+
+
+_load_yaml_config()
 
 # ── 环境标识 ──
 # NL2SQL_ENV: 运行环境，影响模型、维度、索引参数的默认值
@@ -132,10 +189,6 @@ LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 # ── API 安全 ──
 # DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值
 DEFAULT_AGENT_TOKEN = os.getenv("DEFAULT_AGENT_TOKEN", "")
-
-
-class StartupConfigurationError(RuntimeError):
-    """Raised when production startup configuration is incomplete or unsafe."""
 
 
 def validate_startup_config(environ: Mapping[str, str] | None = None) -> None:

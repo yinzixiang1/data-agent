@@ -13,7 +13,6 @@ dependencies = [
     "sqlalchemy>=2.0",
     "pymysql[rsa]>=1.1",
     "pyyaml>=6.0",
-    "python-dotenv>=1.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "anyio>=4.0",

@@ -62,7 +62,7 @@ _runtime_token: str = ""
 def configure(
     uri: str = "", db: str = "", user: str = "", password: str = "", token: str = ""
 ):
-    """注入运行时 Milvus 连接参数（覆盖 .env 默认值）。必须在 get_milvus_client() 首次调用前执行。"""
+    """注入运行时 Milvus 连接参数（覆盖启动配置）。必须在首次获取客户端前执行。"""
     global _runtime_uri, _runtime_db, _runtime_user, _runtime_password, _runtime_token
     _runtime_uri = uri
     _runtime_db = db

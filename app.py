@@ -155,7 +155,7 @@ codex_runtime_swap_lock: asyncio.Lock | None = None
 
 def print_infra_config(config: AgentRuntimeConfig | None = None) -> None:
     """打印基础设施配置。传入 agent_config 后会显示实际使用的 Milvus 连接。"""
-    # Milvus: 优先 agent_config 资源绑定，fallback .env
+    # Milvus: 优先 agent_config 资源绑定，fallback 启动配置
     m_uri = config.milvus_uri if config and config.milvus_uri else MILVUS_URI
     m_db = config.milvus_db if config and config.milvus_db else MILVUS_DB
     m_user = config.milvus_user if config and config.milvus_user else MILVUS_USER
@@ -163,16 +163,16 @@ def print_infra_config(config: AgentRuntimeConfig | None = None) -> None:
         config.milvus_password if config and config.milvus_password else MILVUS_PASSWORD
     )
     m_token = config.milvus_token if config and config.milvus_token else MILVUS_TOKEN
-    m_source = "资源绑定" if config and config.milvus_uri else ".env"
+    m_source = "资源绑定" if config and config.milvus_uri else "config.yaml"
 
-    # Embedding / Reranker: 优先 agent_config 覆盖值，fallback .env
+    # Embedding / Reranker: 优先 agent_config 覆盖值，fallback 启动配置
     emb_model = EMBEDDING_MODEL
-    emb_source = ".env"
+    emb_source = "config.yaml"
     if config and config.embedding_config.get("model"):
         emb_model = config.embedding_config["model"]
         emb_source = "Agent 配置"
     rnk_model = RERANKER_MODEL
-    rnk_source = ".env"
+    rnk_source = "config.yaml"
     if config and config.index_build_config.get("reranker", {}).get("model"):
         rnk_model = config.index_build_config["reranker"]["model"]
         rnk_source = "Agent 配置"
@@ -282,7 +282,7 @@ def load_doris_config(agent_id: int | None) -> dict[str, str | int] | None:
     """
     加载 Agent 绑定的 Doris 连接配置。
 
-    mysql 配置模式只允许从全局资源读取；local 模式保留 .env 供本地开发。
+    mysql 配置模式只允许从全局资源读取；local 模式使用启动配置。
     """
     from urllib.parse import quote_plus
 
@@ -293,7 +293,7 @@ def load_doris_config(agent_id: int | None) -> dict[str, str | int] | None:
             "user": DORIS_USER,
             "password": DORIS_PASSWORD,
             "password_url": DORIS_PASSWORD_URL,
-            "source": ".env (local)",
+            "source": "config.yaml (local)",
         }
     if not agent_id:
         return None
@@ -569,7 +569,7 @@ async def lifespan(app: FastAPI):
     # 打印基础设施配置（含 Agent 绑定的 Milvus 信息）
     print_infra_config(agent_config)
 
-    # 注入 Milvus 连接配置（Agent 资源绑定 > .env 默认值）
+    # 注入 Milvus 连接配置（Agent 资源绑定 > 启动配置默认值）
     from src.retrieval.milvus_store import configure as configure_milvus
 
     if agent_config.milvus_uri:
@@ -582,7 +582,7 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"Milvus 配置来自资源绑定: {agent_config.milvus_uri}")
     else:
-        logger.info(f"Milvus 配置来自 .env: {MILVUS_URI}")
+        logger.info(f"Milvus 配置来自 config.yaml: {MILVUS_URI}")
 
     # 验证 Milvus 连接（5s 超时，连不上直接退出）
     import socket

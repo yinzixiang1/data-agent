@@ -142,7 +142,7 @@ class AgentRuntimeConfig:
     compress_prompt: str = ""
     output_rules: str = ""
 
-    # 检索参数（来自 agent_config.retrieval 分区，fallback 到 sys_config / .env）
+    # 检索参数（来自 agent_config.retrieval 分区，fallback 到 sys_config / 启动配置）
     table_search_top_k: int = TABLE_SEARCH_TOP_K
     column_search_top_k: int = COLUMN_SEARCH_TOP_K
     recall_top_k: int = RECALL_TOP_K
@@ -190,7 +190,7 @@ class AgentRuntimeConfig:
     embedding_config: dict = field(default_factory=dict)
     index_build_config: dict = field(default_factory=dict)
 
-    # Milvus 向量数据库（来自 agent_ref vector_db 资源绑定，fallback 到 .env）
+    # Milvus 向量数据库（来自 agent_ref vector_db 资源绑定，fallback 到启动配置）
     milvus_uri: str = ""
     milvus_db: str = ""
     milvus_user: str = ""
@@ -240,7 +240,7 @@ class AgentConfigLoader:
         加载 Agent 配置。
 
         CONFIG_SOURCE=local 时从文件加载，忽略 agent_id 参数。
-        CONFIG_SOURCE=mysql 时从 MySQL 加载，优先级: agent_config > sys_config > .env。
+        CONFIG_SOURCE=mysql 时从 MySQL 加载，优先级: agent_config > sys_config > 启动配置。
         """
         if CONFIG_SOURCE == "local":
             return self._load_from_file()
