@@ -86,6 +86,43 @@ def test_query_analyzer_extracts_multiple_result_fields():
     assert analysis.requested_fields == ["开户时间", "手机号"]
 
 
+def test_query_analyzer_preserves_action_words_inside_field_names():
+    analysis = QueryAnalyzer.analyze(
+        "show report_date, analysis_id and distribution_channel"
+    )
+
+    assert analysis.requested_fields == [
+        "report_date",
+        "analysis_id",
+        "distribution_channel",
+    ]
+    assert analysis.presentation_actions == []
+
+
+def test_query_analyzer_separates_derived_metric_and_presentation_actions():
+    analysis = QueryAnalyzer.analyze("按天展示注册数量趋势并生成图表")
+
+    assert analysis.requested_fields == []
+    assert analysis.derived_metrics == ["注册数量"]
+    assert analysis.presentation_actions == ["趋势", "图表"]
+    assert "派生指标（由聚合计算，不是物理字段）: 注册数量" in (
+        analysis.to_prompt_context()
+    )
+    assert "结果展示动作（不作为数据库字段）: 趋势, 图表" in (
+        analysis.to_prompt_context()
+    )
+
+
+def test_query_analyzer_does_not_parse_clarification_transport_labels_as_fields():
+    analysis = QueryAnalyzer.analyze(
+        "原问题\n用户补充：创建时间\n用户补充：趋势 是图表分析"
+    )
+
+    assert analysis.requested_fields == []
+    assert analysis.derived_metrics == []
+    assert analysis.presentation_actions == ["趋势", "图表", "分析"]
+
+
 def test_query_analyzer_marks_exclusive_count_as_result_contract():
     analysis = QueryAnalyzer.analyze(
         "最近一个月只查询出金交易次数，不返回金额，不按币种分组"

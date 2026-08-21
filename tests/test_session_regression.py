@@ -152,6 +152,21 @@ class _ClarificationSessionModel:
         )
 
 
+class _SqlClarificationModel:
+    def __init__(self):
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        return SimpleNamespace(
+            content=(
+                'NEED_CLARIFY: {"question":"请选择统计维度",'
+                '"options":[{"label":"按天","value":"按天统计"}]}'
+            ),
+            usage_metadata=None,
+        )
+
+
 class _UnavailableExplainValidator:
     def __init__(self):
         self.calls = 0
@@ -221,6 +236,30 @@ def test_follow_up_pipeline_inherits_verified_sql_structure(monkeypatch):
     assert len(model.calls) == 2
 
 
+def test_output_requirement_query_is_separate_from_transport_transcript(monkeypatch):
+    import app as service
+
+    model = _SessionModel()
+    retriever = _SessionRetriever()
+    monkeypatch.setattr(service, "retriever", retriever)
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+    )
+
+    result = service._run_query_impl(
+        "原问题\n用户确认：按天展示注册数量趋势",
+        config,
+        model,
+        metadata_context={"output_requirement_query": "原问题\n按天展示注册数量趋势"},
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert retriever.kwargs["requested_field_query"] == ("原问题\n按天展示注册数量趋势")
+
+
 def test_follow_up_clarification_includes_verified_table_references(monkeypatch):
     import app as service
 
@@ -265,6 +304,54 @@ def test_follow_up_clarification_includes_verified_table_references(monkeypatch)
     assert response.model_dump()["clarification"]["table_references"] == [
         {"name": "analytics.orders", "description": "订单事实表"}
     ]
+
+
+def test_clarification_defers_explicit_result_tool_without_planner_call(monkeypatch):
+    import app as service
+
+    model = _SqlClarificationModel()
+    retriever = _SessionRetriever()
+    monkeypatch.setattr(service, "retriever", retriever)
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+        tools=[
+            {
+                "name": "render_chart",
+                "display_name": "生成图表",
+                "description": "根据查询结果生成图表",
+                "intent_phrases": ["生成图表", "图表"],
+                "requires_query_result": True,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    )
+
+    result = service._run_query_impl(
+        "统计最近一个月的用户分布并生成图表",
+        config,
+        model,
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["tool_calls"] == [
+        {
+            "name": "render_chart",
+            "arguments": {},
+            "requires_query_result": True,
+        }
+    ]
+    assert len(model.calls) == 1
+    assert any(
+        step["step"] == "tool_intent_deferred" for step in result["trace"]["steps"]
+    )
+    assert not any(step["step"] == "tool_planning" for step in result["trace"]["steps"])
 
 
 def test_explain_infrastructure_failure_does_not_trigger_llm_rewrite(monkeypatch):

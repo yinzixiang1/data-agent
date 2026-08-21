@@ -31,7 +31,7 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import anyio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -66,6 +66,7 @@ from src.retrieval.config import (
     MYSQL_USER,
     PROJECT_ROOT,
     RERANKER_MODEL,
+    validate_startup_config,
 )
 from src.retrieval.query_cache import QueryCache
 from src.retrieval.query_logger import QueryLogger
@@ -551,6 +552,8 @@ async def lifespan(app: FastAPI):
     global codex_query_semaphore, codex_query_capacity
     global codex_runtime_swap_lock
 
+    validate_startup_config()
+
     # 加载 Agent 配置（CONFIG_SOURCE + CONFIG_PROFILE 控制来源）
     if CONFIG_SOURCE == "local":
         agent_config = load_agent_config()
@@ -1012,13 +1015,16 @@ def _run_query_impl(
 
     # RAG 检索（用压缩后的完整问题）
     t0 = _time.monotonic()
+    output_requirement_query = str(
+        (metadata_context or {}).get("output_requirement_query") or question
+    )
     result = retriever.retrieve(
         effective_question,
         top_k=config.table_search_top_k,
         fewshot_k=config.fewshot_top_k,
         biz_line=biz_line,
         metadata_filter=metadata_filter,
-        requested_field_query=question,
+        requested_field_query=output_requirement_query,
         inherited_tables=inherited_tables,
         inherited_columns=inherited_columns,
     )
@@ -1974,11 +1980,25 @@ def _run_query_impl(
     planner_choice = (
         "required" if pending_result_tools or explicit_tools else config.tool_choice
     )
-    if (
-        ((final_sql and is_success) or clarification is not None)
-        and planner_tools
-        and planner_choice != "none"
-    ):
+    deferred_tools = pending_result_tools or explicit_tools
+    if clarification is not None and deferred_tools:
+        tool_calls = [
+            {
+                "name": str(tool.get("name") or ""),
+                "arguments": {},
+                "requires_query_result": bool(tool.get("requires_query_result")),
+            }
+            for tool in deferred_tools
+            if str(tool.get("name") or "")
+        ]
+        trace_steps.append(
+            {
+                "step": "tool_intent_deferred",
+                "selected_tools": [call["name"] for call in tool_calls],
+                "reason": "awaiting_query_clarification",
+            }
+        )
+    elif final_sql and is_success and planner_tools and planner_choice != "none":
         t0 = _time.monotonic()
         planner_answer = ""
         planner_error = ""
@@ -2032,7 +2052,8 @@ def _run_query_impl(
                     planner_tools,
                     max_calls=config.tool_max_calls,
                 )
-        except Exception as exc:
+        # Result-tool planning must not discard an otherwise valid query result.
+        except Exception as exc:  # noqa: BLE001
             planner_error = type(exc).__name__
             logger.warning(
                 "result tool planning failed",
@@ -2550,8 +2571,10 @@ def _run_query_impl(
 
 
 @app.get("/health")
-async def health():
+async def health(response: Response):
     ready = retriever is not None and retriever._initialized and validator is not None
+    if not ready:
+        response.status_code = 503
     return {
         "status": "ok",
         "ready": ready,

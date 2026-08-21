@@ -16,8 +16,10 @@ NL2SQL_ENV 环境变量控制 dev / prod 默认值差异。
 """
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote_plus
+
 from dotenv import load_dotenv
 
 # 防止 faiss-cpu 和 torch 在 ARM Mac 上的 OpenMP 冲突导致 segfault
@@ -31,7 +33,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # ── 环境标识 ──
 # NL2SQL_ENV: 运行环境，影响模型、维度、索引参数的默认值
-NL2SQL_ENV = os.getenv("NL2SQL_ENV", "dev")
+NL2SQL_ENV = os.getenv("NL2SQL_ENV", "dev").strip().lower()
 
 # ── 硬件设备 ──
 # DENSE_DEVICE: Embedding / Reranker 推理设备
@@ -76,7 +78,7 @@ ENABLE_RERANKER = os.getenv("ENABLE_RERANKER", "true").lower() == "true"
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "yzx12345.")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 MYSQL_PASSWORD_URL = quote_plus(MYSQL_PASSWORD)
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "data_agent")
 
@@ -110,8 +112,8 @@ MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
 # ── 配置来源 ──
 # CONFIG_SOURCE: 配置加载方式（mysql=从数据库加载, local=从本地文件加载）
 # CONFIG_PROFILE: mysql 模式下为 Agent ID（如 "1"），local 模式下为配置文件路径
-CONFIG_SOURCE = os.getenv("CONFIG_SOURCE", "mysql")
-CONFIG_PROFILE = os.getenv("CONFIG_PROFILE", "")
+CONFIG_SOURCE = os.getenv("CONFIG_SOURCE", "mysql").strip().lower()
+CONFIG_PROFILE = os.getenv("CONFIG_PROFILE", "").strip()
 
 # ── 启动行为 ──
 # REBUILD_INDEX_ON_STARTUP: 启动时是否全量重建索引（true=重建, false=复用已有 Collection）
@@ -130,3 +132,55 @@ LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 # ── API 安全 ──
 # DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值
 DEFAULT_AGENT_TOKEN = os.getenv("DEFAULT_AGENT_TOKEN", "")
+
+
+class StartupConfigurationError(RuntimeError):
+    """Raised when production startup configuration is incomplete or unsafe."""
+
+
+def validate_startup_config(environ: Mapping[str, str] | None = None) -> None:
+    """Reject incomplete production configuration before external clients start."""
+    values = os.environ if environ is None else environ
+    runtime_env = values.get("NL2SQL_ENV", "dev").strip().lower()
+    if runtime_env != "prod":
+        return
+
+    config_source = values.get("CONFIG_SOURCE", "mysql").strip().lower()
+    if config_source not in {"mysql", "local"}:
+        raise StartupConfigurationError(
+            "CONFIG_SOURCE must be either 'mysql' or 'local' in production"
+        )
+
+    if config_source == "local":
+        if not values.get("CONFIG_PROFILE", "").strip():
+            raise StartupConfigurationError(
+                "CONFIG_PROFILE is required for local production configuration"
+            )
+        return
+
+    required_mysql_fields = (
+        "MYSQL_HOST",
+        "MYSQL_USER",
+        "MYSQL_PASSWORD",
+        "MYSQL_DATABASE",
+    )
+    missing = [
+        field for field in required_mysql_fields if not values.get(field, "").strip()
+    ]
+    if missing:
+        raise StartupConfigurationError(
+            "Missing required production configuration: " + ", ".join(missing)
+        )
+
+    profile = (
+        values.get("CONFIG_PROFILE", "").strip()
+        or values.get("DEFAULT_AGENT_ID", "").strip()
+    )
+    try:
+        profile_id = int(profile)
+    except (TypeError, ValueError):
+        profile_id = 0
+    if profile_id <= 0:
+        raise StartupConfigurationError(
+            "CONFIG_PROFILE or DEFAULT_AGENT_ID must be a positive Agent ID"
+        )
