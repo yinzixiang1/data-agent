@@ -6,12 +6,12 @@
 
 ## 查询流程
 
-1. 合并多轮查询状态，必要时返回结构化澄清问题。
-2. 解析业务术语、实体、时间、聚合和结果字段要求。
+1. 使用模型合并滚动查询状态和上一轮验证 SQL，必要时返回结构化澄清问题。
+2. 解析业务术语和实体证据，以完整问题和粗粒度状态驱动检索。
 3. 对表、字段、枚举、值和 Few-shot 进行 Dense + BM25 混合检索。
 4. 使用 Reranker、Join 路径补全和字段裁剪构造最小 Schema 上下文。
 5. 调用配置的 LLM 生成 SQL。
-6. 校验只读语句、Schema 引用、数据库授权、实体条件、结果字段和换汇口径。
+6. 校验只读语句、Schema 引用、数据库授权、实体条件和追问继承契约。
 7. 使用 Doris EXPLAIN 校验语法及执行计划，按配置进行有限次数修复。
 8. 可选执行 SQL、限制返回行数，并规划注册的结果工具调用。
 
@@ -32,7 +32,6 @@ data-agen/
         ├── hybrid_searcher.py   表、字段和枚举混合召回
         ├── retriever.py         RAG 检索统一入口
         ├── context_*.py         多轮状态、Join 补全和字段裁剪
-        ├── query_analyzer.py    查询意图和结果契约解析
         ├── sql_validator.py     SQL 安全、语义、EXPLAIN 和执行校验
         ├── llm_factory.py       LLM provider 创建入口
         └── codex_chat_model.py  Codex SDK 的 LangChain 适配器
@@ -58,6 +57,12 @@ uv sync
 
 ```bash
 uv sync --no-dev
+```
+
+仅在本地运行 Embedding 或 Reranker 模型时安装模型依赖：
+
+```bash
+uv sync --extra local-models
 ```
 
 ## 配置

@@ -980,51 +980,51 @@ def _run_query_impl(
     query_state = ContextCompressor.infer_state(question)
     interpretation = ""
     context_relation = "new_question"
+    context_changes = {"kept": [], "set": [question], "removed": []}
     pending_clarification: dict | None = None
+    t0 = _time.monotonic()
+    previous_state = ContextCompressor.parse_summary(history_summary)
     if history_summary:
-        t0 = _time.monotonic()
-        previous_state = ContextCompressor.parse_summary(history_summary)
         previous_sql = previous_state["sql"]
         previous_sql_context = previous_state["sql_context"]
-        compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
-        merge_result = compressor.merge(history_summary, question)
-        effective_question = merge_result.effective_question
-        query_state = merge_result.query_state
-        interpretation = merge_result.interpretation
-        context_relation = merge_result.relation
-        trace_steps.append(
-            {
-                "step": "context_compress",
-                "duration_ms": _elapsed_ms(t0),
-                "input": question,
-                "output": effective_question,
-                "relation": merge_result.relation,
-                "changes": merge_result.changes,
-                "query_state": merge_result.query_state.to_dict(),
-                "interpretation": merge_result.interpretation,
-                "confidence": merge_result.confidence,
-                "needs_clarification": merge_result.needs_clarification,
-            }
-        )
-        if merge_result.relation != "new_question":
-            inherited_tables.update(previous_state["tables"])
-            inherited_tables.update(previous_sql_context.get("tables", []))
-            inherited_columns.update(previous_sql_context.get("columns", []))
-        if merge_result.needs_clarification:
-            pending_clarification = merge_result.clarification
+    compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
+    merge_result = compressor.merge(history_summary, question)
+    effective_question = merge_result.effective_question
+    query_state = merge_result.query_state
+    interpretation = merge_result.interpretation
+    context_relation = merge_result.relation
+    context_changes = merge_result.changes
+    trace_steps.append(
+        {
+            "step": "context_compress",
+            "duration_ms": _elapsed_ms(t0),
+            "input": question,
+            "output": effective_question,
+            "relation": merge_result.relation,
+            "changes": merge_result.changes,
+            "query_state": merge_result.query_state.to_dict(),
+            "interpretation": merge_result.interpretation,
+            "confidence": merge_result.confidence,
+            "needs_clarification": merge_result.needs_clarification,
+        }
+    )
+    if history_summary and merge_result.relation != "new_question":
+        inherited_tables.update(previous_state["tables"])
+        inherited_tables.update(previous_sql_context.get("tables", []))
+        inherited_columns.update(previous_sql_context.get("columns", []))
+    if merge_result.needs_clarification:
+        pending_clarification = merge_result.clarification
 
     # RAG 检索（用压缩后的完整问题）
     t0 = _time.monotonic()
-    output_requirement_query = str(
-        (metadata_context or {}).get("output_requirement_query") or question
-    )
     result = retriever.retrieve(
         effective_question,
         top_k=config.table_search_top_k,
         fewshot_k=config.fewshot_top_k,
         biz_line=biz_line,
         metadata_filter=metadata_filter,
-        requested_field_query=output_requirement_query,
+        query_state=query_state.to_dict(),
+        original_query=question,
         inherited_tables=inherited_tables,
         inherited_columns=inherited_columns,
     )
@@ -1065,6 +1065,13 @@ def _run_query_impl(
             entity_filter_contract,
         )
         return entity_ok, entity_error, entity_detail
+
+    def _validate_followup_inheritance(sql: str) -> tuple[bool, str, dict]:
+        return SQLValidator.validate_followup_inheritance(
+            sql,
+            previous_sql_context,
+            context_relation,
+        )
 
     # trace: 术语解析
     trace_steps.append(
@@ -1162,7 +1169,10 @@ def _run_query_impl(
             }
         )
 
-    if pending_clarification is not None:
+    # 上下文压缩发生在 Schema/术语检索之前，它提出的疑问只是预检信号。
+    # 检索已经给出候选表时，应让最终 SQL 模型基于完整证据作决定；只有
+    # 完全没有 Schema 证据时才提前澄清，避免已配置口径仍被预检拦截。
+    if pending_clarification is not None and not result.relevant_tables:
         table_references = _build_clarification_table_references(result.relevant_tables)
         clarification = {
             **pending_clarification,
@@ -1248,6 +1258,7 @@ def _run_query_impl(
             "\n\n【上一轮成功结果（本轮结构基线）】\n"
             "根据本轮完整查询状态修改此 SQL。用户未明确替换或删除的表、字段、"
             "展示维度、聚合方式和过滤条件必须保留；用户明确修改的内容以本轮为准。\n"
+            f"本轮语义变更：{json.dumps(context_changes, ensure_ascii=False)}\n"
             f"上一轮 SQL 结构：{json.dumps(previous_sql_context, ensure_ascii=False)}\n"
             f"```sql\n{previous_sql}\n```"
         )
@@ -1290,26 +1301,17 @@ def _run_query_impl(
 
     # 调用 LLM
     llm_calls = []
-    unresolved_requested_fields = [
-        str(requirement.get("field") or "")
-        for requirement in requested_field_contract
-        if not requirement.get("columns")
-    ]
     unresolved_entity_issues = [
         str(item.get("issue") or "")
         for item in result.unresolved_entities
         if item.get("issue")
     ]
-    if unresolved_requested_fields or unresolved_entity_issues:
-        unresolved_text = "、".join(unresolved_requested_fields)
-        issue_parts = []
-        if unresolved_text:
-            issue_parts.append(f"没有找到“{unresolved_text}”对应的已授权语义字段。")
-        issue_parts.extend(unresolved_entity_issues)
+    if unresolved_entity_issues:
         answer = "NEED_CLARIFY: " + json.dumps(
             {
                 "question": (
-                    "；".join(issue_parts) + "请说明它对应哪个业务字段或数据库列。"
+                    "；".join(unresolved_entity_issues)
+                    + "请说明它对应哪个业务实体或标识。"
                 ),
                 "options": [],
             },
@@ -1317,7 +1319,7 @@ def _run_query_impl(
         )
         llm_calls.append(
             {
-                "role": "unresolved_requested_field",
+                "role": "unresolved_entity",
                 "duration_ms": 0,
                 "model": "deterministic_guard",
                 "output": answer,
@@ -1379,6 +1381,81 @@ def _run_query_impl(
     if not extracted_sql and not clarify_msg:
         is_success = False
         error_msg = "模型未生成可执行 SQL"
+
+    inheritance_validation_attempts = []
+    must_preserve_previous_structure = bool(
+        previous_sql
+        and (
+            context_relation == "follow_up_add"
+            or (
+                context_relation != "new_question"
+                and not context_changes.get("removed")
+            )
+        )
+    )
+    if extracted_sql and must_preserve_previous_structure:
+        max_inheritance_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_inheritance_fix_retries + 1):
+            inheritance_ok, inheritance_error, inheritance_detail = (
+                _validate_followup_inheritance(extracted_sql)
+            )
+            inheritance_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": inheritance_ok,
+                    "error": inheritance_error,
+                    "missing": inheritance_detail.get("missing", {}),
+                }
+            )
+            if inheritance_ok:
+                break
+            if attempt >= max_inheritance_fix_retries:
+                is_success = False
+                error_msg = inheritance_error
+                break
+
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "这是增量追问，但新 SQL 丢失了上一轮已验证结构。\n\n"
+                        f"## 缺失结构\n{inheritance_error}\n\n"
+                        f"## 本轮语义变更\n{json.dumps(context_changes, ensure_ascii=False)}\n\n"
+                        "请以上一轮 SQL 为基线，只增加本轮要求，完整恢复所有缺失的投影、"
+                        "过滤、分组、关联、排序和限制。输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"followup_inheritance_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "追问继承修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "followup_inheritance_validate",
+                "attempts": inheritance_validation_attempts,
+                "final_valid": bool(
+                    inheritance_validation_attempts
+                    and inheritance_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
 
     # 业务语义校验必须先于 EXPLAIN。语法正确不代表换汇口径正确。
     currency_validation_attempts = []
@@ -1952,6 +2029,16 @@ def _run_query_impl(
             _validate_requested_projection(final_sql)
         )
         entity_ok, entity_error, entity_detail = _validate_entity_filters(final_sql)
+        if must_preserve_previous_structure:
+            inheritance_ok, inheritance_error, inheritance_detail = (
+                _validate_followup_inheritance(final_sql)
+            )
+        else:
+            inheritance_ok, inheritance_error, inheritance_detail = (
+                True,
+                "",
+                {"required": False, "missing": {}},
+            )
         trace_steps.append(
             {
                 "step": "sql_post_rewrite_guard",
@@ -1967,12 +2054,25 @@ def _run_query_impl(
                 "entity_filter_valid": entity_ok,
                 "entity_filter_error": entity_error,
                 "entity_filter_detail": entity_detail,
+                "followup_inheritance_valid": inheritance_ok,
+                "followup_inheritance_error": inheritance_error,
+                "followup_inheritance_detail": inheritance_detail,
             }
         )
-        if not currency_ok or not schema_ok or not projection_ok or not entity_ok:
+        if (
+            not currency_ok
+            or not schema_ok
+            or not projection_ok
+            or not entity_ok
+            or not inheritance_ok
+        ):
             is_success = False
             error_msg = (
-                currency_error or schema_error or projection_error or entity_error
+                currency_error
+                or schema_error
+                or projection_error
+                or entity_error
+                or inheritance_error
             )
 
     explicit_tools = explicitly_requested_tools(question, available_tools)
@@ -3085,8 +3185,11 @@ async def index_rebuild(req: IndexRebuildRequest, request: Request):
             )
         else:
             logger.info("收到全量索引重建请求，开始重建...")
+            # 先重新加载 Agent 配置，再真正删除并重建所有 Milvus
+            # collection。仅调用 initialize 会在
+            # REBUILD_INDEX_ON_STARTUP=false 时复用旧索引，与接口语义不符。
             _initialize_nl2sql_runtime(agent_config)
-            table_count = len(retriever.table_schemas)
+            table_count = retriever.rebuild_all()
             if query_cache:
                 query_cache.invalidate()
             logger.info(f"索引重建完成: {table_count} 张表")

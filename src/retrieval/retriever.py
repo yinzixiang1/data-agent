@@ -17,6 +17,7 @@ SchemaRetriever 是外部调用的唯一接口，封装了完整的检索流程:
     print(result.value_hits)        # [{"table_name": ..., "sql_value": ...}]
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -28,7 +29,6 @@ from src.retrieval.fewshot_selector import FewShotSelector
 from src.retrieval.glossary_resolver import GlossaryResolver
 from src.retrieval.hybrid_searcher import HybridSearcher
 from src.retrieval.index_manager import IndexManager
-from src.retrieval.query_analyzer import QueryAnalyzer
 from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.reranker import get_reranker
 from src.retrieval.schema_formatter import SchemaFormatter
@@ -36,18 +36,6 @@ from src.retrieval.schema_loader import SchemaLoader
 from src.retrieval.value_indexer import ValueIndexer
 
 logger = logging.getLogger(__name__)
-
-EXCHANGE_RATE_TABLE = "warehouse_sys.sys_exchange_rate"
-EXCHANGE_RATE_REQUIRED_COLUMNS = {
-    f"{EXCHANGE_RATE_TABLE}.source_currency",
-    f"{EXCHANGE_RATE_TABLE}.target_currency",
-    f"{EXCHANGE_RATE_TABLE}.sync_time",
-    f"{EXCHANGE_RATE_TABLE}.mid",
-}
-
-
-class RequiredSemanticTableMissingError(RuntimeError):
-    """查询依赖的确定性语义表尚未绑定到当前 Agent。"""
 
 
 @dataclass
@@ -250,6 +238,10 @@ class SchemaRetriever:
         logger.info(f"局部索引重建完成: [{rebuilt}]")
         return len(self.table_schemas)
 
+    def rebuild_all(self) -> int:
+        """Rebuild every persisted collection from the current source of truth."""
+        return self.rebuild_partial(["table", "enum", "value", "fewshot", "glossary"])
+
     @staticmethod
     def _drop_weak_table_candidates(
         candidates: list[dict],
@@ -303,7 +295,8 @@ class SchemaRetriever:
         fewshot_k: int | None = None,
         biz_line: str | None = None,
         metadata_filter: dict | None = None,
-        requested_field_query: str | None = None,
+        query_state: dict | None = None,
+        original_query: str | None = None,
         inherited_tables: set[str] | None = None,
         inherited_columns: set[str] | None = None,
     ) -> RetrievalResult:
@@ -325,6 +318,7 @@ class SchemaRetriever:
             top_k: 最终返回的表数量，None 时用 config 值
             fewshot_k: Few-shot 示例数量，None 时用 config 值
             biz_line: 业务线过滤（如 "banking"、"issuing"），为空则不过滤
+            original_query: 本轮用户原话，用于防止改写丢失受控术语
             inherited_tables: 上一轮已验证 SQL 中仍适用的表
             inherited_columns: 上一轮已验证 SQL 中仍适用的列
 
@@ -350,10 +344,7 @@ class SchemaRetriever:
         else:
             logger.info(f"开始检索: '{user_query}'")
 
-        query_analysis = QueryAnalyzer.analyze(user_query)
-        requested_field_analysis = QueryAnalyzer.analyze(
-            requested_field_query or user_query
-        )
+        state = query_state if isinstance(query_state, dict) else {}
 
         entity_result = EntityResolver(
             cfg.entity_resolution_rules,
@@ -362,9 +353,13 @@ class SchemaRetriever:
         entity_filters = entity_result["filters"]
         entity_context = EntityResolver.to_prompt_context(entity_filters)
 
-        # 1. 业务术语解析
+        # 1. 业务术语解析。多轮改写可能把本轮原话中的受控术语、枚举
+        # 或 ID 换成自然语言表达，因此同时保留改写后的完整问题与原话。
+        grounding_query = user_query
+        if original_query and original_query.strip() != user_query.strip():
+            grounding_query = f"{user_query}\n本轮用户原话：{original_query.strip()}"
         glossary_result = self.glossary_resolver.resolve(
-            user_query,
+            grounding_query,
             biz_line=biz_line,
             metadata_filter=metadata_filter,
         )
@@ -380,32 +375,36 @@ class SchemaRetriever:
                 metadata_filter=metadata_filter,
                 exact_match_boost=cfg.value_exact_match_boost,
             )
-        required_tables = {
-            hit["table_name"] for hit in value_hits if hit.get("exact_match")
-        }
+        required_tables: set[str] = set()
         required_tables.update(glossary_result.get("related_tables", []))
         required_tables.update(self.searcher._find_explicit_tables(user_query))
         required_tables.update(inherited_tables or set())
         required_columns = set(glossary_result.get("related_columns", []))
         required_columns.update(inherited_columns or set())
+        required_tables.update(item["table"] for item in entity_filters)
+        required_columns.update(item["qualified_column"] for item in entity_filters)
+
+        # An exact value such as LOCAL/SWIFT can exist on several unrelated
+        # tables.  Treat it as column evidence only after stronger signals
+        # (glossary, explicit table, prior SQL, entity link)
+        # have established the owning table; never let a shared enum value pin
+        # every table that happens to contain it.
+        grounded_required_tables = {
+            variant
+            for table in required_tables
+            for variant in {str(table), str(table).rsplit(".", 1)[-1]}
+        }
         required_columns.update(
             f"{hit['table_name']}.{hit['column_name']}"
             for hit in value_hits
             if hit.get("exact_match")
-            and hit.get("table_name")
+            and {
+                str(hit.get("table_name") or ""),
+                str(hit.get("table_name") or "").rsplit(".", 1)[-1],
+            }
+            & grounded_required_tables
             and hit.get("column_name")
         )
-        required_tables.update(item["table"] for item in entity_filters)
-        required_columns.update(item["qualified_column"] for item in entity_filters)
-
-        if query_analysis.requires_exchange_rate and cfg.exchange_rate_injection:
-            if EXCHANGE_RATE_TABLE not in self.table_schemas:
-                raise RequiredSemanticTableMissingError(
-                    "查询需要货币汇率，但当前 Agent 未绑定可用的语义表 "
-                    f"{EXCHANGE_RATE_TABLE}"
-                )
-            required_tables.add(EXCHANGE_RATE_TABLE)
-            required_columns.update(EXCHANGE_RATE_REQUIRED_COLUMNS)
 
         # 3. Schema 混合检索
         table_params = get_search_params(cfg.collection_search_config, "table")
@@ -466,6 +465,22 @@ class SchemaRetriever:
                 max_tables=cfg.max_context_tables,
             )
 
+        # QueryState 中的展示维度是用户明确要求输出的字段。将它们
+        # 映射到已召回 Schema，同时用于字段裁剪保护和最终 SELECT 校验，
+        # 避免“召回了表却裁掉用户要的列”。
+        requested_fields: list[dict] = []
+        if self.context_planner:
+            requested_fields = self.context_planner.resolve_requested_columns(
+                candidates,
+                [str(value) for value in state.get("dimensions", []) if value],
+                query=user_query,
+            )
+            required_columns.update(
+                column
+                for requirement in requested_fields
+                for column in requirement.get("columns", [])
+            )
+
         hit_tables = [c["table_name"] for c in candidates]
         hit_table_set = set(hit_tables)
 
@@ -491,21 +506,13 @@ class SchemaRetriever:
 
         # 8. 字段级上下文规划：只保留问题相关字段，主键/Join/口径字段始终保留。
         context_stats = {}
-        requested_fields: list[dict] = []
         if self.context_planner:
-            requested_fields = self.context_planner.resolve_requested_columns(
-                candidates,
-                requested_field_analysis.requested_fields,
-                query=user_query,
-            )
-            for requirement in requested_fields:
-                required_columns.update(requirement["columns"])
             candidates, context_stats = self.context_planner.prune_columns(
                 candidates,
                 enriched_query,
                 required_columns=required_columns,
                 per_table_limit=cfg.max_columns_per_table,
-                preserve_time_columns=query_analysis.has_time_filter,
+                preserve_time_columns=bool(state.get("time_range")),
             )
             enum_hits, dropped_enum_count = self._filter_enums_by_selected_columns(
                 enum_hits,
@@ -515,7 +522,13 @@ class SchemaRetriever:
             context_stats["unrelated_enums_dropped"] = dropped_enum_count
 
         # 9. Prompt 组装
-        intent_context = query_analysis.to_prompt_context()
+        intent_context = ""
+        if state:
+            intent_context = (
+                "以下是模型合并得到的粗粒度查询摘要，仅用于辅助理解；"
+                "完整需求以【用户问题】为准：\n"
+                + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+            )
         if entity_context:
             intent_context = "\n\n".join(
                 part for part in (intent_context, entity_context) if part
@@ -545,7 +558,7 @@ class SchemaRetriever:
             join_paths=join_paths,
             inferred_biz_line=inferred_biz_line,
             context_stats=context_stats,
-            query_intent=query_analysis.to_dict(),
+            query_intent={"state": state},
             requested_fields=requested_fields,
             entity_filters=entity_filters,
             unresolved_entities=entity_result["unresolved"],

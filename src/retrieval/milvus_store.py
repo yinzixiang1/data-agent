@@ -32,19 +32,19 @@ import logging
 
 import numpy as np
 from pymilvus import (
-    MilvusClient,
+    AnnSearchRequest,
     DataType,
     Function,
     FunctionType,
-    AnnSearchRequest,
+    MilvusClient,
 )
 
 from src.retrieval.config import (
-    MILVUS_URI,
     MILVUS_DB,
-    MILVUS_USER,
     MILVUS_PASSWORD,
     MILVUS_TOKEN,
+    MILVUS_URI,
+    MILVUS_USER,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,8 +271,13 @@ class MilvusIndex:
             data.append(row)
 
         self.client.insert(self.collection_name, data)
+        # Milvus insert is asynchronous.  Index rebuilds are followed by a
+        # process/container restart during deployment, so relying on the
+        # server's periodic flush can lose the just-written segment while the
+        # in-process count cache still makes the rebuild appear successful.
+        self.client.flush(collection_name=self.collection_name)
         self._cached_count = n
-        logger.info(f"插入 {n} 条到 {self.collection_name}")
+        logger.info(f"插入并持久化 {n} 条到 {self.collection_name}")
 
     def hybrid_search(
         self,

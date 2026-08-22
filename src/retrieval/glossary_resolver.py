@@ -20,8 +20,8 @@ import logging
 import re
 
 from src.retrieval.embedding import Qwen3Embedding
-from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.milvus_filter import build_metadata_filter
+from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.ranker_strategy import CollectionSearchParams
 
 logger = logging.getLogger(__name__)
@@ -93,11 +93,16 @@ class GlossaryResolver:
         q_dense = self.embedding.encode_query(query, collection_type="glossary")
 
         # 混合检索
+        # 术语库是受控小词典，需要先召回全部可见词条再做精确落地
+        # 判断。否则用户明确说出的低频术语可能被向量 top-k 挤掉。
+        recall_k = min(
+            max(self.search_params.recall_limit, self.glossary_index.count), 200
+        )
         results = self.glossary_index.hybrid_search(
             q_dense,
             query,
             ranker=self.search_params.ranker,
-            recall_k=self.search_params.recall_limit,
+            recall_k=recall_k,
             output_fields=[
                 "term",
                 "definition",
@@ -110,9 +115,7 @@ class GlossaryResolver:
             ef_search=self.ef_search,
         )
 
-        max_score = results[0][1] if results else 0.0
         grounded_results = []
-        semantic_results = []
         rejected_terms: list[str] = []
         for result in results:
             entity = result[2]
@@ -120,12 +123,15 @@ class GlossaryResolver:
             synonyms = self._parse_synonyms(entity.get("synonyms", "[]"))
             if self._is_grounded(query, term, synonyms):
                 grounded_results.append(result)
-            elif self._passes_semantic_score(result[1], max_score):
-                semantic_results.append(result)
             else:
                 rejected_terms.append(term)
 
-        selected_results = (grounded_results + semantic_results)[:top_k]
+        # 业务术语会改变表、字段和过滤条件，只有用户明确说出术语或
+        # 受控同义词时才能作为权威证据。向量候选仅用于观测和后续补词，
+        # 不能在低置信度下静默固定物理表。
+        # top_k 只是向量候选的上限；用户在同一句中明确说出的受控
+        # 术语必须全部保留，不能因为排名截断丢掉 LOCAL/SWIFT/渠道等约束。
+        selected_results = grounded_results
         grounded_doc_ids = {doc_id for doc_id, _, _ in grounded_results}
 
         for doc_id, score, entity in selected_results:
@@ -222,4 +228,15 @@ class GlossaryResolver:
                     re.IGNORECASE,
                 )
             )
+        # 两字中文术语直接做子串包含会产生明显误判，例如“入金”不是
+        # “买入金额”的业务术语。项目已使用 jieba，因此用通用分词边界
+        # 判断短词，不在代码里维护业务特判。
+        if len(normalized) <= 2 and re.fullmatch(r"[\u3400-\u9fff]+", normalized):
+            import jieba
+
+            return normalized.casefold() in {
+                token.strip().casefold()
+                for token in jieba.lcut(query, cut_all=False)
+                if token.strip()
+            }
         return normalized.casefold() in query.casefold()

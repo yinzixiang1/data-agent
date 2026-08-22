@@ -396,7 +396,10 @@ class SQLValidator:
         requirements: list[dict],
     ) -> tuple[bool, str, dict]:
         """确保用户明确要求展示的字段没有在 SQL 纠错中被删除。"""
-        if not requirements:
+        grounded_requirements = [
+            requirement for requirement in requirements if requirement.get("columns")
+        ]
+        if not grounded_requirements:
             return True, "", {"required": False}
 
         tree, parse_error = cls._parse_ast(sql)
@@ -447,7 +450,7 @@ class SQLValidator:
 
         missing: list[dict] = []
         if not has_star:
-            for requirement in requirements:
+            for requirement in grounded_requirements:
                 candidates = {
                     str(column).rsplit(".", 1)[-1].casefold()
                     for column in requirement.get("columns", [])
@@ -473,6 +476,84 @@ class SQLValidator:
             False,
             "SQL 未在最终 SELECT 结果中保留用户明确要求的字段: "
             + "；".join(descriptions),
+            detail,
+        )
+
+    @classmethod
+    def validate_followup_inheritance(
+        cls,
+        sql: str,
+        previous_context: dict[str, list[str]],
+        relation: str,
+    ) -> tuple[bool, str, dict]:
+        """Ensure follow-ups without explicit removals preserve their baseline.
+
+        The caller decides whether the current semantic patch contains a
+        removal.  ``follow_up_modify`` can still be purely additive (models do
+        not always label the relation consistently), so relation labels alone
+        must not disable the structural safety check.
+        """
+        if relation == "new_question" or not previous_context:
+            return True, "", {"required": False, "missing": {}}
+
+        from src.retrieval.context_compressor import ContextCompressor
+
+        current_context = ContextCompressor.extract_sql_context(sql)
+
+        def normalized(values: list[str], section: str) -> set[str]:
+            result = set()
+            for value in values:
+                fragment = str(value).replace("`", "").strip()
+                if not fragment:
+                    continue
+                if section in {"projections", "dimensions", "filters", "order_by"}:
+                    # A follow-up may introduce a JOIN and therefore qualify
+                    # previously unqualified columns (account_id -> o.account_id).
+                    # Qualification alone is not a semantic structure change.
+                    fragment = re.sub(
+                        r"(?<![\w.])(?:[A-Za-z_][A-Za-z0-9_]*)\."
+                        r"(?=[A-Za-z_][A-Za-z0-9_]*)",
+                        "",
+                        fragment,
+                    )
+                result.add(re.sub(r"\s+", " ", fragment).casefold())
+            return result
+
+        missing: dict[str, list[str]] = {}
+        for section in (
+            "tables",
+            "projections",
+            "dimensions",
+            "filters",
+            "joins",
+            "order_by",
+            "limit",
+        ):
+            previous_values = previous_context.get(section) or []
+            current_values = normalized(current_context.get(section) or [], section)
+            absent = [
+                str(value)
+                for value in previous_values
+                if not normalized([str(value)], section) & current_values
+            ]
+            if absent:
+                missing[section] = absent
+
+        detail = {
+            "required": True,
+            "missing": missing,
+            "previous": previous_context,
+            "current": current_context,
+        }
+        if not missing:
+            return True, "", detail
+
+        descriptions = [
+            f"{section}: {', '.join(values)}" for section, values in missing.items()
+        ]
+        return (
+            False,
+            "增量追问丢失了上一轮已验证 SQL 的结构：" + "；".join(descriptions),
             detail,
         )
 

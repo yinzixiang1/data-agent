@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import copy
+import heapq
 import logging
 import re
-import heapq
 from collections import Counter
 from itertools import combinations
 
@@ -191,16 +191,21 @@ class SchemaContextPlanner:
                         matches.append((score, f"{table_name}.{column_name}"))
 
             matches.sort(key=lambda item: (-item[0], item[1]))
-            best_score = matches[0][0] if matches else 0.0
-            columns = list(
-                dict.fromkeys(
-                    column for score, column in matches if score >= best_score - 0.75
-                )
-            )[:max_matches_per_field]
+            # Projection validation is an OR contract: when several recalled
+            # tables expose a directly matching label, any of those physical
+            # columns can satisfy the requested field.  Keeping only the
+            # highest contextual score would prematurely choose an owning
+            # table and can reject a valid SELECT from another candidate.
+            columns = list(dict.fromkeys(column for _score, column in matches))[
+                :max_matches_per_field
+            ]
+            # Only grounded Schema mappings may become hard projection
+            # contracts.  A natural-language dimension can also describe a
+            # derived expression (for example LOCAL/SWIFT from a JSON path),
+            # so an unresolved label must stay soft prompt context instead of
+            # becoming an impossible validation requirement.
             if columns:
                 requirements.append({"field": requested_field, "columns": columns})
-            else:
-                requirements.append({"field": requested_field, "columns": []})
         return requirements
 
     def prune_columns(

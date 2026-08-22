@@ -33,13 +33,17 @@ COMPRESS_PROMPT = """你是一个查询状态更新助手。不要机械拼接�
 请根据历史查询状态和本轮输入，输出一个 JSON 对象。禁止输出 Markdown 或解释。
 
 规则:
-1. 查询状态分为：查询对象、时间范围、筛选条件、指标、展示维度、币种换算、排除项。
-   上一轮已验证 SQL 是本轮修改的结构基线；除非用户明确替换、删除或开始新问题，必须继承其中的表、字段、展示维度、聚合方式和过滤条件。
-2. “再展示/加上/带上”表示增量追加；“只要/仅查询/不要/去掉/改为”表示替换或移除对应状态。
-3. 修改指标或展示维度时，可以保留仍适用的时间和筛选条件，但不能保留用户明确移除的金额、币种、换算或维度。
-4. 新问题与历史无关时 relation=new_question，只使用本轮输入。
-5. 只有存在会实质改变 SQL 的歧义或冲突时 needs_clarification=true；明确时直接给出完整状态。
-6. effective_question 必须与 query_state 完全一致，不能包含已移除的指标或维度。
+1. query_state 只是查询对象、时间范围、筛选条件、指标、展示维度、币种换算和排除项的粗粒度摘要，不是完整需求清单。
+   事件顺序、派生结果、JSON 内容、终态判断和其他复杂要求必须完整保留在 effective_question 中，不得为了适配 query_state 而删减。
+2. 上一轮已验证 SQL 是本轮修改的结构基线；除非用户明确替换、删除或开始新问题，必须继承其中的表、字段、展示维度、聚合方式和过滤条件。
+3. “再展示/加上/带上”表示增量追加；“只要/仅查询/不要/去掉/改为”表示替换或移除对应状态。
+4. 修改指标或展示维度时，可以保留仍适用的时间和筛选条件，但不能保留用户明确移除的金额、币种、换算或维度。
+5. 新问题与历史无关时 relation=new_question，只使用本轮输入。没有历史时必须返回 new_question。
+6. 只有存在会实质改变 SQL 的歧义或冲突时 needs_clarification=true；明确时直接给出完整状态。
+   本阶段尚未看到数据库 Schema、枚举和业务术语，因此不得因为“成功”“完成”“渠道”“主体”等业务词如何映射到物理字段而澄清；
+   应原样保留这些词，由后续 RAG 和 SQL 生成阶段依据证据解释。只有指代不清、与上一轮要求互相冲突且无法形成完整问题时才澄清。
+7. effective_question 是完整需求的唯一文本事实来源，必须包含所有保留项和新增项，不能包含已移除项。
+8. relation=follow_up_add 仅表示增加内容且不改变任何已有结构；只要替换或删除已有条件、字段、维度或指标，就必须使用 follow_up_modify 或 correction_override，并在 changes.removed 中列出被替换或删除的内容。
 
 输出格式:
 {{
@@ -75,20 +79,6 @@ _RELATIONS = {
     "correction_override",
     "new_question",
 }
-_TIME_PATTERNS = (
-    re.compile(
-        r"(?:最近|近|过去)\s*"
-        r"(?:\d+|[一二两三四五六七八九十百]+个?)?\s*"
-        r"(?:天|周|个月|月|季度|年)"
-    ),
-    re.compile(r"这(?:一|个|一个)?(?:天|周|月|个月|季度|年)"),
-    re.compile(r"(?:今天|今日|昨天|昨日|本周|本月|本季度|本年|今年|上周|上月|去年)"),
-    re.compile(
-        r"\b(?:last|past|recent|this)\s+(?:\d+\s+)?"
-        r"(?:day|week|month|quarter|year)s?\b",
-        re.IGNORECASE,
-    ),
-)
 
 
 @dataclass(frozen=True)
@@ -184,7 +174,7 @@ class ContextCompressor:
         prev_sql_context = summary["sql_context"]
         previous_query_state = QueryState.from_value(summary.get("query_state"))
 
-        history_text = f"问题: {prev_question}"
+        history_text = f"问题: {prev_question}" if prev_question else "无（这是新问题）"
         history_text += "\n结构化状态: " + json.dumps(
             previous_query_state.to_dict(), ensure_ascii=False
         )
@@ -209,7 +199,19 @@ class ContextCompressor:
                 str(resp.content or ""),
                 current_question=current_question,
                 previous_question=prev_question,
+                previous_query_state=previous_query_state,
             )
+            if not prev_question and result.relation != "new_question":
+                result = ContextMergeResult(
+                    effective_question=result.effective_question,
+                    query_state=result.query_state,
+                    relation="new_question",
+                    interpretation=result.interpretation,
+                    confidence=result.confidence,
+                    needs_clarification=result.needs_clarification,
+                    clarification=result.clarification,
+                    changes=result.changes,
+                )
             logger.info(
                 "context state merged",
                 extra={
@@ -224,7 +226,11 @@ class ContextCompressor:
                 "context state merge fallback",
                 extra={"error": str(exc)},
             )
-            return self._fallback_result(current_question, prev_question)
+            return self._fallback_result(
+                current_question,
+                prev_question,
+                previous_query_state,
+            )
 
     @classmethod
     def _parse_merge_response(
@@ -233,6 +239,7 @@ class ContextCompressor:
         *,
         current_question: str,
         previous_question: str,
+        previous_query_state: QueryState,
     ) -> ContextMergeResult:
         stripped = content.strip()
         fenced = re.fullmatch(r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL)
@@ -241,12 +248,17 @@ class ContextCompressor:
         try:
             payload = json.loads(stripped)
         except (json.JSONDecodeError, TypeError):
-            return ContextMergeResult(
-                effective_question=stripped or current_question,
-                query_state=cls.infer_state(stripped or current_question),
+            return cls._fallback_result(
+                current_question,
+                previous_question,
+                previous_query_state,
             )
         if not isinstance(payload, dict):
-            return cls._fallback_result(current_question, previous_question)
+            return cls._fallback_result(
+                current_question,
+                previous_question,
+                previous_query_state,
+            )
 
         effective_question = str(
             payload.get("effective_question") or current_question
@@ -310,34 +322,31 @@ class ContextCompressor:
         cls,
         current_question: str,
         previous_question: str,
+        previous_query_state: QueryState | None = None,
     ) -> ContextMergeResult:
+        effective_question = current_question
+        relation = "new_question"
+        query_state = QueryState()
+        if previous_question:
+            effective_question = f"{previous_question}\n用户补充：{current_question}"
+            relation = "follow_up_modify"
+            query_state = previous_query_state or QueryState()
         return ContextMergeResult(
-            effective_question=current_question,
-            query_state=cls.infer_state(current_question),
-            relation="follow_up_modify",
+            effective_question=effective_question,
+            query_state=query_state,
+            relation=relation,
             confidence=0.5,
+            changes={
+                "kept": ["上一轮完整查询"] if previous_question else [],
+                "set": [current_question],
+                "removed": [],
+            },
         )
 
     @classmethod
     def infer_state(cls, question: str) -> QueryState:
-        from src.retrieval.query_analyzer import QueryAnalyzer
-
-        analysis = QueryAnalyzer.analyze(question)
-        return QueryState(
-            time_range=cls._extract_time_range(question),
-            metrics=tuple(analysis.aggregations),
-            dimensions=tuple(analysis.requested_fields),
-            currency_conversion=(
-                analysis.target_currency if analysis.currency_conversion else ""
-            ),
-        )
-
-    @staticmethod
-    def _extract_time_range(question: str) -> str:
-        for pattern in _TIME_PATTERNS:
-            if match := pattern.search(question):
-                return match.group(0).strip()
-        return ""
+        del question
+        return QueryState()
 
     @staticmethod
     def extract_sql_context(sql: str) -> dict[str, list[str]]:
@@ -348,6 +357,9 @@ class ContextCompressor:
             "projections": [],
             "dimensions": [],
             "filters": [],
+            "joins": [],
+            "order_by": [],
+            "limit": [],
         }
         if not sql.strip():
             return empty
@@ -387,19 +399,41 @@ class ContextCompressor:
             if owner:
                 columns.append(f"{owner}.{column.name}")
 
-        group = tree.args.get("group")
-        where = tree.args.get("where")
+        select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+        group = select.args.get("group") if select is not None else None
+        where = select.args.get("where") if select is not None else None
+        order = select.args.get("order") if select is not None else None
+        limit = select.args.get("limit") if select is not None else None
+
+        def split_filters(expression: exp.Expression) -> list[exp.Expression]:
+            if isinstance(expression, exp.And):
+                return split_filters(expression.left) + split_filters(expression.right)
+            return [expression]
+
         return {
             "tables": tables,
             "columns": list(dict.fromkeys(columns)),
             "projections": [
-                expression.sql(dialect="mysql") for expression in tree.expressions
+                expression.sql(dialect="mysql")
+                for expression in (select.expressions if select is not None else [])
             ],
             "dimensions": [
                 expression.sql(dialect="mysql")
                 for expression in (group.expressions if group else [])
             ],
-            "filters": [where.this.sql(dialect="mysql")] if where else [],
+            "filters": [
+                expression.sql(dialect="mysql")
+                for expression in (split_filters(where.this) if where else [])
+            ],
+            "joins": [
+                join.sql(dialect="mysql")
+                for join in (select.args.get("joins") or [] if select else [])
+            ],
+            "order_by": [
+                expression.sql(dialect="mysql")
+                for expression in (order.expressions if order else [])
+            ],
+            "limit": [limit.sql(dialect="mysql")] if limit else [],
         }
 
     @staticmethod
@@ -424,8 +458,6 @@ class ContextCompressor:
             if isinstance(query_state, QueryState)
             else QueryState.from_value(query_state)
         )
-        if not any(state.to_dict().values()):
-            state = ContextCompressor.infer_state(question)
         return json.dumps(
             {
                 "question": question,
@@ -440,7 +472,7 @@ class ContextCompressor:
 
     @staticmethod
     def parse_summary(history_summary: str) -> dict:
-        """读取结构化摘要，并兼容已保存的旧版分隔符格式。"""
+        """读取当前结构化摘要；无效或旧格式按空状态处理。"""
         try:
             payload = json.loads(history_summary)
         except (json.JSONDecodeError, TypeError):
@@ -463,6 +495,9 @@ class ContextCompressor:
                         "projections",
                         "dimensions",
                         "filters",
+                        "joins",
+                        "order_by",
+                        "limit",
                     )
                 },
                 "query_state": QueryState.from_value(
@@ -470,14 +505,9 @@ class ContextCompressor:
                 ).to_dict(),
             }
 
-        parts = history_summary.split("|||", 1)
         return {
-            "question": parts[0] if parts else "",
-            "tables": [
-                table
-                for table in (parts[1].split(",") if len(parts) > 1 else [])
-                if table
-            ],
+            "question": "",
+            "tables": [],
             "sql": "",
             "sql_context": ContextCompressor.extract_sql_context(""),
             "query_state": QueryState().to_dict(),

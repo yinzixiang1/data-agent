@@ -15,17 +15,18 @@ import logging
 from collections import OrderedDict
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.config import (
     DORIS_HOST,
+    DORIS_PASSWORD_URL,
     DORIS_PORT,
     DORIS_USER,
-    DORIS_PASSWORD_URL,
+    MYSQL_DATABASE,
     MYSQL_HOST,
+    MYSQL_PASSWORD_URL,
     MYSQL_PORT,
     MYSQL_USER,
-    MYSQL_PASSWORD_URL,
-    MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ class SchemaLoader:
         da_semantic_table          — 表语义
         da_semantic_column         — 列语义（FK → da_semantic_table.id）
         da_semantic_relation       — 关联关系（FK → da_semantic_table.id）
-        da_semantic_query          — 表级常见问题（FK → da_semantic_table.id）
+        da_semantic_query          — 表级候选问题（不直接进入在线 Few-shot）
         da_semantic_glossary       — 业务术语
         da_semantic_enum           — 枚举定义
         da_semantic_enum_value     — 枚举值（FK → da_semantic_enum.id）
@@ -114,8 +115,11 @@ class SchemaLoader:
                     match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", create_rows[1])
                     if match:
                         table_comment = match.group(1)
-            except Exception:
-                pass
+            except SQLAlchemyError as exc:
+                logger.debug(
+                    "SHOW CREATE TABLE comment lookup skipped",
+                    extra={"table": table_name, "error_type": type(exc).__name__},
+                )
 
             return {
                 "database": db,
@@ -410,7 +414,7 @@ class SchemaLoader:
         exec_db_ids: list[int] | None = None,
         agent_id: int | None = None,
     ) -> list[dict]:
-        """从 da_semantic_fewshot + da_semantic_query 加载 Few-shot 示例。"""
+        """仅加载已进入审核语料表的 Few-shot 示例。"""
         examples = []
 
         with self.mysql_engine.connect() as conn:
@@ -449,40 +453,7 @@ class SchemaLoader:
                     }
                 )
 
-            # 表级常见问题（也作为 Few-shot，通过 da_semantic_table 的 exec_db_id 过滤）
-            query_sql = (
-                "SELECT q.question, q.`sql`, q.tables, q.difficulty, b.meta_json, b.business_line "
-                "FROM da_semantic_query q "
-                "JOIN da_semantic_table t ON q.table_id = t.id "
-                "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
-                "WHERE t.status = 1 AND t.available = 1"
-            )
-            if exec_db_ids:
-                query_sql += self._exec_db_in_clause(exec_db_ids)
-            query_rows = conn.execute(text(query_sql)).fetchall()
-
-            for row in query_rows:
-                tables = self._parse_json_list(row[2])
-                try:
-                    metadata = json.loads(row[4] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    metadata = {}
-                biz_line = row[5] if len(row) > 5 else None
-                if biz_line:
-                    metadata["business"] = biz_line
-                examples.append(
-                    {
-                        "question": row[0],
-                        "sql": row[1],
-                        "tables": tables,
-                        "difficulty": row[3] or "",
-                        "metadata": metadata,
-                    }
-                )
-
-        logger.info(
-            f"MySQL Few-shot 加载: {len(examples)} 条 (全局 {len(rows)} + 表级 {len(query_rows)})"
-        )
+        logger.info(f"MySQL 已审核 Few-shot 加载: {len(examples)} 条")
         return examples
 
     # ── 合并 ──
@@ -578,7 +549,7 @@ class SchemaLoader:
                 doris_schema = self.get_table_schema(
                     short_name, database=sem.get("database_name")
                 )
-            except Exception as exc:
+            except (SQLAlchemyError, KeyError, TypeError, ValueError) as exc:
                 skipped.append((full_key, str(exc)))
                 continue
 
