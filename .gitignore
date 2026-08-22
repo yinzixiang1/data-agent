@@ -27,5 +27,8 @@ index_store/
 # Exported config (contains api_key/token)
 config/
 
+# Runtime config (copy from configs/config.example.yaml)
+configs/config.yaml
+
 # Runtime logs
 logs/

@@ -12,13 +12,6 @@ services:
       - ./configs/config.yaml:/etc/data-agen/config.yaml:ro
       - model-cache:/root/.cache
       - codex-home:/var/lib/lumen-codex
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
       interval: 30s

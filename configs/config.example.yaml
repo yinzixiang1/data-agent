@@ -1,0 +1,37 @@
+# 配置键与应用环境变量保持一致；容器环境变量可覆盖这里的值。
+NL2SQL_ENV: prod
+CONFIG_SOURCE: mysql
+CONFIG_PROFILE: 1
+PARAM_SOURCE: admin
+REBUILD_INDEX_ON_STARTUP: false
+
+# 管理库 / 语义层
+MYSQL_HOST: your-mysql-host
+MYSQL_PORT: 3306
+MYSQL_USER: your-mysql-user
+MYSQL_PASSWORD: your-mysql-password
+MYSQL_DATABASE: your-admin-database
+
+# Agent 未绑定 vector_db 资源时使用以下 Milvus 配置
+MILVUS_URI: http://your-milvus-host:19530
+MILVUS_DB: data_agen
+MILVUS_USER: ""
+MILVUS_PASSWORD: ""
+MILVUS_TOKEN: ""
+
+# API 与运行环境
+DEFAULT_AGENT_TOKEN: replace-with-a-strong-token
+ENGINE_PUBLIC_URL: ""
+DENSE_DEVICE: cpu
+CODEX_HOME: /var/lib/lumen-codex
+
+# 日志
+LOG_DIR: logs
+LOG_LEVEL: INFO
+LOG_RETENTION_DAYS: 30
+
+# CONFIG_SOURCE=local 时取消注释并填写查询数据库连接
+# DORIS_HOST: your-query-database-host
+# DORIS_PORT: 9030
+# DORIS_USER: your-query-database-user
+# DORIS_PASSWORD: your-query-database-password
