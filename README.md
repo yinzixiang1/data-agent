@@ -4,6 +4,8 @@
 通过 Milvus 混合检索定位相关 Schema，再由 LLM 生成 SQL，并在返回或执行前完成
 确定性安全校验。
 
+整体架构、RAG 和统一接入见[项目文档中心](../docs/README.md)；Agent 专属镜像与运行约定见[本项目文档](docs/README.md)。本 README 只保留本地开发入口。
+
 ## 查询流程
 
 1. 使用模型合并滚动查询状态和上一轮验证 SQL，必要时返回结构化澄清问题。
@@ -112,10 +114,12 @@ uv run uvicorn app:app --host 0.0.0.0 --port 9090
 
 每个 Agent 使用独立的 Milvus Collection 后缀。索引内容包括：
 
-- 表和字段 Schema
-- 业务术语
-- 枚举定义与实体值
-- Few-shot SQL 示例
+- table：表及用途；
+- column：字段 Schema 和业务含义；
+- enum：枚举定义；
+- value：可过滤实体值；
+- glossary：业务术语；
+- fewshot：经审核的 SQL 示例。
 
 MySQL 语义层决定当前 Agent 可见的数据范围；SQL 执行前还会再次根据
 `da_agent_exec_db` 验证数据库授权。授权信息无法确认时，服务拒绝执行，不回退到
@@ -130,4 +134,4 @@ MySQL 语义层决定当前 Agent 可见的数据范围；SQL 执行前还会再
 | Embedding 或 Reranker 模型 | 重启服务 |
 | Doris 表结构 | 重建索引 |
 
-部署方式不在本仓库中定义，应由目标环境的独立发布方案提供。
+镜像构建、Compose 启动和健康检查见[Agent 镜像与运行](docs/部署.md)；跨服务发布顺序见[项目部署与运维](../docs/deployment/部署与运维.md)。
