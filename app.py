@@ -15,6 +15,7 @@ NL2SQL Data Agent — FastAPI HTTP 服务入口。
 
 import asyncio
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from datetime import datetime as _datetime
 from functools import partial
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+from typing import Literal
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -485,6 +487,7 @@ async def _run_query_in_worker(
     biz_line: str = "",
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
+    prepared_context: dict | None = None,
 ) -> dict:
     """Run the complete blocking pipeline outside the FastAPI event loop."""
     call = partial(
@@ -496,6 +499,7 @@ async def _run_query_in_worker(
         biz_line=biz_line,
         metadata_filter=metadata_filter,
         metadata_context=metadata_context,
+        prepared_context=prepared_context,
     )
     if not _is_codex_config(config):
         return await anyio.to_thread.run_sync(call)
@@ -529,6 +533,63 @@ async def _run_query_in_worker(
                     )
         except TimeoutError:
             raise CodexTimeoutError("Codex 查询已超过时间限制，请稍后重试") from None
+        try:
+            return await anyio.to_thread.run_sync(call)
+        finally:
+            semaphore.release()
+
+
+async def _prepare_context_in_worker(
+    question: str,
+    config: AgentRuntimeConfig,
+    client: BaseChatModel,
+    *,
+    semaphore: asyncio.Semaphore | None = None,
+    runtime_swap_lock: asyncio.Lock | None = None,
+    history_summary: str = "",
+) -> dict:
+    """Run the one-time turn classifier outside the FastAPI event loop."""
+    call = partial(
+        prepare_query_context,
+        question,
+        config,
+        client,
+        history_summary=history_summary,
+    )
+    if not _is_codex_config(config):
+        return await anyio.to_thread.run_sync(call)
+
+    from src.retrieval.codex_chat_model import (
+        CodexModelError,
+        CodexTimeoutError,
+        codex_query_budget,
+        codex_remaining_timeout,
+    )
+
+    with codex_query_budget(config.codex_timeout_seconds):
+        if semaphore is None:
+            return await anyio.to_thread.run_sync(call)
+        try:
+            if runtime_swap_lock is None:
+                await asyncio.wait_for(
+                    semaphore.acquire(),
+                    timeout=codex_remaining_timeout(config.codex_timeout_seconds),
+                )
+            else:
+                async with runtime_swap_lock:
+                    if (
+                        client is not llm_client
+                        or semaphore is not codex_query_semaphore
+                    ):
+                        raise CodexModelError("Codex 配置刚刚更新，请重新提交查询")
+                    await asyncio.wait_for(
+                        semaphore.acquire(),
+                        timeout=codex_remaining_timeout(config.codex_timeout_seconds),
+                    )
+        except TimeoutError:
+            raise CodexTimeoutError(
+                "Codex 意图识别已超过时间限制，请稍后重试"
+            ) from None
         try:
             return await anyio.to_thread.run_sync(call)
         finally:
@@ -692,6 +753,34 @@ class QueryMetadata(BaseModel):
     )
 
 
+class PreparedQueryContext(BaseModel):
+    """One-time model output reused by the remaining NL2SQL pipeline."""
+
+    input_fingerprint: str = Field(..., min_length=64, max_length=64)
+    effective_question: str = Field(..., min_length=1, max_length=2000)
+    query_state: dict = Field(default_factory=dict)
+    relation: Literal[
+        "new_question",
+        "follow_up_add",
+        "follow_up_modify",
+        "correction_override",
+    ] = "new_question"
+    turn_intent: Literal[
+        "sql_query",
+        "result_operation",
+        "result_explanation",
+        "non_query",
+    ] = "sql_query"
+    presentation_relation: Literal["inherit", "replace", "clear"] = "clear"
+    interpretation: str = Field(default="", max_length=500)
+    direct_response: str = Field(default="", max_length=1000)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    needs_clarification: bool = False
+    clarification: dict = Field(default_factory=dict)
+    changes: dict = Field(default_factory=dict)
+    removed_sql_context: dict = Field(default_factory=dict)
+
+
 class QueryRequest(BaseModel):
     question: str = Field(..., description="用户自然语言问题")
     session_id: str = Field(
@@ -714,6 +803,16 @@ class QueryRequest(BaseModel):
         default=None,
         description="扩展参数，按需覆盖 Agent 配置（如 enable_execute, row_limit 等）",
     )
+    prepared_context: PreparedQueryContext | None = Field(
+        default=None,
+        description="由 /query/prepare 返回的一次性轮次识别结果；传入后不重复调用模型识别",
+    )
+
+
+class QueryPrepareRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=4000)
+    agent_id: int | None = Field(default=None)
+    history_summary: str = Field(default="")
 
 
 class SavedQueryRequest(BaseModel):
@@ -885,6 +984,7 @@ def run_query(
     biz_line: str = "",
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
+    prepared_context: dict | None = None,
 ) -> dict:
     """Run one pipeline with a shared cumulative deadline for Codex turns."""
     if _is_codex_config(config):
@@ -899,6 +999,7 @@ def run_query(
                 biz_line=biz_line,
                 metadata_filter=metadata_filter,
                 metadata_context=metadata_context,
+                prepared_context=prepared_context,
             )
     return _run_query_impl(
         question,
@@ -908,7 +1009,46 @@ def run_query(
         biz_line=biz_line,
         metadata_filter=metadata_filter,
         metadata_context=metadata_context,
+        prepared_context=prepared_context,
     )
+
+
+def prepare_query_context(
+    question: str,
+    config: AgentRuntimeConfig,
+    client: BaseChatModel,
+    history_summary: str = "",
+) -> dict:
+    """Classify and merge one turn once, before retrieval and SQL generation."""
+    from src.retrieval.context_compressor import ContextCompressor
+
+    compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
+    result = compressor.merge(history_summary, question)
+    return PreparedQueryContext(
+        input_fingerprint=_query_context_fingerprint(question, history_summary),
+        effective_question=result.effective_question,
+        query_state=result.query_state.to_dict(),
+        relation=result.relation,
+        turn_intent=result.turn_intent,
+        presentation_relation=result.presentation_relation,
+        interpretation=result.interpretation,
+        direct_response=result.direct_response,
+        confidence=result.confidence,
+        needs_clarification=result.needs_clarification,
+        clarification=result.clarification,
+        changes=result.changes,
+        removed_sql_context=result.removed_sql_context,
+    ).model_dump()
+
+
+def _query_context_fingerprint(question: str, history_summary: str) -> str:
+    payload = json.dumps(
+        {"question": question, "history_summary": history_summary},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _build_clarification_table_references(
@@ -953,6 +1093,7 @@ def _run_query_impl(
     biz_line: str = "",
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
+    prepared_context: dict | None = None,
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
@@ -976,17 +1117,23 @@ def _run_query_impl(
         return int((_time.monotonic() - t0) * 1000)
 
     # 多轮上下文压缩
-    from src.retrieval.context_compressor import ContextCompressor, QueryState
+    from src.retrieval.context_compressor import (
+        ContextCompressor,
+        ContextMergeResult,
+        QueryState,
+    )
 
     effective_question = question
     previous_sql = ""
     previous_sql_context: dict[str, list[str]] = {}
+    previous_presentation_state: dict = {"tool_calls": []}
     inherited_tables: set[str] = set()
     inherited_columns: set[str] = set()
     query_state = ContextCompressor.infer_state(question)
     turn_intent = "sql_query"
     interpretation = ""
     context_relation = "new_question"
+    presentation_relation = "clear"
     context_changes = {"kept": [], "set": [question], "removed": []}
     removed_sql_context: dict[str, list[str]] = {}
     pending_clarification: dict | None = None
@@ -995,13 +1142,36 @@ def _run_query_impl(
     if history_summary:
         previous_sql = previous_state["sql"]
         previous_sql_context = previous_state["sql_context"]
-    compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
-    merge_result = compressor.merge(history_summary, question)
+        previous_presentation_state = previous_state["presentation_state"]
+    if prepared_context is None:
+        compressor = ContextCompressor(client, custom_prompt=config.compress_prompt)
+        merge_result = compressor.merge(history_summary, question)
+    else:
+        prepared = PreparedQueryContext.model_validate(prepared_context)
+        if prepared.input_fingerprint != _query_context_fingerprint(
+            question, history_summary
+        ):
+            raise ValueError("prepared_context 与当前问题或历史上下文不匹配")
+        merge_result = ContextMergeResult(
+            effective_question=prepared.effective_question,
+            query_state=QueryState.from_value(prepared.query_state),
+            relation=prepared.relation,
+            turn_intent=prepared.turn_intent,
+            presentation_relation=prepared.presentation_relation,
+            interpretation=prepared.interpretation,
+            direct_response=prepared.direct_response,
+            confidence=prepared.confidence,
+            needs_clarification=prepared.needs_clarification,
+            clarification=prepared.clarification,
+            changes=prepared.changes,
+            removed_sql_context=prepared.removed_sql_context,
+        )
     effective_question = merge_result.effective_question
     query_state = merge_result.query_state
     turn_intent = merge_result.turn_intent
     interpretation = merge_result.interpretation
     context_relation = merge_result.relation
+    presentation_relation = merge_result.presentation_relation
     context_changes = merge_result.changes
     removed_sql_context = merge_result.removed_sql_context
     if turn_intent in {"result_explanation", "result_operation"} and previous_sql:
@@ -1027,6 +1197,13 @@ def _run_query_impl(
             "output": effective_question,
             "relation": context_relation,
             "turn_intent": merge_result.turn_intent,
+            "resolved_turn_intent": turn_intent,
+            "presentation_relation": presentation_relation,
+            "previous_presentation_tools": [
+                call.get("name")
+                for call in previous_presentation_state.get("tool_calls", [])
+                if isinstance(call, dict) and call.get("name")
+            ],
             "changes": context_changes,
             "removed_sql_context": removed_sql_context,
             "query_state": query_state.to_dict(),
@@ -1397,6 +1574,39 @@ def _run_query_impl(
         for tool in available_tools
         if str(tool.get("name") or "") in pending_result_tool_names
     ]
+    available_tool_names = {
+        str(tool.get("name") or "").strip()
+        for tool in available_tools
+        if str(tool.get("name") or "").strip()
+    }
+    filtered_previous_presentation_state = {
+        "tool_calls": [
+            call
+            for call in previous_presentation_state.get("tool_calls", [])
+            if isinstance(call, dict)
+            and str(call.get("name") or "").strip() in available_tool_names
+        ]
+    }
+    should_execute_inherited_presentation = (
+        context_relation != "new_question"
+        and presentation_relation in {"inherit", "add"}
+        and turn_intent in {"sql_query", "result_operation"}
+    )
+    inherited_presentation_calls = (
+        filtered_previous_presentation_state["tool_calls"]
+        if should_execute_inherited_presentation
+        else []
+    )
+    inherited_result_tool_names = {
+        str(call.get("name") or "").strip()
+        for call in inherited_presentation_calls
+        if str(call.get("name") or "").strip()
+    }
+    inherited_result_tools = [
+        tool
+        for tool in available_tools
+        if str(tool.get("name") or "").strip() in inherited_result_tool_names
+    ]
 
     prompt_text = result.prompt_text
     if previous_sql and context_relation != "new_question":
@@ -1610,9 +1820,81 @@ def _run_query_impl(
             }
         )
 
+    # QueryState 中的自然日窗口是通用时间契约，不依赖具体业务表或时间字段名。
+    time_validation_attempts = []
+    calendar_day_window = SQLValidator.calendar_day_window(result.query_intent)
+    if extracted_sql and calendar_day_window and is_success:
+        max_time_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_time_fix_retries + 1):
+            time_ok, time_error, time_detail = (
+                SQLValidator.validate_calendar_day_window(
+                    extracted_sql,
+                    result.query_intent,
+                )
+            )
+            time_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": time_ok,
+                    "error": time_error,
+                    **time_detail,
+                }
+            )
+            if time_ok:
+                break
+            if attempt >= max_time_fix_retries:
+                is_success = False
+                error_msg = f"时间范围校验失败: {time_error}"
+                break
+
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你生成的 SQL 不符合已确定的滚动自然日时间范围。\n\n"
+                        f"## 时间范围问题\n{time_error}\n\n"
+                        "请保留当前查询选择的时间字段和其他查询结构，只修正时间边界。"
+                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"calendar_day_window_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "时间范围修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "calendar_day_window_validate",
+                "attempts": time_validation_attempts,
+                "final_valid": bool(
+                    time_validation_attempts and time_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
+
     # 业务语义校验必须先于 EXPLAIN。语法正确不代表换汇口径正确。
     currency_validation_attempts = []
-    if extracted_sql and SQLValidator.currency_conversion_target(result.query_intent):
+    if (
+        extracted_sql
+        and SQLValidator.currency_conversion_target(result.query_intent)
+        and is_success
+    ):
         max_currency_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_currency_fix_retries + 1):
             currency_ok, currency_error, currency_detail = (
@@ -1676,6 +1958,83 @@ def _run_query_impl(
                 "final_valid": bool(
                     currency_validation_attempts
                     and currency_validation_attempts[-1]["valid"]
+                ),
+            }
+        )
+
+    # 明细查询保留默认资源保护；聚合查询只有用户明确要求 Top N 时才允许 LIMIT。
+    result_limit_validation_attempts = []
+    if (
+        extracted_sql
+        and turn_intent == "sql_query"
+        and result.query_intent.get("state", {}).get("result_shape") == "aggregate"
+        and is_success
+    ):
+        max_limit_fix_retries = min(max(config.max_fix_retries, 0), 2)
+        for attempt in range(max_limit_fix_retries + 1):
+            limit_ok, limit_error, limit_detail = SQLValidator.validate_result_limit(
+                extracted_sql,
+                result.query_intent,
+            )
+            result_limit_validation_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": limit_ok,
+                    "error": limit_error,
+                    **limit_detail,
+                }
+            )
+            if limit_ok:
+                break
+            if attempt >= max_limit_fix_retries:
+                is_success = False
+                error_msg = f"结果数量校验失败: {limit_error}"
+                break
+
+            requested_limit = SQLValidator.requested_limit(result.query_intent)
+            repair_instruction = (
+                f"将最终查询限制为 LIMIT {requested_limit}。"
+                if requested_limit is not None
+                else "移除最终聚合查询的 LIMIT，返回完整分组结果。"
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你生成的 SQL 会错误截断聚合结果。\n\n"
+                        f"## 结果数量问题\n{limit_error}\n\n"
+                        f"{repair_instruction}保留其他查询结构不变。"
+                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"result_limit_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                is_success = False
+                error_msg = "结果数量修复后未生成可执行 SQL"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "result_limit_validate",
+                "attempts": result_limit_validation_attempts,
+                "final_valid": bool(
+                    result_limit_validation_attempts
+                    and result_limit_validation_attempts[-1]["valid"]
                 ),
             }
         )
@@ -2164,14 +2523,25 @@ def _run_query_impl(
                     }
                 )
 
-    # 任意后处理都不能绕过换汇口径和检索 Schema 约束。
+    # 任意后处理都不能绕过时间、换汇、结果数量和检索 Schema 约束。
     if final_sql and is_success:
+        time_ok, time_error, time_detail = SQLValidator.validate_calendar_day_window(
+            final_sql,
+            result.query_intent,
+        )
         currency_ok, currency_error, currency_detail = (
             SQLValidator.validate_currency_conversion(
                 final_sql,
                 result.query_intent,
             )
         )
+        if turn_intent == "sql_query":
+            limit_ok, limit_error, limit_detail = SQLValidator.validate_result_limit(
+                final_sql,
+                result.query_intent,
+            )
+        else:
+            limit_ok, limit_error, limit_detail = True, "", {"required": False}
         schema_ok, schema_error, schema_detail = (
             SQLValidator.validate_schema_references(
                 final_sql,
@@ -2195,9 +2565,15 @@ def _run_query_impl(
         trace_steps.append(
             {
                 "step": "sql_post_rewrite_guard",
+                "calendar_day_window_valid": time_ok,
+                "calendar_day_window_error": time_error,
+                "calendar_day_window_detail": time_detail,
                 "currency_conversion_valid": currency_ok,
                 "currency_conversion_error": currency_error,
                 "currency_conversion_detail": currency_detail,
+                "result_limit_valid": limit_ok,
+                "result_limit_error": limit_error,
+                "result_limit_detail": limit_detail,
                 "schema_valid": schema_ok,
                 "schema_error": schema_error,
                 "schema_detail": schema_detail,
@@ -2213,7 +2589,9 @@ def _run_query_impl(
             }
         )
         if (
-            not currency_ok
+            not time_ok
+            or not currency_ok
+            or not limit_ok
             or not schema_ok
             or not projection_ok
             or not entity_ok
@@ -2221,19 +2599,44 @@ def _run_query_impl(
         ):
             is_success = False
             error_msg = (
-                currency_error
+                time_error
+                or currency_error
+                or limit_error
                 or schema_error
                 or projection_error
                 or entity_error
                 or inheritance_error
             )
 
-    explicit_tools = explicitly_requested_tools(question, available_tools)
-    planner_tools = pending_result_tools or explicit_tools or available_tools
-    planner_choice = (
-        "required" if pending_result_tools or explicit_tools else config.tool_choice
+    presentation_clears_existing = (
+        presentation_relation == "clear" and context_relation != "new_question"
     )
-    deferred_tools = pending_result_tools or explicit_tools
+    explicit_tools = (
+        []
+        if presentation_clears_existing
+        else explicitly_requested_tools(question, available_tools)
+    )
+    forced_tool_names = {
+        str(tool.get("name") or "").strip()
+        for tool in [
+            *pending_result_tools,
+            *explicit_tools,
+            *inherited_result_tools,
+        ]
+        if str(tool.get("name") or "").strip()
+    }
+    forced_tools = [
+        tool
+        for tool in available_tools
+        if str(tool.get("name") or "").strip() in forced_tool_names
+    ]
+    if presentation_clears_existing:
+        planner_tools = []
+        planner_choice = "none"
+    else:
+        planner_tools = forced_tools or available_tools
+        planner_choice = "required" if forced_tools else config.tool_choice
+    deferred_tools = forced_tools
     if clarification is not None and deferred_tools:
         tool_calls = [
             {
@@ -2265,6 +2668,7 @@ def _run_query_impl(
                 query_context=(
                     effective_question if effective_question != question else ""
                 ),
+                active_tool_calls=inherited_presentation_calls,
                 query_projection=(
                     ContextCompressor.extract_sql_context(final_sql).get(
                         "projections", []
@@ -2328,6 +2732,10 @@ def _run_query_impl(
                 "explicit_tools": [
                     str(tool.get("name") or "") for tool in explicit_tools
                 ],
+                "inherited_tools": [
+                    str(tool.get("name") or "") for tool in inherited_result_tools
+                ],
+                "presentation_relation": presentation_relation,
                 "selected_tools": [call["name"] for call in tool_calls],
                 "output": planner_answer,
                 "attempts": planner_attempts,
@@ -2807,6 +3215,12 @@ def _run_query_impl(
 
     # 构建本轮摘要供下一轮使用（仅成功时更新，失败轮不污染上下文）
     context_summary = ""
+    presentation_state = ContextCompressor.update_presentation_state(
+        filtered_previous_presentation_state,
+        tool_calls,
+        relation=presentation_relation,
+        context_relation=context_relation,
+    )
     if is_success and final_sql:
         summary_question = effective_question
         summary_query_state = query_state
@@ -2818,6 +3232,7 @@ def _run_query_impl(
             matched_tables,
             final_sql,
             query_state=summary_query_state,
+            presentation_state=presentation_state,
         )
 
     # 汇总 trace
@@ -2827,6 +3242,7 @@ def _run_query_impl(
         "steps": trace_steps,
         "total_duration_ms": _elapsed_ms(t_start),
         "tool_calls": tool_calls,
+        "presentation_state": presentation_state,
     }
 
     return {
@@ -3081,6 +3497,31 @@ async def execute_saved_query(req: SavedQueryRequest, request: Request):
     )
 
 
+@app.post("/query/prepare", response_model=PreparedQueryContext)
+async def prepare_query(req: QueryPrepareRequest, request: Request):
+    """Recognize the turn once so channels can show progress before SQL work."""
+    if not agent_config or not llm_client:
+        raise HTTPException(status_code=503, detail="服务尚未完成初始化")
+    if req.agent_id is not None and req.agent_id != agent_config.agent_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"当前引擎绑定 Agent {agent_config.agent_id}，"
+                f"不能处理 Agent {req.agent_id} 的请求"
+            ),
+        )
+    _verify_token(request, agent_config)
+    prepared = await _prepare_context_in_worker(
+        req.question,
+        agent_config,
+        llm_client,
+        semaphore=(codex_query_semaphore if _is_codex_config(agent_config) else None),
+        runtime_swap_lock=codex_runtime_swap_lock,
+        history_summary=req.history_summary,
+    )
+    return PreparedQueryContext.model_validate(prepared)
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
     start_time = time.time()
@@ -3104,6 +3545,14 @@ async def query(req: QueryRequest, request: Request):
 
     # Token 鉴权
     _verify_token(request, config)
+
+    if req.prepared_context and req.prepared_context.input_fingerprint != (
+        _query_context_fingerprint(req.question, req.history_summary)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="prepared_context 与当前问题或历史上下文不匹配",
+        )
 
     # NL2SQL 管道
     if not retriever or not retriever._initialized:
@@ -3150,6 +3599,9 @@ async def query(req: QueryRequest, request: Request):
             "metadata_context": meta.context or {},
             "expand_info": req.expand_info or {},
             "enable_explain": req.enable_explain,
+            "prepared_context": (
+                req.prepared_context.model_dump() if req.prepared_context else None
+            ),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3225,6 +3677,9 @@ async def query(req: QueryRequest, request: Request):
             biz_line=_filter.get("business", ""),
             metadata_filter=_filter or None,
             metadata_context=meta.context,
+            prepared_context=(
+                req.prepared_context.model_dump() if req.prepared_context else None
+            ),
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
 

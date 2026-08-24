@@ -576,7 +576,206 @@ class SQLValidator:
     def currency_conversion_target(cls, query_intent: dict) -> str:
         """Return the normalized target currency from the semantic frame."""
         state = cls._query_state(query_intent)
-        return str(state.get("currency_conversion") or "").strip().upper()
+        value = str(state.get("currency_conversion") or "").strip()
+        currency_codes = re.findall(
+            r"(?<![A-Za-z])([A-Za-z]{3})(?![A-Za-z])",
+            value,
+        )
+        return currency_codes[-1].upper() if currency_codes else value.upper()
+
+    @classmethod
+    def calendar_day_window(cls, query_intent: dict) -> int | None:
+        """Return a rolling calendar-day window that includes the current day."""
+        value = cls._query_state(query_intent).get("calendar_day_window")
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if 1 <= parsed <= 3660 else None
+
+    @classmethod
+    def requested_limit(cls, query_intent: dict) -> int | None:
+        """Return only a row limit explicitly requested by the user."""
+        value = cls._query_state(query_intent).get("requested_limit")
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if 1 <= parsed <= 100000 else None
+
+    @classmethod
+    def validate_calendar_day_window(
+        cls,
+        sql: str,
+        query_intent: dict,
+    ) -> tuple[bool, str, dict]:
+        """Enforce the model-produced rolling natural-day contract."""
+        days = cls.calendar_day_window(query_intent)
+        if days is None:
+            return True, "", {"required": False}
+
+        expected_offset = days - 1
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return False, parse_error, {"required": True, "days": days}
+
+        lower_columns: set[str] = set()
+        upper_columns: set[str] = set()
+        if tree is not None:
+            from sqlglot import expressions as exp
+
+            def column_key(expression) -> str:
+                if not isinstance(expression, exp.Column):
+                    return ""
+                return expression.sql(dialect="mysql").replace("`", "").casefold()
+
+            def interval_value(expression, expression_type) -> int | None:
+                if not isinstance(expression, expression_type):
+                    return None
+                if not isinstance(expression.this, exp.CurrentDate):
+                    return None
+                unit = str(expression.args.get("unit") or "").upper()
+                if unit != "DAY":
+                    return None
+                interval = expression.expression
+                if not isinstance(interval, exp.Literal):
+                    return None
+                try:
+                    return int(interval.this)
+                except (TypeError, ValueError):
+                    return None
+
+            def is_lower_boundary(expression) -> bool:
+                if expected_offset == 0 and isinstance(expression, exp.CurrentDate):
+                    return True
+                return interval_value(expression, exp.DateSub) == expected_offset
+
+            def is_upper_boundary(expression) -> bool:
+                return interval_value(expression, exp.DateAdd) == 1
+
+            for comparison in tree.find_all(exp.GTE):
+                if is_lower_boundary(comparison.expression) and (
+                    key := column_key(comparison.this)
+                ):
+                    lower_columns.add(key)
+            for comparison in tree.find_all(exp.LTE):
+                if is_lower_boundary(comparison.this) and (
+                    key := column_key(comparison.expression)
+                ):
+                    lower_columns.add(key)
+            for comparison in tree.find_all(exp.LT):
+                if is_upper_boundary(comparison.expression) and (
+                    key := column_key(comparison.this)
+                ):
+                    upper_columns.add(key)
+            for comparison in tree.find_all(exp.GT):
+                if is_upper_boundary(comparison.this) and (
+                    key := column_key(comparison.expression)
+                ):
+                    upper_columns.add(key)
+        else:
+            normalized_sql = cls._strip_literals_and_comments(sql)
+            lower_pattern = (
+                r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*>=\s*CURDATE\s*\(\s*\)"
+                if expected_offset == 0
+                else (
+                    r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*>=\s*DATE_SUB\s*\(\s*"
+                    rf"CURDATE\s*\(\s*\)\s*,\s*INTERVAL\s+{expected_offset}\s+DAY\s*\)"
+                )
+            )
+            lower_columns.update(
+                match.casefold()
+                for match in re.findall(lower_pattern, normalized_sql, re.IGNORECASE)
+            )
+            upper_columns.update(
+                match.casefold()
+                for match in re.findall(
+                    r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*<\s*DATE_ADD\s*\(\s*"
+                    r"CURDATE\s*\(\s*\)\s*,\s*INTERVAL\s+1\s+DAY\s*\)",
+                    normalized_sql,
+                    re.IGNORECASE,
+                )
+            )
+
+        valid = bool(lower_columns & upper_columns)
+        detail = {
+            "required": True,
+            "days": days,
+            "includes_today": True,
+            "expected_start_offset_days": expected_offset,
+            "lower_bound_columns": sorted(lower_columns),
+            "upper_bound_columns": sorted(upper_columns),
+        }
+        if valid:
+            return True, "", detail
+        error = (
+            f"最近 {days} 天默认包含今天，时间范围必须使用同一时间字段，"
+            f"下界为 DATE_SUB(CURDATE(), INTERVAL {expected_offset} DAY)，"
+            "上界为 DATE_ADD(CURDATE(), INTERVAL 1 DAY) 且采用左闭右开边界"
+        )
+        return (
+            False,
+            error,
+            detail,
+        )
+
+    @classmethod
+    def validate_result_limit(
+        cls,
+        sql: str,
+        query_intent: dict,
+    ) -> tuple[bool, str, dict]:
+        """Prevent unrequested truncation of aggregate result groups."""
+        state = cls._query_state(query_intent)
+        if state.get("result_shape") != "aggregate":
+            return True, "", {"required": False}
+
+        requested_limit = cls.requested_limit(query_intent)
+        tree, parse_error = cls._parse_ast(sql)
+        if parse_error:
+            return False, parse_error, {"required": True}
+
+        actual_limit: int | None = None
+        if tree is not None:
+            from sqlglot import expressions as exp
+
+            select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+            limit = select.args.get("limit") if select is not None else None
+            expression = limit.expression if isinstance(limit, exp.Limit) else None
+            if isinstance(expression, exp.Literal):
+                try:
+                    actual_limit = int(expression.this)
+                except (TypeError, ValueError):
+                    actual_limit = None
+        else:
+            matches = re.findall(r"\bLIMIT\s+(\d+)\b", sql, re.IGNORECASE)
+            actual_limit = int(matches[-1]) if matches else None
+
+        detail = {
+            "required": True,
+            "result_shape": "aggregate",
+            "requested_limit": requested_limit,
+            "actual_limit": actual_limit,
+        }
+        if requested_limit is None and actual_limit is None:
+            return True, "", detail
+        if requested_limit is not None and actual_limit == requested_limit:
+            return True, "", detail
+        if requested_limit is None:
+            return (
+                False,
+                "聚合查询未明确要求限制分组数量，不得用 LIMIT 静默截断结果",
+                detail,
+            )
+        return (
+            False,
+            f"用户明确要求返回 {requested_limit} 条，SQL 必须使用 LIMIT {requested_limit}",
+            detail,
+        )
 
     @classmethod
     def validate_metric_projection(

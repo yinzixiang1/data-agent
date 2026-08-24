@@ -6,7 +6,6 @@ import json
 import re
 from typing import Any
 
-
 _TOOL_CALLS_PATTERN = re.compile(r"(?:^|\n)TOOL_CALLS\s*:\s*", re.IGNORECASE)
 _SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
@@ -14,6 +13,8 @@ _TOOL_PLANNER_SYSTEM_PROMPT = """你是查询结果交付方式分类器。
 只做声明式分类，不执行任何操作，不生成 SQL，也不补充业务语义。
 latest_user_request 是用户本轮的原始请求，必须优先用它判断动作意图；
 query_context 只说明动作所作用的数据查询，不得覆盖或改写本轮动作意图。
+active_actions 是用户在上一轮已明确要求并仍然生效的展示动作；必须继续输出，不能因为本轮只修改查询条件、维度或指标就删除。
+active_actions 的参数需要与 query_projection 重新对齐；仍适用的参数应保留，引用失效字段的参数必须按当前投影修正。
 只能依据这些请求信息和提供的动作名称、显示名称、描述及意图短语做决定。
 如果请求中的结果呈现、交付、保存或传递意图与某项动作的能力语义匹配，必须选择该动作；
 请求同时包含数据查询不影响动作选择，也不要求用户逐字说出动作名称。
@@ -58,6 +59,7 @@ def tool_planning_messages(
     choice: str = "auto",
     query_projection: list[str] | None = None,
     query_context: str = "",
+    active_tool_calls: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Build a focused, business-agnostic result-action planning request."""
     public_tools = _public_tool_contracts(tools)
@@ -72,6 +74,7 @@ def tool_planning_messages(
     request = {
         "latest_user_request": question,
         "query_context": query_context,
+        "active_actions": _active_action_contracts(active_tool_calls, tools),
         "available_actions": public_tools,
         "query_projection": [
             str(item) for item in (query_projection or []) if str(item).strip()
@@ -85,6 +88,27 @@ def tool_planning_messages(
             "content": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
         },
     ]
+
+
+def _active_action_contracts(
+    calls: list[dict[str, Any]] | None,
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    available_names = {
+        str(tool.get("name") or "").strip()
+        for tool in tools
+        if str(tool.get("name") or "").strip()
+    }
+    active = []
+    for call in calls or []:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "").strip()
+        arguments = call.get("arguments")
+        if name not in available_names or not isinstance(arguments, dict):
+            continue
+        active.append({"name": name, "arguments": arguments})
+    return active[:5]
 
 
 def explicitly_requested_tools(

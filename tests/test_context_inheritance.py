@@ -233,6 +233,286 @@ FROM analytics.orders
         )
 
 
+class _CalendarWindowModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "最近7天",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": [],
+                            "currency_conversion": "",
+                            "result_shape": "count_only",
+                            "calendar_day_window": 7,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {"kept": [], "set": ["最近7天"], "removed": []},
+                        "removed_sql_context": {},
+                        "effective_question": "统计最近7天的订单数量",
+                        "interpretation": "统计包含今天的最近7个自然日。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT COUNT(*) AS order_count
+FROM analytics.orders
+WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+  AND create_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content="""```sql
+SELECT COUNT(*) AS order_count
+FROM analytics.orders
+WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+  AND create_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+```""",
+            usage_metadata=None,
+        )
+
+
+class _AggregateLimitModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["渠道"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {"kept": [], "set": ["按渠道统计"], "removed": []},
+                        "removed_sql_context": {},
+                        "effective_question": "按渠道统计订单数量",
+                        "interpretation": "返回完整渠道分组。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT channel_code, COUNT(*) AS order_count
+FROM analytics.orders
+GROUP BY channel_code
+LIMIT 100
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content="""```sql
+SELECT channel_code, COUNT(*) AS order_count
+FROM analytics.orders
+GROUP BY channel_code
+```""",
+            usage_metadata=None,
+        )
+
+
+class _MixedChartQueryModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_add",
+                        "turn_intent": "sql_query",
+                        "presentation_relation": "add",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["日期"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["订单数量"],
+                            "set": ["日期维度", "折线图"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": "按日期统计订单数量，并以折线图呈现",
+                        "interpretation": "增加日期维度并要求折线图呈现。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT DATE_FORMAT(o.create_time, '%Y-%m-%d') AS order_date,
+       COUNT(*) AS order_count
+FROM analytics.orders AS o
+GROUP BY DATE_FORMAT(o.create_time, '%Y-%m-%d')
+ORDER BY order_date
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content=(
+                '{"actions":[{"name":"render_chart",'
+                '"arguments":{"chart_type":"line"}}]}'
+            ),
+            usage_metadata=None,
+        )
+
+
+class _InheritedChartFollowupModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_add",
+                        "turn_intent": "sql_query",
+                        "presentation_relation": "inherit",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["日期", "订单类型"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["按日期统计", "订单数量", "折线图"],
+                            "set": ["订单类型维度"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": (
+                            "按日期和订单类型统计订单数量，并以折线图呈现"
+                        ),
+                        "interpretation": "保留折线图并增加订单类型维度。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT DATE_FORMAT(o.create_time, '%Y-%m-%d') AS order_date,
+       o.order_type,
+       COUNT(*) AS order_count
+FROM analytics.orders AS o
+GROUP BY DATE_FORMAT(o.create_time, '%Y-%m-%d'), o.order_type
+ORDER BY order_date
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content=(
+                '{"actions":[{"name":"render_chart",'
+                '"arguments":{"chart_type":"line"}}]}'
+            ),
+            usage_metadata=None,
+        )
+
+
+class _ClearChartModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "relation": "follow_up_add",
+                    "turn_intent": "result_operation",
+                    "presentation_relation": "clear",
+                    "query_state": {
+                        "subject": "订单",
+                        "time_range": "",
+                        "filters": [],
+                        "metrics": ["数量"],
+                        "dimensions": ["日期"],
+                        "currency_conversion": "",
+                        "result_shape": "aggregate",
+                        "calendar_day_window": None,
+                        "requested_limit": None,
+                        "exclusions": [],
+                    },
+                    "changes": {
+                        "kept": ["上一轮完整查询"],
+                        "set": [],
+                        "removed": ["折线图"],
+                    },
+                    "removed_sql_context": {},
+                    "effective_question": "按日期统计订单数量",
+                    "interpretation": "保留查询，只取消折线图。",
+                    "direct_response": "",
+                    "confidence": 0.99,
+                    "needs_clarification": False,
+                    "clarification": {"question": "", "options": []},
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
 class _Retriever:
     def __init__(self) -> None:
         self.query = ""
@@ -479,6 +759,62 @@ class _Formatter:
         return kwargs.get("intent_context", "")
 
 
+def _render_chart_tool() -> dict:
+    return {
+        "name": "render_chart",
+        "display_name": "生成图表",
+        "description": "将查询结果呈现为图表",
+        "intent_phrases": ["生成图表", "折线图", "曲线图"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_type": {
+                    "type": "string",
+                    "enum": ["line", "bar"],
+                }
+            },
+            "required": ["chart_type"],
+            "additionalProperties": False,
+        },
+        "requires_query_result": True,
+    }
+
+
+def _dated_order_history(*, with_chart: bool) -> str:
+    sql = """
+    SELECT DATE_FORMAT(o.create_time, '%Y-%m-%d') AS order_date,
+           COUNT(*) AS order_count
+    FROM analytics.orders AS o
+    GROUP BY DATE_FORMAT(o.create_time, '%Y-%m-%d')
+    ORDER BY order_date
+    """
+    presentation_state = (
+        {
+            "tool_calls": [
+                {
+                    "name": "render_chart",
+                    "arguments": {"chart_type": "line"},
+                    "requires_query_result": True,
+                }
+            ]
+        }
+        if with_chart
+        else None
+    )
+    return ContextCompressor.build_summary(
+        "按日期统计订单数量",
+        ["analytics.orders"],
+        sql,
+        query_state=QueryState(
+            subject="订单",
+            metrics=("数量",),
+            dimensions=("日期",),
+            result_shape="aggregate",
+        ),
+        presentation_state=presentation_state,
+    )
+
+
 def test_merge_fallback_keeps_previous_question_and_state() -> None:
     previous_state = QueryState(
         subject="订单交易",
@@ -654,6 +990,176 @@ def test_query_contract_reads_result_shape_and_currency_from_state() -> None:
         "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code",
         intent,
     )[0]
+
+
+def test_query_state_normalizes_currency_and_explicit_numeric_contracts() -> None:
+    state = QueryState.from_value(
+        {
+            "currency_conversion": "美元（USD）",
+            "calendar_day_window": "7",
+            "requested_limit": "10",
+        }
+    )
+
+    assert state.currency_conversion == "USD"
+    assert state.calendar_day_window == 7
+    assert state.requested_limit == 10
+
+
+def test_currency_validator_accepts_normalized_code_inside_display_label() -> None:
+    sql = """
+    SELECT o.source_currency,
+           SUM(CASE WHEN o.source_currency = 'USD'
+                    THEN o.source_amount
+                    ELSE o.source_amount * r.mid END) AS amount_usd,
+           SUM(CASE WHEN o.source_currency <> 'USD' AND r.mid IS NULL
+                    THEN 1 ELSE 0 END) AS missing_rate_count
+    FROM analytics.orders AS o
+    LEFT JOIN warehouse_sys.sys_exchange_rate AS r
+      ON r.source_currency = o.source_currency
+     AND r.target_currency = 'USD'
+     AND DATE(r.sync_time) = DATE(o.create_time)
+    GROUP BY o.source_currency
+    """
+
+    valid, error, detail = SQLValidator.validate_currency_conversion(
+        sql,
+        {"state": {"currency_conversion": "美元（USD）"}},
+    )
+
+    assert valid is True, error
+    assert detail["target_currency"] == "USD"
+
+
+def test_calendar_day_window_includes_today_without_off_by_one() -> None:
+    intent = {"state": {"calendar_day_window": 7}}
+    valid_sql = """
+    SELECT COUNT(*) FROM analytics.orders
+    WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+      AND create_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+    """
+    invalid_sql = valid_sql.replace("INTERVAL 6 DAY", "INTERVAL 7 DAY")
+
+    assert SQLValidator.validate_calendar_day_window(valid_sql, intent)[0] is True
+    invalid, error, detail = SQLValidator.validate_calendar_day_window(
+        invalid_sql,
+        intent,
+    )
+    assert invalid is False
+    assert "INTERVAL 6 DAY" in error
+    assert detail["includes_today"] is True
+
+
+def test_aggregate_limit_requires_explicit_user_request() -> None:
+    aggregate = {"state": {"result_shape": "aggregate", "requested_limit": None}}
+    explicit = {"state": {"result_shape": "aggregate", "requested_limit": 10}}
+
+    assert SQLValidator.validate_result_limit(
+        "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code",
+        aggregate,
+    )[0]
+    assert not SQLValidator.validate_result_limit(
+        "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code LIMIT 100",
+        aggregate,
+    )[0]
+    assert SQLValidator.validate_result_limit(
+        "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code LIMIT 10",
+        explicit,
+    )[0]
+
+
+def test_pipeline_repairs_calendar_day_window(monkeypatch) -> None:
+    import app as service
+
+    model = _CalendarWindowModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "统计最近7天的订单数量",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            max_fix_retries=1,
+        ),
+        model,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert "INTERVAL 6 DAY" in result["sql"]
+    assert "INTERVAL 7 DAY" not in result["sql"]
+    time_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "calendar_day_window_validate"
+    )
+    assert [attempt["valid"] for attempt in time_step["attempts"]] == [False, True]
+
+
+def test_pipeline_removes_unrequested_aggregate_limit(monkeypatch) -> None:
+    import app as service
+
+    model = _AggregateLimitModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "按渠道统计订单数量",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            max_fix_retries=1,
+        ),
+        model,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert "LIMIT" not in result["sql"]
+    limit_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "result_limit_validate"
+    )
+    assert [attempt["valid"] for attempt in limit_step["attempts"]] == [False, True]
+
+
+def test_prepared_turn_is_reused_without_running_context_merge_again(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _AggregateLimitModel()
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+        max_fix_retries=1,
+    )
+    prepared = service.prepare_query_context(
+        "按渠道统计订单数量",
+        config,
+        model,
+    )
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    def fail_duplicate_merge(*_args, **_kwargs):
+        raise AssertionError("prepared context must skip duplicate turn recognition")
+
+    monkeypatch.setattr(ContextCompressor, "merge", fail_duplicate_merge)
+
+    result = service._run_query_impl(
+        "按渠道统计订单数量",
+        config,
+        model,
+        prepared_context=prepared,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["context_relation"] == "new_question"
+    assert len(model.calls) == 3
 
 
 def test_pipeline_repairs_count_only_contract_from_nested_query_state(
@@ -1049,6 +1555,118 @@ def test_result_operation_reuses_previous_sql_without_regeneration(monkeypatch) 
         step for step in result["trace"]["steps"] if step["step"] == "llm_generation"
     )
     assert generation_step["calls"][0]["role"] == "reuse_previous_sql"
+
+
+def test_mixed_query_change_and_chart_generates_sql_and_persists_chart(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    history = ContextCompressor.build_summary(
+        "统计订单数量",
+        ["analytics.orders"],
+        "SELECT COUNT(*) AS order_count FROM analytics.orders",
+        query_state=QueryState(
+            subject="订单",
+            metrics=("数量",),
+            result_shape="aggregate",
+        ),
+    )
+    model = _MixedChartQueryModel()
+    retriever = _Retriever()
+    monkeypatch.setattr(service, "retriever", retriever)
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "按照日期维度生成折线图",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_render_chart_tool()],
+        ),
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["turn_intent"] == "sql_query"
+    assert "GROUP BY DATE_FORMAT" in result["sql"]
+    assert result["tool_calls"][0]["name"] == "render_chart"
+    summary = ContextCompressor.parse_summary(result["context_summary"])
+    assert summary["query_state"]["dimensions"] == ["日期"]
+    assert summary["presentation_state"]["tool_calls"] == result["tool_calls"]
+    assert retriever.query == "按日期统计订单数量，并以折线图呈现"
+
+
+def test_query_followup_replans_inherited_chart_against_new_projection(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _InheritedChartFollowupModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "再加订单类型维度",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_render_chart_tool()],
+        ),
+        model,
+        history_summary=_dated_order_history(with_chart=True),
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert "o.order_type" in result["sql"]
+    assert result["tool_calls"] == [
+        {
+            "name": "render_chart",
+            "arguments": {"chart_type": "line"},
+            "requires_query_result": True,
+        }
+    ]
+    planner_request = json.loads(model.calls[-1])
+    assert planner_request["active_actions"] == [
+        {"name": "render_chart", "arguments": {"chart_type": "line"}}
+    ]
+    tool_step = next(
+        step for step in result["trace"]["steps"] if step["step"] == "tool_planning"
+    )
+    assert tool_step["inherited_tools"] == ["render_chart"]
+    assert tool_step["selected_tools"] == ["render_chart"]
+    summary = ContextCompressor.parse_summary(result["context_summary"])
+    assert summary["presentation_state"]["tool_calls"] == result["tool_calls"]
+
+
+def test_explicit_presentation_clear_stops_and_forgets_chart(monkeypatch) -> None:
+    import app as service
+
+    model = _ClearChartModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "只返回数据，不要图表",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_render_chart_tool()],
+        ),
+        model,
+        history_summary=_dated_order_history(with_chart=True),
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["turn_intent"] == "result_operation"
+    assert result["tool_calls"] == []
+    assert len(model.calls) == 1
+    summary = ContextCompressor.parse_summary(result["context_summary"])
+    assert summary["presentation_state"] == {"tool_calls": []}
 
 
 def test_result_explanation_reuses_sql_and_returns_grounded_summary(

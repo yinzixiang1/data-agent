@@ -51,14 +51,25 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
    - non_query：与数据查询无关的闲聊或能力咨询。
    要求增删筛选、字段、维度、指标、排序或限制行时仍是 sql_query；不得根据具体业务词、表名或字段名决定 turn_intent。
    result_explanation/result_operation 有历史时 relation=follow_up_add，query_state 完全保留上一轮状态。
-10. result_shape 描述最终结果结构：count_only 表示最终只能返回一个 COUNT 结果且不得分组；aggregate 表示聚合结果；detail 表示明细；mixed 表示混合结果；无法判断时为 unknown。
-11. removed_sql_context 是对上一轮 SQL 结构的精确删除授权。仅当用户明确删除或替换上一轮结构时填写，并从【上一轮 SQL 结构】中逐字复制对应片段；没有删除时各项必须为空。未列入其中的上一轮结构必须继续保留。
-12. turn_intent=non_query 时 direct_response 给出简短回复且不得虚构查询结果；其他意图 direct_response 为空字符串。
+10. 结果展示动作与 SQL 查询语义是两个正交状态。presentation_relation 表示如何更新上一轮已确认的图表、导出或发布动作：
+    - inherit：本轮没有提及展示方式，继续沿用；
+    - add：在已有展示动作上新增动作；
+    - replace：明确换成另一种展示或交付方式；
+    - clear：明确不要原展示动作，或开始一个没有展示要求的新问题。
+    同一句同时要求查询结构变化和结果展示时，turn_intent 必须是 sql_query，并通过 presentation_relation 记录展示动作；例如“增加日期维度并生成折线图”会改变 SQL 维度，不能归类为纯 result_operation。
+    只有完全不改变筛选、字段、维度、指标、排序、限制和其他 SQL 语义时，才使用 result_operation。
+11. result_shape 描述最终结果结构：count_only 表示最终只能返回一个 COUNT 结果且不得分组；aggregate 表示聚合结果；detail 表示明细；mixed 表示混合结果；无法判断时为 unknown。
+    currency_conversion 使用目标币种的 ISO 4217 三位代码（例如 USD）；没有换汇要求时为空字符串。
+    calendar_day_window 仅用于“最近/近 N 天”这类滚动自然日窗口，填写正整数 N；默认包含今天，因此 SQL 下界是 CURDATE() 减 N-1 天，上界是明天零点。其他时间表达填写 null。
+    requested_limit 仅记录用户明确要求的 Top N、前 N 条或数量限制；系统默认限制不算用户要求，没有明确限制时填写 null。
+12. removed_sql_context 是对上一轮 SQL 结构的精确删除授权。仅当用户明确删除或替换上一轮结构时填写，并从【上一轮 SQL 结构】中逐字复制对应片段；没有删除时各项必须为空。未列入其中的上一轮结构必须继续保留。
+13. turn_intent=non_query 时 direct_response 给出简短回复且不得虚构查询结果；其他意图 direct_response 为空字符串。
 
 输出格式:
 {{
   "relation": "follow_up_add|follow_up_modify|correction_override|new_question",
   "turn_intent": "sql_query|result_explanation|result_operation|non_query",
+  "presentation_relation": "inherit|add|replace|clear",
   "query_state": {{
     "subject": "查询对象",
     "time_range": "时间范围",
@@ -67,6 +78,8 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
     "dimensions": ["展示维度"],
     "currency_conversion": "目标币种或空字符串",
     "result_shape": "count_only|aggregate|detail|mixed|unknown",
+    "calendar_day_window": null,
+    "requested_limit": null,
     "exclusions": ["明确不需要的内容"]
   }},
   "changes": {{"kept": ["保留项"], "set": ["新增或修改项"], "removed": ["移除项"]}},
@@ -104,6 +117,13 @@ _TURN_INTENTS = {
     "non_query",
 }
 
+_PRESENTATION_RELATIONS = {
+    "inherit",
+    "add",
+    "replace",
+    "clear",
+}
+
 _RESULT_SHAPES = {
     "count_only",
     "aggregate",
@@ -133,6 +153,8 @@ class QueryState:
     dimensions: tuple[str, ...] = ()
     currency_conversion: str = ""
     result_shape: str = "unknown"
+    calendar_day_window: int | None = None
+    requested_limit: int | None = None
     exclusions: tuple[str, ...] = ()
 
     @classmethod
@@ -151,16 +173,34 @@ class QueryState:
         if result_shape not in _RESULT_SHAPES:
             result_shape = "unknown"
 
+        def positive_int(key: str, maximum: int) -> int | None:
+            value = payload.get(key)
+            if isinstance(value, bool):
+                return None
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if 1 <= parsed <= maximum else None
+
+        currency_conversion = str(payload.get("currency_conversion") or "").strip()[:32]
+        currency_codes = re.findall(
+            r"(?<![A-Za-z])([A-Za-z]{3})(?![A-Za-z])",
+            currency_conversion,
+        )
+        if currency_codes:
+            currency_conversion = currency_codes[-1].upper()
+
         return cls(
             subject=str(payload.get("subject") or "").strip()[:200],
             time_range=str(payload.get("time_range") or "").strip()[:100],
             filters=strings("filters"),
             metrics=strings("metrics"),
             dimensions=strings("dimensions"),
-            currency_conversion=str(payload.get("currency_conversion") or "").strip()[
-                :32
-            ],
+            currency_conversion=currency_conversion,
             result_shape=result_shape,
+            calendar_day_window=positive_int("calendar_day_window", 3660),
+            requested_limit=positive_int("requested_limit", 100000),
             exclusions=strings("exclusions"),
         )
 
@@ -173,6 +213,8 @@ class QueryState:
             "dimensions": list(self.dimensions),
             "currency_conversion": self.currency_conversion,
             "result_shape": self.result_shape,
+            "calendar_day_window": self.calendar_day_window,
+            "requested_limit": self.requested_limit,
             "exclusions": list(self.exclusions),
         }
 
@@ -183,6 +225,7 @@ class ContextMergeResult:
     query_state: QueryState
     relation: str = "follow_up_modify"
     turn_intent: str = "sql_query"
+    presentation_relation: str = "inherit"
     interpretation: str = ""
     direct_response: str = ""
     confidence: float = 1.0
@@ -229,10 +272,18 @@ class ContextCompressor:
         prev_sql = summary["sql"]
         prev_sql_context = summary["sql_context"]
         previous_query_state = QueryState.from_value(summary.get("query_state"))
+        previous_presentation_state = self.normalize_presentation_state(
+            summary.get("presentation_state")
+        )
 
         history_text = f"问题: {prev_question}" if prev_question else "无（这是新问题）"
         history_text += "\n结构化状态: " + json.dumps(
             previous_query_state.to_dict(), ensure_ascii=False
+        )
+        history_text += "\n结果展示状态: " + json.dumps(
+            previous_presentation_state,
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         if prev_tables:
             history_text += f"\n涉及表: {prev_tables}"
@@ -256,6 +307,7 @@ class ContextCompressor:
                 current_question=current_question,
                 previous_question=prev_question,
                 previous_query_state=previous_query_state,
+                previous_presentation_state=previous_presentation_state,
                 previous_sql_context=prev_sql_context,
             )
             if not prev_question and result.relation != "new_question":
@@ -264,6 +316,11 @@ class ContextCompressor:
                     query_state=result.query_state,
                     relation="new_question",
                     turn_intent=result.turn_intent,
+                    presentation_relation=(
+                        "clear"
+                        if result.presentation_relation == "inherit"
+                        else result.presentation_relation
+                    ),
                     interpretation=result.interpretation,
                     direct_response=result.direct_response,
                     confidence=result.confidence,
@@ -300,6 +357,7 @@ class ContextCompressor:
         current_question: str,
         previous_question: str,
         previous_query_state: QueryState,
+        previous_presentation_state: dict,
         previous_sql_context: dict[str, list[str]],
     ) -> ContextMergeResult:
         stripped = content.strip()
@@ -330,6 +388,11 @@ class ContextCompressor:
         turn_intent = str(payload.get("turn_intent") or "sql_query")
         if turn_intent not in _TURN_INTENTS:
             turn_intent = "sql_query"
+        presentation_relation = str(payload.get("presentation_relation") or "").strip()
+        if presentation_relation not in _PRESENTATION_RELATIONS:
+            presentation_relation = "inherit" if relation != "new_question" else "clear"
+        if relation == "new_question" and presentation_relation == "inherit":
+            presentation_relation = "clear"
         try:
             confidence = min(1.0, max(0.0, float(payload.get("confidence", 1.0))))
         except (TypeError, ValueError):
@@ -346,6 +409,7 @@ class ContextCompressor:
             query_state=QueryState.from_value(payload.get("query_state")),
             relation=relation,
             turn_intent=turn_intent,
+            presentation_relation=presentation_relation,
             interpretation=str(payload.get("interpretation") or "").strip()[:500],
             direct_response=str(payload.get("direct_response") or "").strip()[:1000],
             confidence=confidence,
@@ -438,6 +502,7 @@ class ContextCompressor:
             query_state=query_state,
             relation=relation,
             turn_intent="sql_query",
+            presentation_relation="inherit" if previous_question else "clear",
             confidence=0.5,
             changes={
                 "kept": ["上一轮完整查询"] if previous_question else [],
@@ -546,6 +611,7 @@ class ContextCompressor:
         tables: list[str],
         sql: str = "",
         query_state: QueryState | dict | None = None,
+        presentation_state: object = None,
     ) -> str:
         """
         构建本轮摘要，供下一轮使用。
@@ -569,6 +635,9 @@ class ContextCompressor:
                 "sql": sql,
                 "sql_context": ContextCompressor.extract_sql_context(sql),
                 "query_state": state.to_dict(),
+                "presentation_state": ContextCompressor.normalize_presentation_state(
+                    presentation_state
+                ),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -598,6 +667,9 @@ class ContextCompressor:
                 "query_state": QueryState.from_value(
                     payload.get("query_state")
                 ).to_dict(),
+                "presentation_state": ContextCompressor.normalize_presentation_state(
+                    payload.get("presentation_state")
+                ),
             }
 
         return {
@@ -606,4 +678,71 @@ class ContextCompressor:
             "sql": "",
             "sql_context": ContextCompressor.extract_sql_context(""),
             "query_state": QueryState().to_dict(),
+            "presentation_state": ContextCompressor.normalize_presentation_state(None),
         }
+
+    @staticmethod
+    def normalize_presentation_state(value: object) -> dict:
+        """Keep only serializable, validated-result action state."""
+        payload = value if isinstance(value, dict) else {}
+        raw_calls = payload.get("tool_calls")
+        if not isinstance(raw_calls, list):
+            raw_calls = []
+
+        calls = []
+        remaining_argument_chars = 6000
+        for raw_call in raw_calls[:5]:
+            if not isinstance(raw_call, dict):
+                continue
+            name = str(raw_call.get("name") or "").strip()[:128]
+            arguments = raw_call.get("arguments")
+            if not name or not isinstance(arguments, dict):
+                continue
+            try:
+                rendered_arguments = json.dumps(
+                    arguments,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                if len(rendered_arguments) > remaining_argument_chars:
+                    continue
+                normalized_arguments = json.loads(rendered_arguments)
+            except (TypeError, ValueError):
+                continue
+            calls.append(
+                {
+                    "name": name,
+                    "arguments": normalized_arguments,
+                    "requires_query_result": bool(
+                        raw_call.get("requires_query_result")
+                    ),
+                }
+            )
+            remaining_argument_chars -= len(rendered_arguments)
+        return {"tool_calls": calls}
+
+    @staticmethod
+    def update_presentation_state(
+        previous_state: object,
+        current_tool_calls: object,
+        *,
+        relation: str,
+        context_relation: str,
+    ) -> dict:
+        """Apply the current presentation patch after tool-call validation."""
+        previous = ContextCompressor.normalize_presentation_state(previous_state)
+        current = ContextCompressor.normalize_presentation_state(
+            {"tool_calls": current_tool_calls}
+        )
+        if relation == "clear" and context_relation != "new_question":
+            return {"tool_calls": []}
+
+        base_calls = (
+            []
+            if context_relation == "new_question" or relation == "replace"
+            else previous["tool_calls"]
+        )
+        calls_by_name = {call["name"]: call for call in base_calls}
+        for call in current["tool_calls"]:
+            calls_by_name[call["name"]] = call
+        return {"tool_calls": list(calls_by_name.values())[:5]}
