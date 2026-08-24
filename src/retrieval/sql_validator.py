@@ -485,14 +485,9 @@ class SQLValidator:
         sql: str,
         previous_context: dict[str, list[str]],
         relation: str,
+        removed_context: dict[str, list[str]] | None = None,
     ) -> tuple[bool, str, dict]:
-        """Ensure follow-ups without explicit removals preserve their baseline.
-
-        The caller decides whether the current semantic patch contains a
-        removal.  ``follow_up_modify`` can still be purely additive (models do
-        not always label the relation consistently), so relation labels alone
-        must not disable the structural safety check.
-        """
+        """Preserve every previous SQL fragment not explicitly removed."""
         if relation == "new_question" or not previous_context:
             return True, "", {"required": False, "missing": {}}
 
@@ -519,6 +514,8 @@ class SQLValidator:
                 result.add(re.sub(r"\s+", " ", fragment).casefold())
             return result
 
+        removed_context = removed_context or {}
+        allowed_removed: dict[str, list[str]] = {}
         missing: dict[str, list[str]] = {}
         for section in (
             "tables",
@@ -531,10 +528,17 @@ class SQLValidator:
         ):
             previous_values = previous_context.get(section) or []
             current_values = normalized(current_context.get(section) or [], section)
+            removed_values = normalized(removed_context.get(section) or [], section)
+            allowed_removed[section] = [
+                str(value)
+                for value in previous_values
+                if normalized([str(value)], section) & removed_values
+            ]
             absent = [
                 str(value)
                 for value in previous_values
                 if not normalized([str(value)], section) & current_values
+                and not normalized([str(value)], section) & removed_values
             ]
             if absent:
                 missing[section] = absent
@@ -544,6 +548,7 @@ class SQLValidator:
             "missing": missing,
             "previous": previous_context,
             "current": current_context,
+            "allowed_removed": allowed_removed,
         }
         if not missing:
             return True, "", detail
@@ -557,6 +562,22 @@ class SQLValidator:
             detail,
         )
 
+    @staticmethod
+    def _query_state(query_intent: dict) -> dict:
+        state = query_intent.get("state")
+        return state if isinstance(state, dict) else query_intent
+
+    @classmethod
+    def is_count_only(cls, query_intent: dict) -> bool:
+        """Return whether the semantic frame requires one ungrouped COUNT."""
+        return cls._query_state(query_intent).get("result_shape") == "count_only"
+
+    @classmethod
+    def currency_conversion_target(cls, query_intent: dict) -> str:
+        """Return the normalized target currency from the semantic frame."""
+        state = cls._query_state(query_intent)
+        return str(state.get("currency_conversion") or "").strip().upper()
+
     @classmethod
     def validate_metric_projection(
         cls,
@@ -564,7 +585,7 @@ class SQLValidator:
         query_intent: dict,
     ) -> tuple[bool, str, dict]:
         """Enforce exclusive metric requests after every SQL repair step."""
-        count_only = bool(query_intent.get("count_only"))
+        count_only = cls.is_count_only(query_intent)
         if not count_only:
             return True, "", {"required": False}
 
@@ -847,16 +868,9 @@ class SQLValidator:
         query_intent: dict,
     ) -> tuple[bool, str, dict]:
         """校验货币换算 SQL 是否完整执行了确定的业务口径。"""
-        if not query_intent.get("currency_conversion"):
-            return True, "", {"required": False}
-
-        target_currency = str(query_intent.get("target_currency") or "").upper()
+        target_currency = cls.currency_conversion_target(query_intent)
         if not target_currency:
-            return (
-                False,
-                "无法确定货币换算的目标币种",
-                {"required": True, "issues": ["缺少目标币种"]},
-            )
+            return True, "", {"required": False}
 
         tree, parse_error = cls._parse_ast(sql)
         if parse_error:

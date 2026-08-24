@@ -28,7 +28,7 @@ from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
 
-COMPRESS_PROMPT = """你是一个查询状态更新助手。不要机械拼接历史文本，而要理解用户是在追加、修改、纠正还是开始新问题。
+COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手。不要机械拼接历史文本，而要理解用户是在追加、修改、纠正、操作上一轮结果，还是开始新问题。
 
 请根据历史查询状态和本轮输入，输出一个 JSON 对象。禁止输出 Markdown 或解释。
 
@@ -44,10 +44,21 @@ COMPRESS_PROMPT = """你是一个查询状态更新助手。不要机械拼接�
    应原样保留这些词，由后续 RAG 和 SQL 生成阶段依据证据解释。只有指代不清、与上一轮要求互相冲突且无法形成完整问题时才澄清。
 7. effective_question 是完整需求的唯一文本事实来源，必须包含所有保留项和新增项，不能包含已移除项。
 8. relation=follow_up_add 仅表示增加内容且不改变任何已有结构；只要替换或删除已有条件、字段、维度或指标，就必须使用 follow_up_modify 或 correction_override，并在 changes.removed 中列出被替换或删除的内容。
+9. turn_intent 用于通用流程路由：
+   - sql_query：首次查询、查询追问、纠正或澄清回答；
+   - result_explanation：只解释上一轮查询口径或结果，不改变查询语义；
+   - result_operation：只基于上一轮结果生成图表、导出或执行其他操作，不改变查询语义；
+   - non_query：与数据查询无关的闲聊或能力咨询。
+   要求增删筛选、字段、维度、指标、排序或限制行时仍是 sql_query；不得根据具体业务词、表名或字段名决定 turn_intent。
+   result_explanation/result_operation 有历史时 relation=follow_up_add，query_state 完全保留上一轮状态。
+10. result_shape 描述最终结果结构：count_only 表示最终只能返回一个 COUNT 结果且不得分组；aggregate 表示聚合结果；detail 表示明细；mixed 表示混合结果；无法判断时为 unknown。
+11. removed_sql_context 是对上一轮 SQL 结构的精确删除授权。仅当用户明确删除或替换上一轮结构时填写，并从【上一轮 SQL 结构】中逐字复制对应片段；没有删除时各项必须为空。未列入其中的上一轮结构必须继续保留。
+12. turn_intent=non_query 时 direct_response 给出简短回复且不得虚构查询结果；其他意图 direct_response 为空字符串。
 
 输出格式:
 {{
   "relation": "follow_up_add|follow_up_modify|correction_override|new_question",
+  "turn_intent": "sql_query|result_explanation|result_operation|non_query",
   "query_state": {{
     "subject": "查询对象",
     "time_range": "时间范围",
@@ -55,11 +66,17 @@ COMPRESS_PROMPT = """你是一个查询状态更新助手。不要机械拼接�
     "metrics": ["统计指标"],
     "dimensions": ["展示维度"],
     "currency_conversion": "目标币种或空字符串",
+    "result_shape": "count_only|aggregate|detail|mixed|unknown",
     "exclusions": ["明确不需要的内容"]
   }},
   "changes": {{"kept": ["保留项"], "set": ["新增或修改项"], "removed": ["移除项"]}},
+  "removed_sql_context": {{
+    "tables": [], "projections": [], "dimensions": [], "filters": [],
+    "joins": [], "order_by": [], "limit": []
+  }},
   "effective_question": "合并后完整、独立且无歧义的问题",
   "interpretation": "一句话说明本轮保留、修改和移除了什么",
+  "direct_response": "仅 non_query 时填写",
   "confidence": 0.0,
   "needs_clarification": false,
   "clarification": {{"question": "", "options": []}}
@@ -80,6 +97,32 @@ _RELATIONS = {
     "new_question",
 }
 
+_TURN_INTENTS = {
+    "sql_query",
+    "result_explanation",
+    "result_operation",
+    "non_query",
+}
+
+_RESULT_SHAPES = {
+    "count_only",
+    "aggregate",
+    "detail",
+    "mixed",
+    "unknown",
+}
+
+_SQL_CONTEXT_SECTIONS = (
+    "tables",
+    "columns",
+    "projections",
+    "dimensions",
+    "filters",
+    "joins",
+    "order_by",
+    "limit",
+)
+
 
 @dataclass(frozen=True)
 class QueryState:
@@ -89,6 +132,7 @@ class QueryState:
     metrics: tuple[str, ...] = ()
     dimensions: tuple[str, ...] = ()
     currency_conversion: str = ""
+    result_shape: str = "unknown"
     exclusions: tuple[str, ...] = ()
 
     @classmethod
@@ -103,6 +147,10 @@ class QueryState:
                 str(item).strip()[:100] for item in values if str(item).strip()
             )
 
+        result_shape = str(payload.get("result_shape") or "unknown").strip()
+        if result_shape not in _RESULT_SHAPES:
+            result_shape = "unknown"
+
         return cls(
             subject=str(payload.get("subject") or "").strip()[:200],
             time_range=str(payload.get("time_range") or "").strip()[:100],
@@ -112,6 +160,7 @@ class QueryState:
             currency_conversion=str(payload.get("currency_conversion") or "").strip()[
                 :32
             ],
+            result_shape=result_shape,
             exclusions=strings("exclusions"),
         )
 
@@ -123,6 +172,7 @@ class QueryState:
             "metrics": list(self.metrics),
             "dimensions": list(self.dimensions),
             "currency_conversion": self.currency_conversion,
+            "result_shape": self.result_shape,
             "exclusions": list(self.exclusions),
         }
 
@@ -132,11 +182,14 @@ class ContextMergeResult:
     effective_question: str
     query_state: QueryState
     relation: str = "follow_up_modify"
+    turn_intent: str = "sql_query"
     interpretation: str = ""
+    direct_response: str = ""
     confidence: float = 1.0
     needs_clarification: bool = False
     clarification: dict = field(default_factory=dict)
     changes: dict = field(default_factory=dict)
+    removed_sql_context: dict = field(default_factory=dict)
 
 
 class ContextCompressor:
@@ -144,8 +197,11 @@ class ContextCompressor:
 
     def __init__(self, model: BaseChatModel, custom_prompt: str = ""):
         self.model = model
+        custom_instructions = custom_prompt.strip()
         self.prompt_template = (
-            custom_prompt.strip() if custom_prompt else COMPRESS_PROMPT
+            f"{custom_instructions}\n\n{COMPRESS_PROMPT}"
+            if custom_instructions
+            else COMPRESS_PROMPT
         )
 
     def compress(self, history_summary: str, current_question: str) -> str:
@@ -200,17 +256,21 @@ class ContextCompressor:
                 current_question=current_question,
                 previous_question=prev_question,
                 previous_query_state=previous_query_state,
+                previous_sql_context=prev_sql_context,
             )
             if not prev_question and result.relation != "new_question":
                 result = ContextMergeResult(
                     effective_question=result.effective_question,
                     query_state=result.query_state,
                     relation="new_question",
+                    turn_intent=result.turn_intent,
                     interpretation=result.interpretation,
+                    direct_response=result.direct_response,
                     confidence=result.confidence,
                     needs_clarification=result.needs_clarification,
                     clarification=result.clarification,
                     changes=result.changes,
+                    removed_sql_context=result.removed_sql_context,
                 )
             logger.info(
                 "context state merged",
@@ -240,6 +300,7 @@ class ContextCompressor:
         current_question: str,
         previous_question: str,
         previous_query_state: QueryState,
+        previous_sql_context: dict[str, list[str]],
     ) -> ContextMergeResult:
         stripped = content.strip()
         fenced = re.fullmatch(r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL)
@@ -266,6 +327,9 @@ class ContextCompressor:
         relation = str(payload.get("relation") or "follow_up_modify")
         if relation not in _RELATIONS:
             relation = "follow_up_modify"
+        turn_intent = str(payload.get("turn_intent") or "sql_query")
+        if turn_intent not in _TURN_INTENTS:
+            turn_intent = "sql_query"
         try:
             confidence = min(1.0, max(0.0, float(payload.get("confidence", 1.0))))
         except (TypeError, ValueError):
@@ -281,11 +345,17 @@ class ContextCompressor:
             effective_question=effective_question,
             query_state=QueryState.from_value(payload.get("query_state")),
             relation=relation,
+            turn_intent=turn_intent,
             interpretation=str(payload.get("interpretation") or "").strip()[:500],
+            direct_response=str(payload.get("direct_response") or "").strip()[:1000],
             confidence=confidence,
             needs_clarification=needs_clarification,
             clarification=clarification,
             changes=cls._normalize_changes(payload.get("changes")),
+            removed_sql_context=cls._normalize_removed_sql_context(
+                payload.get("removed_sql_context"),
+                previous_sql_context,
+            ),
         )
 
     @staticmethod
@@ -317,6 +387,38 @@ class ContextCompressor:
             ]
         return normalized
 
+    @staticmethod
+    def _normalize_removed_sql_context(
+        value: object,
+        previous_sql_context: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        """Accept only exact previous SQL fragments as removal authorization."""
+        payload = value if isinstance(value, dict) else {}
+
+        def normalized(fragment: object) -> str:
+            return re.sub(
+                r"\s+", " ", str(fragment).replace("`", "").strip()
+            ).casefold()
+
+        result: dict[str, list[str]] = {}
+        for section in _SQL_CONTEXT_SECTIONS:
+            previous_values = previous_sql_context.get(section) or []
+            previous_by_normalized = {
+                normalized(fragment): str(fragment)
+                for fragment in previous_values
+                if str(fragment).strip()
+            }
+            requested = payload.get(section)
+            requested = requested if isinstance(requested, list) else []
+            result[section] = list(
+                dict.fromkeys(
+                    previous_by_normalized[key]
+                    for fragment in requested
+                    if (key := normalized(fragment)) in previous_by_normalized
+                )
+            )
+        return result
+
     @classmethod
     def _fallback_result(
         cls,
@@ -335,12 +437,14 @@ class ContextCompressor:
             effective_question=effective_question,
             query_state=query_state,
             relation=relation,
+            turn_intent="sql_query",
             confidence=0.5,
             changes={
                 "kept": ["上一轮完整查询"] if previous_question else [],
                 "set": [current_question],
                 "removed": [],
             },
+            removed_sql_context={section: [] for section in _SQL_CONTEXT_SECTIONS},
         )
 
     @classmethod
@@ -489,16 +593,7 @@ class ContextCompressor:
                 "sql": sql,
                 "sql_context": {
                     key: [str(item) for item in sql_context.get(key, []) if item]
-                    for key in (
-                        "tables",
-                        "columns",
-                        "projections",
-                        "dimensions",
-                        "filters",
-                        "joins",
-                        "order_by",
-                        "limit",
-                    )
+                    for key in _SQL_CONTEXT_SECTIONS
                 },
                 "query_state": QueryState.from_value(
                     payload.get("query_state")

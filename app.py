@@ -70,7 +70,7 @@ from src.retrieval.config import (
 )
 from src.retrieval.query_cache import QueryCache
 from src.retrieval.query_logger import QueryLogger
-from src.retrieval.retriever import SchemaRetriever
+from src.retrieval.retriever import RetrievalResult, SchemaRetriever
 from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
 from src.retrieval.tool_planner import (
@@ -796,6 +796,12 @@ class QueryResponse(BaseModel):
     query_state: dict = Field(
         default_factory=dict, description="合并后的结构化查询状态"
     )
+    turn_intent: str = Field(
+        default="sql_query", description="本轮通用意图，不包含具体业务语义"
+    )
+    context_relation: str = Field(
+        default="new_question", description="本轮对上一轮查询状态的更新关系"
+    )
     tool_calls: list[dict] = Field(
         default_factory=list,
         description="经注册表与输入 Schema 校验后的结果工具调用",
@@ -970,7 +976,7 @@ def _run_query_impl(
         return int((_time.monotonic() - t0) * 1000)
 
     # 多轮上下文压缩
-    from src.retrieval.context_compressor import ContextCompressor
+    from src.retrieval.context_compressor import ContextCompressor, QueryState
 
     effective_question = question
     previous_sql = ""
@@ -978,9 +984,11 @@ def _run_query_impl(
     inherited_tables: set[str] = set()
     inherited_columns: set[str] = set()
     query_state = ContextCompressor.infer_state(question)
+    turn_intent = "sql_query"
     interpretation = ""
     context_relation = "new_question"
     context_changes = {"kept": [], "set": [question], "removed": []}
+    removed_sql_context: dict[str, list[str]] = {}
     pending_clarification: dict | None = None
     t0 = _time.monotonic()
     previous_state = ContextCompressor.parse_summary(history_summary)
@@ -991,43 +999,178 @@ def _run_query_impl(
     merge_result = compressor.merge(history_summary, question)
     effective_question = merge_result.effective_question
     query_state = merge_result.query_state
+    turn_intent = merge_result.turn_intent
     interpretation = merge_result.interpretation
     context_relation = merge_result.relation
     context_changes = merge_result.changes
+    removed_sql_context = merge_result.removed_sql_context
+    if turn_intent in {"result_explanation", "result_operation"} and previous_sql:
+        # Result-only turns do not mutate the semantic query.  The classifier
+        # chooses the route; state preservation is a deterministic contract.
+        query_state = QueryState.from_value(previous_state["query_state"])
+        effective_question = previous_state["question"] or effective_question
+        context_relation = "follow_up_add"
+        context_changes = {
+            "kept": ["上一轮完整查询"],
+            "set": [],
+            "removed": [],
+        }
+        removed_sql_context = {section: [] for section in previous_sql_context}
+    context_needs_clarification = (
+        merge_result.needs_clarification and turn_intent == "sql_query"
+    )
     trace_steps.append(
         {
             "step": "context_compress",
             "duration_ms": _elapsed_ms(t0),
             "input": question,
             "output": effective_question,
-            "relation": merge_result.relation,
-            "changes": merge_result.changes,
-            "query_state": merge_result.query_state.to_dict(),
+            "relation": context_relation,
+            "turn_intent": merge_result.turn_intent,
+            "changes": context_changes,
+            "removed_sql_context": removed_sql_context,
+            "query_state": query_state.to_dict(),
             "interpretation": merge_result.interpretation,
             "confidence": merge_result.confidence,
-            "needs_clarification": merge_result.needs_clarification,
+            "needs_clarification": context_needs_clarification,
         }
     )
-    if history_summary and merge_result.relation != "new_question":
+    if history_summary and context_relation != "new_question":
         inherited_tables.update(previous_state["tables"])
         inherited_tables.update(previous_sql_context.get("tables", []))
         inherited_columns.update(previous_sql_context.get("columns", []))
-    if merge_result.needs_clarification:
+    if context_needs_clarification:
         pending_clarification = merge_result.clarification
 
-    # RAG 检索（用压缩后的完整问题）
+    if turn_intent == "non_query":
+        direct_response = merge_result.direct_response or (
+            "当前 Agent 用于数据库查询，请描述要查询的数据、范围和展示方式。"
+        )
+        return {
+            "sql": "",
+            "raw_answer": direct_response,
+            "matched_tables": [],
+            "matched_terms": [],
+            "enum_hits": [],
+            "retrieval_context": {},
+            "is_success": True,
+            "retry_count": 0,
+            "error": "",
+            "matched_fewshot": [],
+            "context_summary": history_summary,
+            "trace": {
+                "question": question,
+                "effective_question": effective_question,
+                "steps": trace_steps,
+                "total_duration_ms": _elapsed_ms(t_start),
+                "tool_calls": [],
+            },
+            "summary": direct_response,
+            "query_result": None,
+            "execution_error": "",
+            "script": "",
+            "placeholder": "",
+            "needs_clarification": False,
+            "clarification": None,
+            "interpretation": interpretation,
+            "query_state": previous_state["query_state"],
+            "turn_intent": turn_intent,
+            "context_relation": context_relation,
+            "tool_calls": [],
+        }
+
+    if turn_intent in {"result_explanation", "result_operation"} and not previous_sql:
+        clarification = {
+            "question": "当前会话没有可复用的上一轮查询，请先完成一次数据查询。",
+            "options": [],
+            "table_references": [],
+        }
+        return {
+            "sql": "",
+            "raw_answer": "NEED_CLARIFY: "
+            + json.dumps(clarification, ensure_ascii=False),
+            "matched_tables": [],
+            "matched_terms": [],
+            "enum_hits": [],
+            "retrieval_context": {},
+            "is_success": False,
+            "retry_count": 0,
+            "error": f"NEED_CLARIFY: {clarification['question']}",
+            "matched_fewshot": [],
+            "context_summary": history_summary,
+            "trace": {
+                "question": question,
+                "effective_question": effective_question,
+                "steps": trace_steps,
+                "total_duration_ms": _elapsed_ms(t_start),
+                "tool_calls": [],
+            },
+            "summary": "",
+            "query_result": None,
+            "execution_error": "",
+            "script": "",
+            "placeholder": "",
+            "needs_clarification": True,
+            "clarification": clarification,
+            "interpretation": interpretation,
+            "query_state": query_state.to_dict(),
+            "turn_intent": turn_intent,
+            "context_relation": context_relation,
+            "tool_calls": [],
+        }
+
+    # SQL 查询轮执行 RAG。结果解释/操作轮只恢复上一轮表的当前
+    # 活动 Schema，不让操作性文本干扰业务召回，也不重新生成 SQL。
     t0 = _time.monotonic()
-    result = retriever.retrieve(
-        effective_question,
-        top_k=config.table_search_top_k,
-        fewshot_k=config.fewshot_top_k,
-        biz_line=biz_line,
-        metadata_filter=metadata_filter,
-        query_state=query_state.to_dict(),
-        original_query=question,
-        inherited_tables=inherited_tables,
-        inherited_columns=inherited_columns,
-    )
+    if turn_intent in {"result_explanation", "result_operation"}:
+        table_schemas = getattr(retriever, "table_schemas", {})
+        schemas_by_name = {
+            str(name).replace("`", "").casefold(): schema
+            for name, schema in table_schemas.items()
+        }
+        reused_tables = []
+        previous_table_names = list(
+            dict.fromkeys(
+                [
+                    *previous_state["tables"],
+                    *previous_sql_context.get("tables", []),
+                ]
+            )
+        )
+        for table_name in previous_table_names:
+            normalized_name = str(table_name).replace("`", "").casefold()
+            schema = schemas_by_name.get(normalized_name)
+            if schema is not None:
+                reused_tables.append(
+                    {
+                        "table_name": str(schema.get("table_name") or table_name),
+                        "schema": schema,
+                        "score": 1.0,
+                        "selected_columns": [
+                            str(column.get("name") or "")
+                            for column in schema.get("columns", [])
+                            if column.get("name")
+                        ],
+                        "pinned": True,
+                    }
+                )
+        result = RetrievalResult(
+            relevant_tables=reused_tables,
+            context_stats={"reused_previous_sql": True},
+            query_intent={"state": query_state.to_dict()},
+        )
+    else:
+        result = retriever.retrieve(
+            effective_question,
+            top_k=config.table_search_top_k,
+            fewshot_k=config.fewshot_top_k,
+            biz_line=biz_line,
+            metadata_filter=metadata_filter,
+            query_state=query_state.to_dict(),
+            original_query=question,
+            inherited_tables=inherited_tables,
+            inherited_columns=inherited_columns,
+        )
     retrieval_ms = _elapsed_ms(t0)
 
     matched_tables = [t["table_name"] for t in result.relevant_tables]
@@ -1071,6 +1214,7 @@ def _run_query_impl(
             sql,
             previous_sql_context,
             context_relation,
+            removed_sql_context,
         )
 
     # trace: 术语解析
@@ -1218,6 +1362,8 @@ def _run_query_impl(
             "clarification": clarification,
             "interpretation": interpretation,
             "query_state": query_state.to_dict(),
+            "turn_intent": turn_intent,
+            "context_relation": context_relation,
             "tool_calls": [],
         }
 
@@ -1327,6 +1473,18 @@ def _run_query_impl(
                 "output_tokens": 0,
             }
         )
+    elif turn_intent in {"result_explanation", "result_operation"} and previous_sql:
+        answer = f"```sql\n{previous_sql}\n```"
+        llm_calls.append(
+            {
+                "role": "reuse_previous_sql",
+                "duration_ms": 0,
+                "model": "deterministic_state",
+                "output": answer,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
     else:
         t0 = _time.monotonic()
         answer, usage = _invoke(messages)
@@ -1384,14 +1542,7 @@ def _run_query_impl(
 
     inheritance_validation_attempts = []
     must_preserve_previous_structure = bool(
-        previous_sql
-        and (
-            context_relation == "follow_up_add"
-            or (
-                context_relation != "new_question"
-                and not context_changes.get("removed")
-            )
-        )
+        previous_sql and context_relation != "new_question"
     )
     if extracted_sql and must_preserve_previous_structure:
         max_inheritance_fix_retries = min(max(config.max_fix_retries, 0), 2)
@@ -1421,7 +1572,9 @@ def _run_query_impl(
                         "这是增量追问，但新 SQL 丢失了上一轮已验证结构。\n\n"
                         f"## 缺失结构\n{inheritance_error}\n\n"
                         f"## 本轮语义变更\n{json.dumps(context_changes, ensure_ascii=False)}\n\n"
-                        "请以上一轮 SQL 为基线，只增加本轮要求，完整恢复所有缺失的投影、"
+                        "## 允许删除的上一轮 SQL 结构\n"
+                        f"{json.dumps(removed_sql_context, ensure_ascii=False)}\n\n"
+                        "请以上一轮 SQL 为基线，只删除明确授权删除的结构，并恢复其他缺失的投影、"
                         "过滤、分组、关联、排序和限制。输出完整 Doris SQL，用 ```sql ``` 包裹。"
                     ),
                 }
@@ -1459,7 +1612,7 @@ def _run_query_impl(
 
     # 业务语义校验必须先于 EXPLAIN。语法正确不代表换汇口径正确。
     currency_validation_attempts = []
-    if extracted_sql and result.query_intent.get("currency_conversion"):
+    if extracted_sql and SQLValidator.currency_conversion_target(result.query_intent):
         max_currency_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_currency_fix_retries + 1):
             currency_ok, currency_error, currency_detail = (
@@ -1531,7 +1684,7 @@ def _run_query_impl(
     projection_validation_attempts = []
     if (
         extracted_sql
-        and (result.requested_fields or result.query_intent.get("count_only"))
+        and (result.requested_fields or SQLValidator.is_count_only(result.query_intent))
         and is_success
     ):
         max_projection_fix_retries = min(max(config.max_fix_retries, 0), 2)
@@ -1554,7 +1707,7 @@ def _run_query_impl(
                 error_msg = projection_error
                 break
 
-            if result.query_intent.get("count_only"):
+            if SQLValidator.is_count_only(result.query_intent):
                 repair_instruction = (
                     "请把最终 SELECT 改为唯一一个 COUNT 结果列，移除金额、币种、汇率等其他结果列，"
                     "移除 GROUP BY 和汇率表关联；保留当前查询状态中仍适用的筛选条件。"
@@ -1600,7 +1753,7 @@ def _run_query_impl(
                 "step": "requested_projection_validate",
                 "requirements": {
                     "requested_fields": result.requested_fields,
-                    "count_only": bool(result.query_intent.get("count_only")),
+                    "count_only": SQLValidator.is_count_only(result.query_intent),
                 },
                 "attempts": projection_validation_attempts,
                 "final_valid": bool(
@@ -2603,6 +2756,48 @@ def _run_query_impl(
             else:
                 execution_error = exec_result["error"] or "SQL 执行失败"
 
+    if turn_intent == "result_explanation" and final_sql and is_success:
+        result_excerpt = None
+        if query_result_data is not None:
+            result_excerpt = {
+                "columns": query_result_data.get("columns", []),
+                "rows": query_result_data.get("rows", [])[:20],
+                "row_count": query_result_data.get("row_count", 0),
+                "truncated": query_result_data.get("truncated", False),
+            }
+        explanation_prompt = (
+            "用户要求解释上一轮查询。请仅依据给出的 SQL 和执行结果，用简洁中文说明"
+            "查询口径、关键过滤、分组维度和结果含义；不得补造未提供的数据。"
+            "如果没有执行结果，只解释 SQL 口径并明确说明没有可解释的结果数据。\n\n"
+            f"用户问题：{question}\n"
+            f"SQL：\n{final_sql}\n"
+            "执行结果：" + json.dumps(result_excerpt, ensure_ascii=False, default=str)
+        )
+        t0 = _time.monotonic()
+        explanation_answer, explanation_usage = _invoke(
+            [
+                {
+                    "role": "system",
+                    "content": "你是数据库查询结果解释助手，只能使用提供的证据。",
+                },
+                {"role": "user", "content": explanation_prompt},
+            ]
+        )
+        summary = str(explanation_answer or "").strip()
+        trace_steps.append(
+            {
+                "step": "result_explanation",
+                "duration_ms": _elapsed_ms(t0),
+                "has_query_result": result_excerpt is not None,
+                "input_tokens": explanation_usage.get("input_tokens")
+                if explanation_usage
+                else None,
+                "output_tokens": explanation_usage.get("output_tokens")
+                if explanation_usage
+                else None,
+            }
+        )
+
     # 提取命中的 fewshot 信息（id + question）
     matched_fewshot = [
         {"id": ex.get("id"), "question": ex.get("question", "")}
@@ -2613,11 +2808,16 @@ def _run_query_impl(
     # 构建本轮摘要供下一轮使用（仅成功时更新，失败轮不污染上下文）
     context_summary = ""
     if is_success and final_sql:
+        summary_question = effective_question
+        summary_query_state = query_state
+        if turn_intent in {"result_explanation", "result_operation"}:
+            summary_question = previous_state["question"] or effective_question
+            summary_query_state = previous_state["query_state"]
         context_summary = ContextCompressor.build_summary(
-            effective_question,
+            summary_question,
             matched_tables,
             final_sql,
-            query_state=query_state,
+            query_state=summary_query_state,
         )
 
     # 汇总 trace
@@ -2663,6 +2863,8 @@ def _run_query_impl(
         "clarification": clarification,
         "interpretation": interpretation,
         "query_state": query_state.to_dict(),
+        "turn_intent": turn_intent,
+        "context_relation": context_relation,
         "tool_calls": tool_calls,
     }
 
@@ -3048,6 +3250,8 @@ async def query(req: QueryRequest, request: Request):
                     "placeholder": result.get("placeholder", ""),
                     "interpretation": result.get("interpretation", ""),
                     "query_state": result.get("query_state", {}),
+                    "turn_intent": result.get("turn_intent", "sql_query"),
+                    "context_relation": result.get("context_relation", "new_question"),
                     "tool_calls": result.get("tool_calls", []),
                 },
                 context_key=_cache_ctx,
@@ -3077,6 +3281,8 @@ async def query(req: QueryRequest, request: Request):
             clarification=result.get("clarification"),
             interpretation=result.get("interpretation", ""),
             query_state=result.get("query_state", {}),
+            turn_intent=result.get("turn_intent", "sql_query"),
+            context_relation=result.get("context_relation", "new_question"),
             tool_calls=result.get("tool_calls", []),
         )
 

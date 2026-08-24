@@ -133,10 +133,124 @@ LIMIT 100
         )
 
 
+class _TurnIntentModel:
+    def __init__(self, turn_intent: str, direct_response: str = "") -> None:
+        self.turn_intent = turn_intent
+        self.direct_response = direct_response
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        prompt = messages[-1].content
+        self.calls.append(prompt)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_add",
+                        "turn_intent": self.turn_intent,
+                        "query_state": {
+                            "subject": "订单交易",
+                            "time_range": "最近一个月",
+                            "filters": [],
+                            "metrics": ["交易笔数"],
+                            "dimensions": ["渠道"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["上一轮查询"],
+                            "set": [],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": "最近一个月按渠道统计订单交易笔数",
+                        "interpretation": "沿用上一轮查询。",
+                        "direct_response": self.direct_response,
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return SimpleNamespace(
+            content="上一轮查询按渠道统计订单笔数。",
+            usage_metadata=None,
+        )
+
+
+class _CountOnlyModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        prompt = messages[-1].content
+        self.calls.append(prompt)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": [],
+                            "currency_conversion": "",
+                            "result_shape": "count_only",
+                            "exclusions": [],
+                        },
+                        "changes": {"kept": [], "set": ["只查数量"], "removed": []},
+                        "removed_sql_context": {},
+                        "effective_question": "只查订单总数量",
+                        "interpretation": "仅返回一个计数结果。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT o.channel_code, COUNT(*) AS order_count
+FROM analytics.orders AS o
+GROUP BY o.channel_code
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content="""```sql
+SELECT COUNT(*) AS order_count
+FROM analytics.orders
+```""",
+            usage_metadata=None,
+        )
+
+
 class _Retriever:
     def __init__(self) -> None:
         self.query = ""
         self.kwargs = {}
+        self.table_schemas = {
+            "analytics.orders": {
+                "database": "analytics",
+                "table_name": "analytics.orders",
+                "table_name_short": "orders",
+                "description": "订单事实表",
+                "columns": [
+                    {"name": "channel_code", "type": "varchar"},
+                    {"name": "order_count", "type": "bigint"},
+                    {"name": "order_type", "type": "varchar"},
+                    {"name": "create_time", "type": "datetime"},
+                ],
+            }
+        }
 
     def retrieve(self, query, **kwargs):
         self.query = query
@@ -478,6 +592,105 @@ def test_modify_followup_without_removal_still_preserves_sql_structure() -> None
     assert detail["required"] is True
 
 
+def test_modify_followup_only_allows_explicit_sql_fragment_removal() -> None:
+    previous = ContextCompressor.extract_sql_context(
+        """
+        SELECT channel_code, COUNT(*) AS order_count
+        FROM analytics.orders
+        WHERE status = 'completed' AND create_time >= '2026-07-01'
+        GROUP BY channel_code
+        """
+    )
+    removed_context = {"filters": ["create_time >= '2026-07-01'"]}
+    current = """
+        SELECT channel_code, COUNT(*) AS order_count
+        FROM analytics.orders
+        WHERE status = 'completed' AND create_time >= '2026-08-01'
+        GROUP BY channel_code
+    """
+
+    valid, error, detail = SQLValidator.validate_followup_inheritance(
+        current,
+        previous,
+        "follow_up_modify",
+        removed_context,
+    )
+
+    assert valid is True
+    assert error == ""
+    assert detail["allowed_removed"]["filters"] == ["create_time >= '2026-07-01'"]
+
+    invalid, invalid_error, invalid_detail = SQLValidator.validate_followup_inheritance(
+        """
+        SELECT COUNT(*) AS order_count
+        FROM analytics.orders
+        WHERE status = 'completed' AND create_time >= '2026-08-01'
+        """,
+        previous,
+        "follow_up_modify",
+        removed_context,
+    )
+
+    assert invalid is False
+    assert "channel_code" in invalid_error
+    assert "projections" in invalid_detail["missing"]
+
+
+def test_query_contract_reads_result_shape_and_currency_from_state() -> None:
+    intent = {
+        "state": {
+            "currency_conversion": "usd",
+            "result_shape": "count_only",
+        }
+    }
+
+    assert SQLValidator.currency_conversion_target(intent) == "USD"
+    assert SQLValidator.is_count_only(intent) is True
+    assert SQLValidator.validate_metric_projection(
+        "SELECT COUNT(*) AS total FROM analytics.orders",
+        intent,
+    )[0]
+    assert not SQLValidator.validate_metric_projection(
+        "SELECT channel_code, COUNT(*) FROM analytics.orders GROUP BY channel_code",
+        intent,
+    )[0]
+
+
+def test_pipeline_repairs_count_only_contract_from_nested_query_state(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _CountOnlyModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "只查订单数量",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            max_fix_retries=1,
+        ),
+        model,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["query_state"]["result_shape"] == "count_only"
+    assert "SELECT COUNT(*) AS order_count" in result["sql"]
+    assert "GROUP BY" not in result["sql"]
+    projection_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "requested_projection_validate"
+    )
+    assert [attempt["valid"] for attempt in projection_step["attempts"]] == [
+        False,
+        True,
+    ]
+
+
 def test_retrieval_uses_model_state_without_regex_business_decisions(
     monkeypatch,
 ) -> None:
@@ -785,3 +998,133 @@ def test_complex_derived_requirements_reach_generation_without_field_block(
         step.get("step") == "unresolved_requested_field"
         for step in result["trace"]["steps"]
     )
+
+
+def test_result_operation_reuses_previous_sql_without_regeneration(monkeypatch) -> None:
+    import app as service
+
+    previous_sql = """
+    SELECT o.channel_code, COUNT(*) AS order_count
+    FROM analytics.orders AS o
+    WHERE o.create_time >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+    GROUP BY o.channel_code
+    LIMIT 100
+    """
+    history = ContextCompressor.build_summary(
+        "最近一个月按渠道统计订单交易笔数",
+        ["analytics.orders"],
+        previous_sql,
+        query_state=QueryState(
+            subject="订单交易",
+            time_range="最近一个月",
+            filters=("状态有效",),
+            metrics=("交易笔数",),
+            dimensions=("渠道",),
+            result_shape="aggregate",
+        ),
+    )
+    model = _TurnIntentModel("result_operation")
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "把这个结果导出",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+        ),
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["turn_intent"] == "result_operation"
+    assert result["context_relation"] == "follow_up_add"
+    assert "o.channel_code" in result["sql"]
+    assert result["query_state"]["filters"] == ["状态有效"]
+    assert len(model.calls) == 1
+    assert service.retriever.query == ""
+    generation_step = next(
+        step for step in result["trace"]["steps"] if step["step"] == "llm_generation"
+    )
+    assert generation_step["calls"][0]["role"] == "reuse_previous_sql"
+
+
+def test_result_explanation_reuses_sql_and_returns_grounded_summary(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    previous_sql = """
+    SELECT o.channel_code, COUNT(*) AS order_count
+    FROM analytics.orders AS o
+    GROUP BY o.channel_code
+    LIMIT 100
+    """
+    history = ContextCompressor.build_summary(
+        "按渠道统计订单交易笔数",
+        ["analytics.orders"],
+        previous_sql,
+        query_state=QueryState(
+            subject="订单交易",
+            metrics=("交易笔数",),
+            dimensions=("渠道",),
+            result_shape="aggregate",
+        ),
+    )
+    model = _TurnIntentModel("result_explanation")
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "解释一下这个结果",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+        ),
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["summary"] == "上一轮查询按渠道统计订单笔数。"
+    assert len(model.calls) == 2
+    explanation_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "result_explanation"
+    )
+    assert explanation_step["has_query_result"] is False
+
+
+def test_non_query_turn_bypasses_retrieval_and_preserves_context(monkeypatch) -> None:
+    import app as service
+
+    class _UnexpectedRetriever:
+        def retrieve(self, *_args, **_kwargs):
+            raise AssertionError("non-query turn must not enter retrieval")
+
+    history = ContextCompressor.build_summary(
+        "查询订单数量",
+        ["analytics.orders"],
+        "SELECT COUNT(*) FROM analytics.orders",
+    )
+    model = _TurnIntentModel(
+        "non_query",
+        direct_response="我可以继续帮你查询数据库。",
+    )
+    monkeypatch.setattr(service, "retriever", _UnexpectedRetriever())
+
+    result = service._run_query_impl(
+        "你能做什么",
+        AgentRuntimeConfig(enable_explain=False, enable_execute=False),
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True
+    assert result["sql"] == ""
+    assert result["summary"] == "我可以继续帮你查询数据库。"
+    assert result["context_summary"] == history
