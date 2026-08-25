@@ -1,5 +1,8 @@
+import asyncio
 import json
 from types import SimpleNamespace
+
+import pytest
 
 from src.retrieval.agent_config import AgentRuntimeConfig
 from src.retrieval.context_compressor import ContextCompressor, QueryState
@@ -471,6 +474,67 @@ ORDER BY order_date
         )
 
 
+class _AddDownloadToChartModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_add",
+                        "turn_intent": "result_operation",
+                        "presentation_relation": "add",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["日期"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["上一轮查询", "折线图"],
+                            "set": ["下载结果"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": "按日期统计订单数量，生成折线图并下载结果",
+                        "interpretation": "保留折线图并新增下载结果操作。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "actions": [
+                        {
+                            "name": "render_chart",
+                            "arguments": {"chart_type": "line"},
+                        },
+                        {
+                            "name": "export_result",
+                            "arguments": {"format": "xlsx"},
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            usage_metadata=None,
+        )
+
+
 class _ClearChartModel:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -774,6 +838,27 @@ def _render_chart_tool() -> dict:
                 }
             },
             "required": ["chart_type"],
+            "additionalProperties": False,
+        },
+        "requires_query_result": True,
+    }
+
+
+def _export_result_tool() -> dict:
+    return {
+        "name": "export_result",
+        "display_name": "下载数据",
+        "description": "把当前查询结果生成文件供用户下载",
+        "intent_phrases": ["下载数据", "导出数据"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "enum": ["csv", "xlsx"],
+                }
+            },
+            "required": ["format"],
             "additionalProperties": False,
         },
         "requires_query_result": True,
@@ -1599,6 +1684,97 @@ def test_mixed_query_change_and_chart_generates_sql_and_persists_chart(
     assert retriever.query == "按日期统计订单数量，并以折线图呈现"
 
 
+def test_prepare_accepts_additive_presentation_relation() -> None:
+    import app as service
+
+    history = ContextCompressor.build_summary(
+        "统计订单数量",
+        ["analytics.orders"],
+        "SELECT COUNT(*) AS order_count FROM analytics.orders",
+        query_state=QueryState(
+            subject="订单",
+            metrics=("数量",),
+            result_shape="aggregate",
+        ),
+    )
+
+    prepared = service.prepare_query_context(
+        "按照日期维度生成折线图",
+        AgentRuntimeConfig(),
+        _MixedChartQueryModel(),
+        history_summary=history,
+    )
+
+    assert prepared["relation"] == "follow_up_add"
+    assert prepared["turn_intent"] == "sql_query"
+    assert prepared["presentation_relation"] == "add"
+
+
+def test_prepare_failure_creates_failed_query_log(monkeypatch) -> None:
+    import app as service
+
+    class _QueryLogger:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def log(self, **kwargs) -> int:
+            self.calls.append(kwargs)
+            return 920
+
+    async def fail_prepare(*_args, **_kwargs):
+        raise ValueError("invalid prepared context")
+
+    config = AgentRuntimeConfig(agent_id=1, token="token")
+    query_logger = _QueryLogger()
+    monkeypatch.setattr(service, "agent_config", config)
+    monkeypatch.setattr(service, "llm_client", object())
+    monkeypatch.setattr(service, "query_logger", query_logger)
+    monkeypatch.setattr(service, "_verify_token", lambda *_args: None)
+    monkeypatch.setattr(service, "_prepare_context_in_worker", fail_prepare)
+
+    request = service.QueryPrepareRequest(
+        question="按天为维度生成图表",
+        agent_id=1,
+        session_id="7017d5cc0db4db3d3a6ebc9bee7e4c59",
+        metadata=service.QueryMetadata(
+            caller="lark",
+            user_id="ou-1",
+            user_name="测试用户",
+            trace_id="evt-prepare-failure",
+            filter={"scenario": "bi", "business": "banking"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid prepared context"):
+        asyncio.run(service.prepare_query(request, SimpleNamespace(headers={})))
+
+    assert query_logger.calls == [
+        {
+            "session_id": "7017d5cc0db4db3d3a6ebc9bee7e4c59",
+            "user_query": "按天为维度生成图表",
+            "intent": "prepare_failed",
+            "execution_result": {
+                "stage": "query_prepare",
+                "error_type": "ValueError",
+                "error": "invalid prepared context",
+            },
+            "is_success": False,
+            "agent_id": 1,
+            "scenario": "bi",
+            "business": "banking",
+            "caller": "lark",
+            "user_id": "ou-1",
+            "user_name": "测试用户",
+            "trace_id": "evt-prepare-failure:prepare",
+            "trace_detail": {
+                "stage": "query_prepare",
+                "error_type": "ValueError",
+                "error": "invalid prepared context",
+            },
+        }
+    ]
+
+
 def test_query_followup_replans_inherited_chart_against_new_projection(
     monkeypatch,
 ) -> None:
@@ -1640,6 +1816,45 @@ def test_query_followup_replans_inherited_chart_against_new_projection(
     assert tool_step["selected_tools"] == ["render_chart"]
     summary = ContextCompressor.parse_summary(result["context_summary"])
     assert summary["presentation_state"]["tool_calls"] == result["tool_calls"]
+
+
+def test_result_operation_can_add_download_without_hiding_inherited_chart(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _AddDownloadToChartModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "下载结果",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_render_chart_tool(), _export_result_tool()],
+        ),
+        model,
+        history_summary=_dated_order_history(with_chart=True),
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert [call["name"] for call in result["tool_calls"]] == [
+        "render_chart",
+        "export_result",
+    ]
+    planner_request = json.loads(model.calls[-1])
+    assert [item["name"] for item in planner_request["available_actions"]] == [
+        "render_chart",
+        "export_result",
+    ]
+    tool_step = next(
+        step for step in result["trace"]["steps"] if step["step"] == "tool_planning"
+    )
+    assert tool_step["inherited_tools"] == ["render_chart"]
+    assert tool_step["agent_bound_tools"] == ["render_chart", "export_result"]
+    assert tool_step["channel_allowed_tools"] == ["render_chart", "export_result"]
 
 
 def test_explicit_presentation_clear_stops_and_forgets_chart(monkeypatch) -> None:

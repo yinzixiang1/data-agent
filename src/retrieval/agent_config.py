@@ -22,29 +22,30 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.config import (
+    COLUMN_SEARCH_TOP_K,
+    CONFIG_PROFILE,
+    CONFIG_SOURCE,
+    DEFAULT_AGENT_TOKEN,
+    DENSE_DIM,
+    DENSE_MODEL,
+    ENABLE_RERANKER,
+    FEWSHOT_TOP_K,
+    MMR_LAMBDA,
+    MYSQL_DATABASE,
     MYSQL_HOST,
+    MYSQL_PASSWORD_URL,
     MYSQL_PORT,
     MYSQL_USER,
-    MYSQL_PASSWORD_URL,
-    MYSQL_DATABASE,
-    TABLE_SEARCH_TOP_K,
-    COLUMN_SEARCH_TOP_K,
+    NL2SQL_ENV,
     RECALL_TOP_K,
     RERANK_INPUT_TOP_K,
-    FEWSHOT_TOP_K,
-    RRF_K,
-    MMR_LAMBDA,
-    ENABLE_RERANKER,
-    DEFAULT_AGENT_TOKEN,
-    NL2SQL_ENV,
-    DENSE_MODEL,
-    DENSE_DIM,
     RERANKER_MODEL,
-    CONFIG_SOURCE,
-    CONFIG_PROFILE,
+    RRF_K,
+    TABLE_SEARCH_TOP_K,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,13 @@ class AgentConfigLoader:
         # Agent 分段配置覆盖
         agent_configs = data.get("agent_config", {})
         if agent_configs:
-            self._apply_agent_configs(config, agent_configs, {})
+            local_tools = data.get("agent_tools", [])
+            self._apply_agent_configs(
+                config,
+                agent_configs,
+                {},
+                local_tools if isinstance(local_tools, list) else [],
+            )
             config.config_source = "local"
 
         # Provider base_url 解析
@@ -318,8 +325,14 @@ class AgentConfigLoader:
                 config.token = agent_info.get("token", "")
                 agent_configs = self._load_agent_configs(agent_id)
                 agent_refs = self._load_agent_refs(agent_id)
+                agent_tools = self._load_agent_tools(agent_id)
 
-                self._apply_agent_configs(config, agent_configs, agent_refs)
+                self._apply_agent_configs(
+                    config,
+                    agent_configs,
+                    agent_refs,
+                    agent_tools,
+                )
                 config.config_source = "agent"
             else:
                 logger.warning(f"Agent {agent_id} 不存在，使用默认配置")
@@ -345,8 +358,8 @@ class AgentConfigLoader:
                     text("SELECT config_key, config_value FROM sys_config")
                 ).fetchall()
             return {row[0]: row[1] for row in rows}
-        except Exception as e:
-            logger.warning(f"加载 sys_config 失败（表可能不存在）: {e}")
+        except SQLAlchemyError as exc:
+            logger.warning("加载 sys_config 失败（表可能不存在）: %s", exc)
             return {}
 
     def _load_agent_info(self, agent_id: int) -> dict | None:
@@ -367,8 +380,8 @@ class AgentConfigLoader:
                     "token": row[3] or "",
                 }
             return None
-        except Exception as e:
-            logger.warning(f"加载 Agent 信息失败: {e}")
+        except SQLAlchemyError as exc:
+            logger.warning("加载 Agent 信息失败: %s", exc)
             return None
 
     def _load_agent_configs(self, agent_id: int) -> dict[str, dict]:
@@ -388,8 +401,8 @@ class AgentConfigLoader:
                 except (json.JSONDecodeError, TypeError):
                     result[row[0]] = {}
             return result
-        except Exception as e:
-            logger.warning(f"加载 Agent 配置失败: {e}")
+        except SQLAlchemyError as exc:
+            logger.warning("加载 Agent 配置失败: %s", exc)
             return {}
 
     def _load_agent_refs(self, agent_id: int) -> dict[str, list[str]]:
@@ -407,8 +420,8 @@ class AgentConfigLoader:
             for row in rows:
                 result.setdefault(row[0], []).append(row[1])
             return result
-        except Exception as e:
-            logger.warning(f"加载 Agent 资源引用失败: {e}")
+        except SQLAlchemyError as exc:
+            logger.warning("加载 Agent 资源引用失败: %s", exc)
             return {}
 
     def _load_resource_config(self, resource_type: str, name: str) -> dict:
@@ -425,61 +438,60 @@ class AgentConfigLoader:
             if row and row[0]:
                 return json.loads(row[0])
             return {}
-        except Exception as e:
-            logger.warning(f"加载资源 {resource_type}/{name} 失败: {e}")
+        except (SQLAlchemyError, json.JSONDecodeError, TypeError) as exc:
+            logger.warning("加载资源 %s/%s 失败: %s", resource_type, name, exc)
             return {}
 
-    def _load_tool_resources(self, names: list[str]) -> list[dict]:
-        """Load public tool definitions without exposing executor configuration."""
-        normalized = [
-            name.strip() for name in names if isinstance(name, str) and name.strip()
-        ]
-        if not normalized:
-            return []
+    def _load_agent_tools(self, agent_id: int) -> list[dict]:
+        """Load enabled tool contracts from the Agent binding table."""
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(
                     text(
-                        "SELECT name, display_name, description, config_json "
-                        "FROM sys_resource WHERE resource_type = 'tool' "
-                        "AND status = 1 AND name IN :names"
-                    ).bindparams(bindparam("names", expanding=True)),
-                    {"names": normalized},
+                        "SELECT r.name, r.display_name, r.description, "
+                        "r.config_json, b.config_json "
+                        "FROM da_agent_tool_binding b "
+                        "JOIN sys_resource r ON r.id = b.resource_id "
+                        "WHERE b.agent_id = :agent_id AND b.enabled = 1 "
+                        "AND r.resource_type = 'tool' AND r.status = 1 "
+                        "ORDER BY b.sort_order, b.id"
+                    ),
+                    {"agent_id": agent_id},
                 ).fetchall()
-        except Exception as exc:
-            logger.warning("加载 Agent 工具资源失败: %s", exc)
+        except SQLAlchemyError as exc:
+            logger.warning("加载 Agent 工具绑定失败: %s", exc)
             return []
 
-        by_name = {}
-        for name, display_name, description, raw_config in rows:
+        tools = []
+        for name, display_name, description, raw_definition, raw_binding in rows:
             try:
-                config = json.loads(raw_config or "{}")
+                definition = json.loads(raw_definition or "{}")
+                binding_config = json.loads(raw_binding or "{}")
             except (json.JSONDecodeError, TypeError):
                 continue
-            if not isinstance(config, dict):
+            if not isinstance(definition, dict) or not isinstance(binding_config, dict):
                 continue
-            input_schema = config.get("input_schema")
+            input_schema = definition.get("input_schema")
             if not isinstance(input_schema, dict):
                 continue
-            by_name[name] = {
-                "name": name,
-                "display_name": display_name or name,
-                "description": description or "",
-                "intent_phrases": [
-                    str(item).strip()
-                    for item in (config.get("intent_phrases") or [])
-                    if str(item).strip()
-                ],
-                "input_schema": input_schema,
-                "requires_query_result": bool(config.get("requires_query_result")),
-            }
-        return [by_name[name] for name in normalized if name in by_name]
-
-    def load_tool_resources(self, names: list[str]) -> list[dict]:
-        """Reload the current public tool contracts for one request."""
-        if self.engine is None:
-            return []
-        return self._load_tool_resources(names)
+            tools.append(
+                {
+                    "name": name,
+                    "display_name": display_name or name,
+                    "description": description or "",
+                    "intent_phrases": [
+                        str(item).strip()
+                        for item in (definition.get("intent_phrases") or [])
+                        if str(item).strip()
+                    ],
+                    "input_schema": input_schema,
+                    "requires_query_result": bool(
+                        definition.get("requires_query_result")
+                    ),
+                    "binding_config": binding_config,
+                }
+            )
+        return tools
 
     def _apply_sys_configs(
         self, config: AgentRuntimeConfig, sys_configs: dict[str, str]
@@ -555,6 +567,7 @@ class AgentConfigLoader:
         config: AgentRuntimeConfig,
         agent_configs: dict[str, dict],
         agent_refs: dict[str, list[str]],
+        agent_tools: list[dict],
     ):
         """将 Agent 分段配置应用到 AgentRuntimeConfig。"""
 
@@ -612,14 +625,14 @@ class AgentConfigLoader:
                 except (ValueError, TypeError):
                     pass
             # Agent 级 Embedding 配置覆盖（deep merge 到 sys_config 值）
-            if "embedding_config" in model_cfg and model_cfg["embedding_config"]:
+            if model_cfg.get("embedding_config"):
                 config.embedding_config.update(model_cfg["embedding_config"])
                 logger.info(
                     f"Agent 覆盖 embedding_config: model={model_cfg['embedding_config'].get('model')}"
                 )
 
             # Agent 级 Reranker 配置覆盖（deep merge 到 index_build_config.reranker）
-            if "reranker_config" in model_cfg and model_cfg["reranker_config"]:
+            if model_cfg.get("reranker_config"):
                 if "reranker" not in config.index_build_config:
                     config.index_build_config["reranker"] = {}
                 config.index_build_config["reranker"].update(
@@ -767,7 +780,7 @@ class AgentConfigLoader:
                         v if isinstance(v, bool) else str(v).lower() in ("true", "1"),
                     )
 
-        # tool 分区：只向模型暴露已启用资源的公开描述和输入 Schema。
+        # tool 分区只保存规划策略；可用工具来自 Agent 工具绑定。
         tool_cfg = agent_configs.get("tool", {})
         choice = str(tool_cfg.get("choice") or "auto").strip().lower()
         config.tool_choice = (
@@ -777,9 +790,8 @@ class AgentConfigLoader:
             config.tool_max_calls = max(1, min(int(tool_cfg.get("max_iter", 5)), 20))
         except (TypeError, ValueError):
             config.tool_max_calls = 5
-        enabled_tools = tool_cfg.get("enabled_tools")
-        if config.tool_choice != "none" and isinstance(enabled_tools, list):
-            config.tools = self.load_tool_resources(enabled_tools)
+        if config.tool_choice != "none":
+            config.tools = [tool for tool in agent_tools if isinstance(tool, dict)]
 
         # collection_overrides: Agent 级 Collection 策略覆盖
         self._merge_collection_overrides(config, agent_configs)

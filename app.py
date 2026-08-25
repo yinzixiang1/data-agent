@@ -771,7 +771,7 @@ class PreparedQueryContext(BaseModel):
         "result_explanation",
         "non_query",
     ] = "sql_query"
-    presentation_relation: Literal["inherit", "replace", "clear"] = "clear"
+    presentation_relation: Literal["inherit", "add", "replace", "clear"] = "clear"
     interpretation: str = Field(default="", max_length=500)
     direct_response: str = Field(default="", max_length=1000)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -812,6 +812,8 @@ class QueryRequest(BaseModel):
 class QueryPrepareRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=4000)
     agent_id: int | None = Field(default=None)
+    session_id: str = Field(default="", max_length=32)
+    metadata: QueryMetadata | None = Field(default=None)
     history_summary: str = Field(default="")
 
 
@@ -1550,6 +1552,11 @@ def _run_query_impl(
     _placeholder_fields = _ctx.get("placeholder_fields", [])
     allowed_tool_names = _ctx.get("enabled_tools")
     available_tools = list(config.tools)
+    agent_bound_tool_names = [
+        str(tool.get("name") or "")
+        for tool in available_tools
+        if str(tool.get("name") or "")
+    ]
     if isinstance(allowed_tool_names, list):
         normalized_tool_names = [
             str(name).strip()
@@ -1557,10 +1564,6 @@ def _run_query_impl(
             if isinstance(name, str) and name.strip()
         ]
         allowed = set(normalized_tool_names)
-        if CONFIG_SOURCE == "mysql" and config_loader is not None:
-            refreshed_tools = config_loader.load_tool_resources(normalized_tool_names)
-            if refreshed_tools:
-                available_tools = refreshed_tools
         available_tools = [
             tool for tool in available_tools if str(tool.get("name") or "") in allowed
         ]
@@ -2634,7 +2637,9 @@ def _run_query_impl(
         planner_tools = []
         planner_choice = "none"
     else:
-        planner_tools = forced_tools or available_tools
+        # Forced and inherited calls remain active actions, but they must not hide
+        # another Agent-bound tool explicitly requested in the same turn.
+        planner_tools = available_tools
         planner_choice = "required" if forced_tools else config.tool_choice
     deferred_tools = forced_tools
     if clarification is not None and deferred_tools:
@@ -2728,6 +2733,10 @@ def _run_query_impl(
                 "model": config.llm_model,
                 "available_tools": [
                     str(tool.get("name") or "") for tool in planner_tools
+                ],
+                "agent_bound_tools": agent_bound_tool_names,
+                "channel_allowed_tools": [
+                    str(tool.get("name") or "") for tool in available_tools
                 ],
                 "explicit_tools": [
                     str(tool.get("name") or "") for tool in explicit_tools
@@ -3511,15 +3520,45 @@ async def prepare_query(req: QueryPrepareRequest, request: Request):
             ),
         )
     _verify_token(request, agent_config)
-    prepared = await _prepare_context_in_worker(
-        req.question,
-        agent_config,
-        llm_client,
-        semaphore=(codex_query_semaphore if _is_codex_config(agent_config) else None),
-        runtime_swap_lock=codex_runtime_swap_lock,
-        history_summary=req.history_summary,
-    )
-    return PreparedQueryContext.model_validate(prepared)
+    try:
+        prepared = await _prepare_context_in_worker(
+            req.question,
+            agent_config,
+            llm_client,
+            semaphore=(
+                codex_query_semaphore if _is_codex_config(agent_config) else None
+            ),
+            runtime_swap_lock=codex_runtime_swap_lock,
+            history_summary=req.history_summary,
+        )
+        return PreparedQueryContext.model_validate(prepared)
+    except Exception as exc:
+        logger.exception("查询预处理异常")
+        meta = req.metadata or QueryMetadata()
+        metadata_filter = meta.filter or {}
+        if query_logger:
+            prepare_trace_id = f"{meta.trace_id[:120]}:prepare" if meta.trace_id else ""
+            failure = {
+                "stage": "query_prepare",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:2000],
+            }
+            query_logger.log(
+                session_id=req.session_id,
+                user_query=req.question,
+                intent="prepare_failed",
+                execution_result=failure,
+                is_success=False,
+                agent_id=agent_config.agent_id,
+                scenario=metadata_filter.get("scenario", ""),
+                business=metadata_filter.get("business", ""),
+                caller=meta.caller,
+                user_id=meta.user_id,
+                user_name=meta.user_name,
+                trace_id=prepare_trace_id,
+                trace_detail=failure,
+            )
+        raise
 
 
 @app.post("/query", response_model=QueryResponse)
