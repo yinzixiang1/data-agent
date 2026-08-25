@@ -1075,6 +1075,164 @@ def test_pipeline_returns_whitespace_clarification_without_sql_retry(
     assert [call["role"] for call in generation_step["calls"]] == ["initial"]
 
 
+def test_pipeline_turns_exhausted_schema_grounding_failure_into_clarification(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    class _UngroundedSchemaModel:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def invoke(self, messages):
+            self.calls.append(messages[-1].content)
+            if len(self.calls) == 1:
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "relation": "new_question",
+                            "turn_intent": "sql_query",
+                            "query_state": {
+                                "subject": "订单",
+                                "time_range": "",
+                                "filters": ["未配置的业务范围"],
+                                "metrics": ["数量"],
+                                "dimensions": ["业务范围"],
+                                "currency_conversion": "",
+                                "result_shape": "aggregate",
+                                "calendar_day_window": None,
+                                "requested_limit": None,
+                                "exclusions": [],
+                            },
+                            "changes": {
+                                "kept": [],
+                                "set": ["完整查询"],
+                                "removed": [],
+                            },
+                            "removed_sql_context": {},
+                            "effective_question": "按业务范围统计订单数量",
+                            "interpretation": "按业务范围聚合订单数量。",
+                            "direct_response": "",
+                            "confidence": 0.99,
+                            "needs_clarification": False,
+                            "clarification": {"question": "", "options": []},
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return SimpleNamespace(
+                content="""```sql
+SELECT o.unmapped_scope, COUNT(*) AS order_count
+FROM analytics.orders AS o
+GROUP BY o.unmapped_scope
+```""",
+                usage_metadata=None,
+            )
+
+    model = _UngroundedSchemaModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "按业务范围统计订单数量",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            max_fix_retries=1,
+        ),
+        model,
+    )
+
+    assert result["is_success"] is False
+    assert result["needs_clarification"] is True
+    assert result["sql"] == ""
+    assert result["query_result"] is None
+    assert result["error"].startswith("NEED_CLARIFY:")
+    assert "o.unmapped_scope" in result["clarification"]["question"]
+    assert len(model.calls) == 3
+    grounding_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "schema_grounding_validate"
+    )
+    assert [attempt["valid"] for attempt in grounding_step["attempts"]] == [
+        False,
+        False,
+    ]
+    assert grounding_step["needs_clarification"] is True
+
+
+def test_pipeline_does_not_turn_sql_syntax_failure_into_clarification(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    class _InvalidSqlModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "relation": "new_question",
+                            "turn_intent": "sql_query",
+                            "query_state": {
+                                "subject": "订单",
+                                "time_range": "",
+                                "filters": [],
+                                "metrics": [],
+                                "dimensions": [],
+                                "currency_conversion": "",
+                                "result_shape": "detail",
+                                "calendar_day_window": None,
+                                "requested_limit": None,
+                                "exclusions": [],
+                            },
+                            "changes": {
+                                "kept": [],
+                                "set": ["完整查询"],
+                                "removed": [],
+                            },
+                            "removed_sql_context": {},
+                            "effective_question": "查询订单",
+                            "interpretation": "查询订单明细。",
+                            "direct_response": "",
+                            "confidence": 0.99,
+                            "needs_clarification": False,
+                            "clarification": {"question": "", "options": []},
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return SimpleNamespace(
+                content="```sql\nSELECT * FROM\n```",
+                usage_metadata=None,
+            )
+
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "查询订单",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            max_fix_retries=1,
+        ),
+        _InvalidSqlModel(),
+    )
+
+    assert result["is_success"] is False
+    assert result["needs_clarification"] is False
+    assert result["clarification"] is None
+    assert not result["error"].startswith("NEED_CLARIFY:")
+
+
 def test_merge_fallback_keeps_previous_question_and_state() -> None:
     previous_state = QueryState(
         subject="订单交易",

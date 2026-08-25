@@ -1087,6 +1087,42 @@ def _build_clarification_table_references(
     return references
 
 
+def _build_schema_grounding_clarification(
+    effective_question: str,
+    validation_detail: dict,
+) -> dict[str, object]:
+    """Turn exhausted Schema-grounding failures into an actionable question."""
+    unsupported_references = [
+        str(value)
+        for value in (
+            validation_detail.get("invalid_columns")
+            or validation_detail.get("invalid_tables")
+            or []
+        )
+        if str(value).strip()
+    ]
+    reference_hint = (
+        "（尚未获得证据支持：" + "、".join(unsupported_references[:6]) + "）"
+        if unsupported_references
+        else ""
+    )
+    question = str(effective_question or "当前查询").strip()[:300]
+    return {
+        "question": (
+            f"当前语义资料不足以把“{question}”完整映射到真实数据字段"
+            f"{reference_hint}。请补充缺失条件的业务定义，或指定对应的表、字段及取值。"
+        )[:1000],
+        "options": [],
+    }
+
+
+def _is_schema_grounding_failure(validation_detail: dict) -> bool:
+    return validation_detail.get("failure_type") in {
+        "table_outside_context",
+        "column_outside_context",
+    }
+
+
 def _run_query_impl(
     question: str,
     config: AgentRuntimeConfig,
@@ -1376,6 +1412,8 @@ def _run_query_impl(
     semantic_table_evidence = getattr(result, "semantic_table_evidence", [])
     requested_field_contract = result.requested_fields
     entity_filter_contract = result.entity_filters
+
+    retrieved_schemas = [table.get("schema", {}) for table in result.relevant_tables]
 
     def _validate_requested_projection(sql: str) -> tuple[bool, str, dict]:
         projection_ok, projection_error, projection_detail = (
@@ -2248,6 +2286,108 @@ def _run_query_impl(
             }
         )
 
+    schema_grounding_attempts = []
+    if extracted_sql and is_success:
+        max_schema_fix_retries = min(max(config.max_fix_retries, 0), 1)
+        for attempt in range(max_schema_fix_retries + 1):
+            schema_ok, schema_error, schema_detail = (
+                SQLValidator.validate_schema_references(
+                    extracted_sql,
+                    retrieved_schemas,
+                )
+            )
+            grounding_failure = _is_schema_grounding_failure(schema_detail)
+            schema_grounding_attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "valid": schema_ok,
+                    "error": schema_error,
+                    "grounding_failure": grounding_failure,
+                    **schema_detail,
+                }
+            )
+            if schema_ok:
+                break
+            if not grounding_failure:
+                break
+            if attempt >= max_schema_fix_retries:
+                clarification = _build_schema_grounding_clarification(
+                    effective_question,
+                    schema_detail,
+                )
+                clarify_msg = str(clarification["question"])
+                answer = "NEED_CLARIFY: " + json.dumps(
+                    clarification,
+                    ensure_ascii=False,
+                )
+                extracted_sql = None
+                is_success = False
+                error_msg = f"NEED_CLARIFY: {clarify_msg}"
+                break
+
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你生成的 SQL 使用了本轮检索证据未提供的表或字段。\n\n"
+                        f"## Schema 证据问题\n{schema_error}\n\n"
+                        "只能使用当前对话中已经提供的 Schema、术语、关系和枚举证据。"
+                        "如果这些证据足以表达用户要求，请输出完整修复后的 Doris SQL；"
+                        "如果证据不足，请不要猜测，输出 "
+                        'NEED_CLARIFY: {"question":"需要用户补充的业务口径或字段映射",'
+                        '"options":[]}。'
+                    ),
+                }
+            )
+            t0 = _time.monotonic()
+            answer, usage = _invoke(messages)
+            llm_calls.append(
+                {
+                    "role": f"schema_grounding_fix_{attempt + 1}",
+                    "duration_ms": _elapsed_ms(t0),
+                    "model": config.llm_model,
+                    "output": answer,
+                    "input_tokens": usage.get("input_tokens") if usage else None,
+                    "output_tokens": usage.get("output_tokens") if usage else None,
+                }
+            )
+            messages.append({"role": "assistant", "content": answer})
+            repaired_clarification = SQLValidator.extract_clarification(answer)
+            if repaired_clarification is not None:
+                clarification = repaired_clarification
+                clarify_msg = clarification["question"]
+                extracted_sql = None
+                is_success = False
+                error_msg = f"NEED_CLARIFY: {clarify_msg}"
+                break
+            repaired_sql = SQLValidator.extract_sql(answer)
+            if not repaired_sql:
+                clarification = _build_schema_grounding_clarification(
+                    effective_question,
+                    schema_detail,
+                )
+                clarify_msg = str(clarification["question"])
+                answer = "NEED_CLARIFY: " + json.dumps(
+                    clarification,
+                    ensure_ascii=False,
+                )
+                extracted_sql = None
+                is_success = False
+                error_msg = f"NEED_CLARIFY: {clarify_msg}"
+                break
+            extracted_sql = repaired_sql
+
+        trace_steps.append(
+            {
+                "step": "schema_grounding_validate",
+                "attempts": schema_grounding_attempts,
+                "final_valid": bool(
+                    schema_grounding_attempts and schema_grounding_attempts[-1]["valid"]
+                ),
+                "needs_clarification": clarification is not None,
+            }
+        )
+
     # EXPLAIN 校验（param_mode 下跳过，? 占位符无法通过 EXPLAIN）
     explain_details = []
     if (
@@ -2463,7 +2603,7 @@ def _run_query_impl(
         schema_allowed, schema_error, schema_detail = (
             SQLValidator.validate_schema_references(
                 final_sql,
-                [table.get("schema", {}) for table in result.relevant_tables],
+                retrieved_schemas,
             )
         )
         trace_steps.append(
@@ -2476,7 +2616,20 @@ def _run_query_impl(
         )
         if not schema_allowed:
             is_success = False
-            error_msg = schema_error
+            if _is_schema_grounding_failure(schema_detail):
+                clarification = _build_schema_grounding_clarification(
+                    effective_question,
+                    schema_detail,
+                )
+                clarify_msg = str(clarification["question"])
+                answer = "NEED_CLARIFY: " + json.dumps(
+                    clarification,
+                    ensure_ascii=False,
+                )
+                final_sql = ""
+                error_msg = f"NEED_CLARIFY: {clarify_msg}"
+            else:
+                error_msg = schema_error
 
     # NEED_CLARIFY: 模型认为问题模糊，需要澄清
     if clarification is not None and clarify_msg:
@@ -2537,7 +2690,7 @@ def _run_query_impl(
                     )
                     schema_ok, _, _ = SQLValidator.validate_schema_references(
                         fixed_sql,
-                        [table.get("schema", {}) for table in result.relevant_tables],
+                        retrieved_schemas,
                     )
                     projection_ok, _, _ = _validate_requested_projection(fixed_sql)
                     entity_ok, _, _ = _validate_entity_filters(fixed_sql)
@@ -2582,7 +2735,7 @@ def _run_query_impl(
         schema_ok, schema_error, schema_detail = (
             SQLValidator.validate_schema_references(
                 final_sql,
-                [table.get("schema", {}) for table in result.relevant_tables],
+                retrieved_schemas,
             )
         )
         projection_ok, projection_error, projection_detail = (

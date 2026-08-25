@@ -319,7 +319,7 @@ class SQLValidator:
         """校验 SQL 的物理表和限定字段均来自本次检索上下文。"""
         tree, error = cls._parse_ast(sql)
         if error:
-            return False, error, {}
+            return False, error, {"failure_type": "invalid_sql"}
         if tree is None:
             # 运行环境尚未安装 sqlglot 时不做伪精确的正则字段校验。
             return True, "", {"ast_validation": "unavailable"}
@@ -356,7 +356,11 @@ class SQLValidator:
                 return (
                     False,
                     f"SQL 引用了本次检索上下文之外的表: {full_name}",
-                    {"referenced_tables": sorted(referenced_tables | {full_name})},
+                    {
+                        "failure_type": "table_outside_context",
+                        "referenced_tables": sorted(referenced_tables | {full_name}),
+                        "invalid_tables": [full_name],
+                    },
                 )
             canonical = str(schema.get("table_name") or full_name)
             referenced_tables.add(canonical)
@@ -383,6 +387,7 @@ class SQLValidator:
                 "SQL 引用了本次字段上下文之外的字段: "
                 + ", ".join(sorted(invalid_columns)),
                 {
+                    "failure_type": "column_outside_context",
                     "referenced_tables": sorted(referenced_tables),
                     "invalid_columns": sorted(invalid_columns),
                 },
