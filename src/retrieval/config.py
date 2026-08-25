@@ -189,6 +189,8 @@ LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 # ── API 安全 ──
 # DEFAULT_AGENT_TOKEN: Agent 未单独配置 token 时使用的默认值
 DEFAULT_AGENT_TOKEN = os.getenv("DEFAULT_AGENT_TOKEN", "")
+# AGENT_ADMIN_TOKEN: 控制面调用管理接口使用，与查询 Token 分离
+AGENT_ADMIN_TOKEN = os.getenv("AGENT_ADMIN_TOKEN", "")
 
 
 def validate_startup_config(environ: Mapping[str, str] | None = None) -> None:
@@ -197,6 +199,17 @@ def validate_startup_config(environ: Mapping[str, str] | None = None) -> None:
     runtime_env = values.get("NL2SQL_ENV", "dev").strip().lower()
     if runtime_env != "prod":
         return
+
+    admin_token = values.get("AGENT_ADMIN_TOKEN", "").strip()
+    if len(admin_token) < 32:
+        raise StartupConfigurationError(
+            "AGENT_ADMIN_TOKEN must be at least 32 characters in production"
+        )
+    default_token = values.get("DEFAULT_AGENT_TOKEN", "").strip()
+    if default_token and admin_token == default_token:
+        raise StartupConfigurationError(
+            "AGENT_ADMIN_TOKEN must not reuse DEFAULT_AGENT_TOKEN"
+        )
 
     config_source = values.get("CONFIG_SOURCE", "mysql").strip().lower()
     if config_source not in {"mysql", "local"}:

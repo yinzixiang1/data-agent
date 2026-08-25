@@ -21,6 +21,7 @@ MILVUS_TOKEN: ""
 
 # API 与运行环境
 DEFAULT_AGENT_TOKEN: replace-with-a-strong-token
+AGENT_ADMIN_TOKEN: replace-with-a-different-strong-admin-token
 ENGINE_PUBLIC_URL: ""
 DENSE_DEVICE: cpu
 CODEX_HOME: /var/lib/lumen-codex

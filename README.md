@@ -75,7 +75,8 @@ uv sync --extra local-models
 - `CONFIG_PROFILE`：当前进程绑定的 Agent ID
 - `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`
 - `MILVUS_URI`、`MILVUS_DB`，以及按需配置的认证参数
-- `DEFAULT_AGENT_TOKEN`
+- `DEFAULT_AGENT_TOKEN`：Agent 未单独配置查询令牌时的默认值
+- `AGENT_ADMIN_TOKEN`：Admin 控制面调用管理接口的独立令牌，至少 32 字符
 
 `CONFIG_PROFILE` 是当前进程绑定的 Agent ID。一个运行实例只服务一个 Agent；
 请求中的 `agent_id` 与实例绑定不一致时返回 `409`。
@@ -107,8 +108,9 @@ uv run uvicorn app:app --host 0.0.0.0 --port 9090
 | POST | `/admin/codex/test` | 测试指定 Codex 模型 |
 | POST | `/evaluation/run` | 批量执行评估用例 |
 
-除 `/health` 外，业务接口使用 Agent Token，管理接口使用
-`DEFAULT_AGENT_TOKEN`。Token 通过 `Authorization: Bearer <token>` 传递。
+除 `/health` 外，业务接口使用 Agent Token，管理接口使用独立的
+`AGENT_ADMIN_TOKEN`。Token 通过 `Authorization: Bearer <token>` 传递；
+两个令牌不得复用。
 
 ## 索引与数据边界
 

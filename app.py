@@ -44,9 +44,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.config import (
+    AGENT_ADMIN_TOKEN,
     CONFIG_PROFILE,
     CONFIG_SOURCE,
-    DEFAULT_AGENT_TOKEN,
     DORIS_HOST,
     DORIS_PASSWORD,
     DORIS_PASSWORD_URL,
@@ -3343,11 +3343,11 @@ def _verify_token(request: Request, config: AgentRuntimeConfig):
 
 
 def _verify_admin_token(request: Request):
-    """校验管理接口 token，使用 DEFAULT_AGENT_TOKEN。"""
-    if not DEFAULT_AGENT_TOKEN:
+    """校验仅供控制面使用的独立管理令牌。"""
+    if not AGENT_ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="Admin token not configured")
     token = _extract_bearer_token(request)
-    if not secrets.compare_digest(token, DEFAULT_AGENT_TOKEN):
+    if not secrets.compare_digest(token, AGENT_ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid or missing admin token")
 
 
