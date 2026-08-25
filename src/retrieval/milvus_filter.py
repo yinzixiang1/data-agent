@@ -4,11 +4,10 @@ import json
 import math
 import re
 
-
 _METADATA_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 
-def _literal(value: str | int | float | bool) -> str:
+def _literal(value: str | float | bool) -> str:
     """Serialize a supported Python scalar as a Milvus expression literal."""
     if isinstance(value, bool):
         return "true" if value else "false"

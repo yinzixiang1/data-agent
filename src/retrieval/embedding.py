@@ -27,7 +27,7 @@ from typing import Optional
 
 import numpy as np
 
-from src.retrieval.config import DENSE_MODEL, DENSE_DIM, DENSE_DEVICE, NL2SQL_ENV
+from src.retrieval.config import DENSE_DEVICE, DENSE_DIM, DENSE_MODEL, NL2SQL_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,8 @@ class Qwen3Embedding(BaseEmbedding):
     """
 
     def __init__(self, embedding_config: dict | None = None):
-        from sentence_transformers import SentenceTransformer
         import torch
+        from sentence_transformers import SentenceTransformer
 
         cfg = embedding_config or {}
         model_name = cfg.get("model", DENSE_MODEL)

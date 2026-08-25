@@ -26,11 +26,11 @@ import logging
 
 from pymilvus import DataType
 
-from src.retrieval.document_builder import DocumentBuilder
 from src.retrieval.collection_names import agent_collection_name
+from src.retrieval.document_builder import DocumentBuilder
 from src.retrieval.embedding import Qwen3Embedding
-from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.fewshot_selector import FewShotSelector
+from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.value_indexer import ValueIndexer
 
 logger = logging.getLogger(__name__)

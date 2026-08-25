@@ -26,8 +26,8 @@ Schema Linking 值索引 — 将用户 query 中的实体值链接到 Schema 字
 import logging
 import re
 
-from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.milvus_filter import build_metadata_filter
+from src.retrieval.milvus_store import MilvusIndex
 
 logger = logging.getLogger(__name__)
 

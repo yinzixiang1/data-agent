@@ -8,20 +8,22 @@ import shutil
 import tempfile
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
+from collections.abc import Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
+from openai_codex import ApprovalMode, Codex, CodexConfig, CodexError, Sandbox
 from openai_codex.types import ReasoningEffort
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel, PrivateAttr, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,15 @@ _QUERY_DEADLINE: ContextVar[float | None] = ContextVar(
 )
 _INTERRUPT_GRACE_SECONDS = 3.0
 _CLIENT_CLOSE_GRACE_SECONDS = 1.0
+_CODEX_RUNTIME_ERRORS = (
+    CodexError,
+    AttributeError,
+    LookupError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 _OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -176,7 +187,7 @@ class CodexChatModel(BaseChatModel):
     _workdir: str = PrivateAttr()
     _closed: bool = PrivateAttr(default=False)
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, __context: Any, /) -> None:
         self._workdir = tempfile.mkdtemp(prefix="lumen-codex-")
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_concurrency,
@@ -185,7 +196,7 @@ class CodexChatModel(BaseChatModel):
         self._slots = threading.BoundedSemaphore(self.max_concurrency)
         try:
             self._client = _sdk_client(self._workdir)
-        except Exception as exc:
+        except _CODEX_RUNTIME_ERRORS as exc:
             self._closed = True
             self._executor.shutdown(wait=False, cancel_futures=True)
             shutil.rmtree(self._workdir, ignore_errors=True)
@@ -228,7 +239,7 @@ class CodexChatModel(BaseChatModel):
             return ChatResult(generations=[ChatGeneration(message=message)])
         except CodexModelError:
             raise
-        except Exception as exc:
+        except _CODEX_RUNTIME_ERRORS as exc:
             logger.error("Codex turn failed", extra={"error_type": type(exc).__name__})
             raise CodexModelError("Codex 调用失败，请稍后重试") from None
         finally:
@@ -274,7 +285,7 @@ class CodexChatModel(BaseChatModel):
             if handle is not None:
                 try:
                     handle.interrupt()
-                except Exception as exc:
+                except _CODEX_RUNTIME_ERRORS as exc:
                     logger.warning(
                         "Codex turn interrupt failed",
                         extra={"error_type": type(exc).__name__},
@@ -287,10 +298,16 @@ class CodexChatModel(BaseChatModel):
                     future.result(timeout=_CLIENT_CLOSE_GRACE_SECONDS)
                 except FutureTimeout:
                     self._replace_executor(executor)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except _CODEX_RUNTIME_ERRORS as exc:
+                    logger.debug(
+                        "Codex turn finished with an error after client cleanup",
+                        extra={"error_type": type(exc).__name__},
+                    )
+            except _CODEX_RUNTIME_ERRORS as exc:
+                logger.debug(
+                    "Codex turn finished with an error after interrupt",
+                    extra={"error_type": type(exc).__name__},
+                )
             raise CodexTimeoutError("Codex 查询已超过时间限制，请稍后重试") from None
 
     def _replace_executor(self, stale_executor: ThreadPoolExecutor) -> None:
@@ -311,7 +328,7 @@ class CodexChatModel(BaseChatModel):
             if self._client is None:
                 try:
                     self._client = _sdk_client(self._workdir)
-                except Exception as exc:
+                except _CODEX_RUNTIME_ERRORS as exc:
                     logger.error(
                         "Codex SDK client restart failed",
                         extra={"error_type": type(exc).__name__},
@@ -325,7 +342,7 @@ class CodexChatModel(BaseChatModel):
         if client is not None:
             try:
                 client.close()
-            except Exception as exc:
+            except _CODEX_RUNTIME_ERRORS as exc:
                 logger.warning(
                     "Codex SDK client cleanup failed",
                     extra={"error_type": type(exc).__name__},
@@ -337,7 +354,7 @@ class CodexChatModel(BaseChatModel):
             raise CodexModelError("Codex 未返回有效结果，请稍后重试")
         try:
             return _StructuredAnswer.model_validate_json(raw_response).answer
-        except Exception:
+        except (ValidationError, TypeError, ValueError):
             raise CodexModelError("Codex 返回格式无效，请稍后重试") from None
 
     @staticmethod
@@ -376,7 +393,7 @@ class CodexChatModel(BaseChatModel):
                 models=[item.model for item in models.data],
             )
             return result
-        except Exception as exc:
+        except _CODEX_RUNTIME_ERRORS as exc:
             logger.warning(
                 "Codex status check failed", extra={"error_type": type(exc).__name__}
             )
@@ -392,7 +409,7 @@ class CodexChatModel(BaseChatModel):
         if client is not None:
             try:
                 client.close()
-            except Exception as exc:
+            except _CODEX_RUNTIME_ERRORS as exc:
                 logger.warning(
                     "Codex SDK client close failed",
                     extra={"error_type": type(exc).__name__},

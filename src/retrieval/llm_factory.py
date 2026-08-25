@@ -17,6 +17,7 @@ LLM 工厂 — 基于 LangChain init_chat_model 统一创建各厂商模型。
 """
 
 import logging
+
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 

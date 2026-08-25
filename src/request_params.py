@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 logger = logging.getLogger(__name__)
 
 # ── 本地定义（始终存在，作为 local 模式来源 + admin 模式兜底）──
@@ -215,12 +217,13 @@ def _init_admin(agent_id: int | None):
 def _get_db_engine():
     """创建临时 DB 连接引擎。"""
     from sqlalchemy import create_engine
+
     from src.retrieval.config import (
-        MYSQL_USER,
-        MYSQL_PASSWORD_URL,
-        MYSQL_HOST,
-        MYSQL_PORT,
         MYSQL_DATABASE,
+        MYSQL_HOST,
+        MYSQL_PASSWORD_URL,
+        MYSQL_PORT,
+        MYSQL_USER,
     )
 
     url = (
@@ -295,7 +298,7 @@ def _register_to_db(params: list[dict]):
 
             conn.commit()
             logger.info("请求参数注册完成: %d 个参数", len(params))
-    except Exception as e:
+    except (SQLAlchemyError, OSError, TypeError, ValueError) as e:
         logger.warning("请求参数注册失败 (非致命): %s", e)
     finally:
         eng.dispose()
@@ -341,7 +344,7 @@ def _fetch_from_db() -> list[dict]:
                 p["options"] = _safe_json(row[11])
             result.append(p)
         return result
-    except Exception as e:
+    except (SQLAlchemyError, OSError, TypeError, ValueError) as e:
         logger.warning("从 DB 拉取请求参数失败: %s", e)
         return []
     finally:

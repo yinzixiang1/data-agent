@@ -23,13 +23,14 @@ import json
 import logging
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.config import (
+    MYSQL_DATABASE,
     MYSQL_HOST,
+    MYSQL_PASSWORD_URL,
     MYSQL_PORT,
     MYSQL_USER,
-    MYSQL_PASSWORD_URL,
-    MYSQL_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ class QueryLogger:
             if not isinstance(response, dict):
                 return None
             return int(row["id"]), response
-        except Exception as exc:
+        except (SQLAlchemyError, json.JSONDecodeError, TypeError, ValueError) as exc:
             logger.warning("读取 Lark 幂等查询结果失败: %s", exc)
             return None
 
@@ -208,9 +209,9 @@ class QueryLogger:
                 )
                 conn.commit()
                 log_id = result.lastrowid
-                logger.info(f"查询日志已记录: id={log_id}, success={is_success}")
+                logger.info("查询日志已记录: id=%s, success=%s", log_id, is_success)
                 return log_id
 
-        except Exception as e:
-            logger.warning(f"查询日志记录失败: {e}")
+        except (SQLAlchemyError, TypeError, ValueError) as e:
+            logger.warning("查询日志记录失败: %s", e)
             return None
