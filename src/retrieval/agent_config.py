@@ -411,8 +411,12 @@ class AgentConfigLoader:
             with self.engine.connect() as conn:
                 rows = conn.execute(
                     text(
-                        "SELECT resource_type, resource_key FROM da_agent_ref "
-                        "WHERE agent_id = :id ORDER BY sort_order"
+                        "SELECT r.resource_type, b.binding_key "
+                        "FROM da_agent_resource_binding b "
+                        "JOIN sys_resource r ON r.id = b.resource_id "
+                        "WHERE b.agent_id = :id AND b.enabled = 1 "
+                        "AND r.resource_type != 'tool' AND r.status = 1 "
+                        "ORDER BY b.sort_order, b.id"
                     ),
                     {"id": agent_id},
                 ).fetchall()
@@ -450,7 +454,7 @@ class AgentConfigLoader:
                     text(
                         "SELECT r.name, r.display_name, r.description, "
                         "r.config_json, b.config_json "
-                        "FROM da_agent_tool_binding b "
+                        "FROM da_agent_resource_binding b "
                         "JOIN sys_resource r ON r.id = b.resource_id "
                         "WHERE b.agent_id = :agent_id AND b.enabled = 1 "
                         "AND r.resource_type = 'tool' AND r.status = 1 "

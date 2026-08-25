@@ -48,7 +48,7 @@ class SchemaLoader:
         da_semantic_table          — 表语义
         da_semantic_column         — 列语义（FK → da_semantic_table.id）
         da_semantic_relation       — 关联关系（FK → da_semantic_table.id）
-        da_semantic_query          — 表级候选问题（不直接进入在线 Few-shot）
+        da_semantic_fewshot        — 已审核 SQL 示例与表级候选问题
         da_semantic_glossary       — 业务术语
         da_semantic_enum           — 枚举定义
         da_semantic_enum_value     — 枚举值（FK → da_semantic_enum.id）
