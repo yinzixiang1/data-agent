@@ -1141,6 +1141,7 @@ def _run_query_impl(
     pending_clarification: dict | None = None
     t0 = _time.monotonic()
     previous_state = ContextCompressor.parse_summary(history_summary)
+    previous_query_state = QueryState.from_value(previous_state["query_state"])
     if history_summary:
         previous_sql = previous_state["sql"]
         previous_sql_context = previous_state["sql_context"]
@@ -1188,6 +1189,24 @@ def _run_query_impl(
             "removed": [],
         }
         removed_sql_context = {section: [] for section in previous_sql_context}
+    metrics_were_replaced = (
+        turn_intent == "sql_query"
+        and context_relation != "new_question"
+        and SQLValidator.metrics_replaced(
+            previous_query_state.to_dict(),
+            query_state.to_dict(),
+        )
+    )
+    if metrics_were_replaced:
+        normalized_removed_context = {
+            section: list(removed_sql_context.get(section) or [])
+            for section in previous_sql_context
+        }
+        removed_projections = normalized_removed_context.setdefault("projections", [])
+        for projection in SQLValidator.aggregate_projections(previous_sql_context):
+            if projection not in removed_projections:
+                removed_projections.append(projection)
+        removed_sql_context = normalized_removed_context
     context_needs_clarification = (
         merge_result.needs_clarification and turn_intent == "sql_query"
     )
@@ -1395,6 +1414,8 @@ def _run_query_impl(
             previous_sql_context,
             context_relation,
             removed_sql_context,
+            previous_query_state.to_dict(),
+            query_state.to_dict(),
         )
 
     # trace: 术语解析
@@ -1616,11 +1637,20 @@ def _run_query_impl(
 
     prompt_text = result.prompt_text
     if previous_sql and context_relation != "new_question":
+        metric_change_rule = (
+            "\n本轮已替换统计指标：必须重新生成聚合投影及其别名，"
+            "不得保留上一轮指标的结果列别名。"
+            if metrics_were_replaced
+            else ""
+        )
         prompt_text += (
             "\n\n【上一轮成功结果（本轮结构基线）】\n"
             "根据本轮完整查询状态修改此 SQL。用户未明确替换或删除的表、字段、"
             "展示维度、聚合方式和过滤条件必须保留；用户明确修改的内容以本轮为准。\n"
             f"本轮语义变更：{json.dumps(context_changes, ensure_ascii=False)}\n"
+            "本轮允许替换或删除的上一轮 SQL 结构："
+            f"{json.dumps(removed_sql_context, ensure_ascii=False)}"
+            f"{metric_change_rule}\n"
             f"上一轮 SQL 结构：{json.dumps(previous_sql_context, ensure_ascii=False)}\n"
             f"```sql\n{previous_sql}\n```"
         )
@@ -1785,13 +1815,14 @@ def _run_query_impl(
                 {
                     "role": "user",
                     "content": (
-                        "这是增量追问，但新 SQL 丢失了上一轮已验证结构。\n\n"
-                        f"## 缺失结构\n{inheritance_error}\n\n"
+                        "这是追问，但新 SQL 与已继承结构或本轮指标变更不一致。\n\n"
+                        f"## 缺失结构或过期指标\n{inheritance_error}\n\n"
                         f"## 本轮语义变更\n{json.dumps(context_changes, ensure_ascii=False)}\n\n"
                         "## 允许删除的上一轮 SQL 结构\n"
                         f"{json.dumps(removed_sql_context, ensure_ascii=False)}\n\n"
                         "请以上一轮 SQL 为基线，只删除明确授权删除的结构，并恢复其他缺失的投影、"
-                        "过滤、分组、关联、排序和限制。输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                        "过滤、分组、关联、排序和限制。指标被替换时同步更新聚合投影别名。"
+                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
                     ),
                 }
             )

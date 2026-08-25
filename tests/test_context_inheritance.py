@@ -16,6 +16,122 @@ class _InvalidMergeModel:
         return SimpleNamespace(content="not-json")
 
 
+class _ClarificationWithoutColonModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "query_state": {
+                            "subject": "C2C payout 交易",
+                            "time_range": "近6个月",
+                            "filters": ["payment scope=swift"],
+                            "metrics": ["平均 payout 金额"],
+                            "dimensions": [],
+                            "currency_conversion": "USD",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": ["internal"],
+                        },
+                        "changes": {"kept": [], "set": ["完整查询"], "removed": []},
+                        "removed_sql_context": {},
+                        "effective_question": (
+                            "查询近6个月 C2C 的 payout 交易，payment scope=swift，"
+                            "排除 internal，按 USD 计算平均金额"
+                        ),
+                        "interpretation": "查询 C2C SWIFT payout 的美元平均金额。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return SimpleNamespace(
+            content=(
+                'NEED_CLARIFY {"question":"请确认 C2C 与 payout SWIFT 的判定口径。",'
+                '"options":[]}'
+            ),
+            usage_metadata=None,
+        )
+
+
+class _MetricReplacementModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_modify",
+                        "turn_intent": "sql_query",
+                        "presentation_relation": "inherit",
+                        "query_state": {
+                            "subject": "入金交易",
+                            "time_range": "今年",
+                            "filters": ["Visa 渠道"],
+                            "metrics": ["入金交易数量"],
+                            "dimensions": ["月份"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["今年", "Visa 渠道", "月份"],
+                            "set": ["改为入金交易数量"],
+                            "removed": ["出金交易数量"],
+                        },
+                        "removed_sql_context": {"filters": ["order_type = 'payout'"]},
+                        "effective_question": (
+                            "查询今年 Visa 渠道的入金交易数量，按月份聚合"
+                        ),
+                        "interpretation": "保留其他条件，将出金改为入金。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content="""```sql
+SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
+       COUNT(*) AS payout_count
+FROM analytics.orders
+WHERE order_type = 'deposit'
+GROUP BY DATE_FORMAT(create_time, '%Y-%m')
+ORDER BY month
+```""",
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content="""```sql
+SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
+       COUNT(*) AS deposit_count
+FROM analytics.orders
+WHERE order_type = 'deposit'
+GROUP BY DATE_FORMAT(create_time, '%Y-%m')
+ORDER BY month
+```""",
+            usage_metadata=None,
+        )
+
+
 class _FollowupModel:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -900,6 +1016,65 @@ def _dated_order_history(*, with_chart: bool) -> str:
     )
 
 
+def test_clarification_protocol_accepts_colon_or_whitespace_separator() -> None:
+    expected = {"question": "请确认查询口径。", "options": []}
+
+    assert (
+        SQLValidator.extract_clarification(
+            'NEED_CLARIFY: {"question":"请确认查询口径。","options":[]}'
+        )
+        == expected
+    )
+    assert (
+        SQLValidator.extract_clarification(
+            'NEED_CLARIFY {"question":"请确认查询口径。","options":[]}'
+        )
+        == expected
+    )
+    assert (
+        SQLValidator.extract_clarification(
+            'NEED_CLARIFY\n{"question":"请确认查询口径。","options":[]}'
+        )
+        == expected
+    )
+
+
+def test_pipeline_returns_whitespace_clarification_without_sql_retry(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _ClarificationWithoutColonModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+        max_fix_retries=2,
+    )
+
+    result = service._run_query_impl(
+        (
+            '帮我查一下C2C的交易，且payment scope="swift"，'
+            "统计这些交易近6个月的平均payout金额，按美元计算并剔除internal"
+        ),
+        config,
+        model,
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["clarification"]["question"] == (
+        "请确认 C2C 与 payout SWIFT 的判定口径。"
+    )
+    assert result["sql"] == ""
+    assert len(model.calls) == 2
+    generation_step = next(
+        step for step in result["trace"]["steps"] if step["step"] == "llm_generation"
+    )
+    assert [call["role"] for call in generation_step["calls"]] == ["initial"]
+
+
 def test_merge_fallback_keeps_previous_question_and_state() -> None:
     previous_state = QueryState(
         subject="订单交易",
@@ -1055,6 +1230,42 @@ def test_modify_followup_only_allows_explicit_sql_fragment_removal() -> None:
     assert invalid is False
     assert "channel_code" in invalid_error
     assert "projections" in invalid_detail["missing"]
+
+
+def test_replaced_metrics_reject_stale_aggregate_projection() -> None:
+    previous_sql = """
+        SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
+               COUNT(*) AS payout_count
+        FROM analytics.orders
+        WHERE order_type = 'payout'
+        GROUP BY DATE_FORMAT(create_time, '%Y-%m')
+        ORDER BY month
+    """
+    current_sql = """
+        SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
+               COUNT(*) AS payout_count
+        FROM analytics.orders
+        WHERE order_type = 'deposit'
+        GROUP BY DATE_FORMAT(create_time, '%Y-%m')
+        ORDER BY month
+    """
+    previous_context = ContextCompressor.extract_sql_context(previous_sql)
+
+    valid, error, detail = SQLValidator.validate_followup_inheritance(
+        current_sql,
+        previous_context,
+        "follow_up_modify",
+        {
+            "projections": ["COUNT(*) AS payout_count"],
+            "filters": ["order_type = 'payout'"],
+        },
+        {"metrics": ["出金交易数量"]},
+        {"metrics": ["入金交易数量"]},
+    )
+
+    assert valid is False
+    assert "指标已替换但仍保留旧聚合投影" in error
+    assert detail["stale_metric_projections"] == ["COUNT(*) AS payout_count"]
 
 
 def test_query_contract_reads_result_shape_and_currency_from_state() -> None:
@@ -1545,6 +1756,70 @@ def test_pipeline_repairs_dropped_context_before_returning_sql(monkeypatch) -> N
     assert len(model.calls) == 3
     assert "本轮语义变更" in model.calls[1]
     assert "缺失结构" in model.calls[2]
+    inheritance_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "followup_inheritance_validate"
+    )
+    assert [attempt["valid"] for attempt in inheritance_step["attempts"]] == [
+        False,
+        True,
+    ]
+
+
+def test_pipeline_repairs_stale_metric_alias_after_metric_replacement(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    previous_sql = """
+    SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
+           COUNT(*) AS payout_count
+    FROM analytics.orders
+    WHERE order_type = 'payout'
+    GROUP BY DATE_FORMAT(create_time, '%Y-%m')
+    ORDER BY month
+    """
+    history = ContextCompressor.build_summary(
+        "查询今年 Visa 渠道的出金交易数量，按月份聚合",
+        ["analytics.orders"],
+        previous_sql,
+        query_state=QueryState(
+            subject="出金交易",
+            time_range="今年",
+            filters=("Visa 渠道",),
+            metrics=("出金交易数量",),
+            dimensions=("月份",),
+            result_shape="aggregate",
+        ),
+    )
+    model = _MetricReplacementModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+        max_fix_retries=2,
+    )
+
+    result = service._run_query_impl(
+        "查询入金吧",
+        config,
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert "COUNT(*) AS deposit_count" in result["sql"]
+    assert "payout_count" not in result["sql"]
+    assert len(model.calls) == 3
+    context_step = next(
+        step for step in result["trace"]["steps"] if step["step"] == "context_compress"
+    )
+    assert context_step["removed_sql_context"]["projections"] == [
+        "COUNT(*) AS payout_count"
+    ]
     inheritance_step = next(
         step
         for step in result["trace"]["steps"]

@@ -50,7 +50,7 @@ class SQLValidator:
 
     # NEED_CLARIFY 检测
     _CLARIFY_RE = re.compile(
-        r"^\s*NEED_CLARIFY\s*[:：]\s*(.+)",
+        r"^\s*NEED_CLARIFY\b(?:\s*[:：]\s*|\s+)(.+)",
         re.DOTALL | re.MULTILINE,
     )
 
@@ -480,12 +480,53 @@ class SQLValidator:
         )
 
     @classmethod
+    def aggregate_projections(cls, context: dict[str, list[str]]) -> list[str]:
+        """Return SELECT projections containing an aggregate expression."""
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        aggregates = []
+        for fragment in context.get("projections") or []:
+            try:
+                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+            except sqlglot.errors.ParseError:
+                continue
+            projection = next(iter(statement.expressions), None)
+            if projection is not None and next(
+                projection.find_all(exp.AggFunc),
+                None,
+            ):
+                aggregates.append(str(fragment))
+        return aggregates
+
+    @staticmethod
+    def metrics_replaced(
+        previous_query_state: dict | None,
+        current_query_state: dict | None,
+    ) -> bool:
+        """Return whether all previous metrics were replaced by different metrics."""
+
+        def normalized_metrics(state: dict | None) -> set[str]:
+            payload = state if isinstance(state, dict) else {}
+            return {
+                str(metric).strip().casefold()
+                for metric in payload.get("metrics") or []
+                if str(metric).strip()
+            }
+
+        previous = normalized_metrics(previous_query_state)
+        current = normalized_metrics(current_query_state)
+        return bool(previous and current and previous.isdisjoint(current))
+
+    @classmethod
     def validate_followup_inheritance(
         cls,
         sql: str,
         previous_context: dict[str, list[str]],
         relation: str,
         removed_context: dict[str, list[str]] | None = None,
+        previous_query_state: dict | None = None,
+        current_query_state: dict | None = None,
     ) -> tuple[bool, str, dict]:
         """Preserve every previous SQL fragment not explicitly removed."""
         if relation == "new_question" or not previous_context:
@@ -543,22 +584,39 @@ class SQLValidator:
             if absent:
                 missing[section] = absent
 
+        stale_metric_projections: list[str] = []
+        if cls.metrics_replaced(previous_query_state, current_query_state):
+            current_aggregates = normalized(
+                cls.aggregate_projections(current_context),
+                "projections",
+            )
+            stale_metric_projections = [
+                fragment
+                for fragment in cls.aggregate_projections(previous_context)
+                if normalized([fragment], "projections") & current_aggregates
+            ]
+
         detail = {
             "required": True,
             "missing": missing,
             "previous": previous_context,
             "current": current_context,
             "allowed_removed": allowed_removed,
+            "stale_metric_projections": stale_metric_projections,
         }
-        if not missing:
+        if not missing and not stale_metric_projections:
             return True, "", detail
 
         descriptions = [
             f"{section}: {', '.join(values)}" for section, values in missing.items()
         ]
+        if stale_metric_projections:
+            descriptions.append(
+                "指标已替换但仍保留旧聚合投影: " + ", ".join(stale_metric_projections)
+            )
         return (
             False,
-            "增量追问丢失了上一轮已验证 SQL 的结构：" + "；".join(descriptions),
+            "追问 SQL 丢失上一轮结构或与本轮指标变更不一致：" + "；".join(descriptions),
             detail,
         )
 
