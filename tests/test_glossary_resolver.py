@@ -70,6 +70,10 @@ def test_multiple_explicit_terms_are_all_kept() -> None:
 
     assert result["matched_terms"] == ["payout", "USD折算"]
     assert result["related_tables"] == ["exchange_rate", "orders"]
+    assert result["table_evidence"] == [
+        {"term": "payout", "tables": ["orders"], "columns": []},
+        {"term": "USD折算", "tables": ["exchange_rate"], "columns": []},
+    ]
 
 
 def test_semantic_only_candidates_do_not_pin_physical_tables() -> None:

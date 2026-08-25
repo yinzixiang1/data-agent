@@ -69,6 +69,7 @@ class RetrievalResult:
     entity_filters: list[dict] = field(default_factory=list)
     unresolved_entities: list[dict] = field(default_factory=list)
     rejected_terms: list[str] = field(default_factory=list)
+    semantic_table_evidence: list[dict] = field(default_factory=list)
 
 
 class SchemaRetriever:
@@ -563,6 +564,7 @@ class SchemaRetriever:
             entity_filters=entity_filters,
             unresolved_entities=entity_result["unresolved"],
             rejected_terms=glossary_result.get("rejected_terms", []),
+            semantic_table_evidence=glossary_result.get("table_evidence", []),
         )
 
         logger.info(

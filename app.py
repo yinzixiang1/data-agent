@@ -1354,6 +1354,7 @@ def _run_query_impl(
 
     matched_tables = [t["table_name"] for t in result.relevant_tables]
     matched_terms = result.matched_terms
+    semantic_table_evidence = getattr(result, "semantic_table_evidence", [])
     requested_field_contract = result.requested_fields
     entity_filter_contract = result.entity_filters
 
@@ -1403,6 +1404,7 @@ def _run_query_impl(
             "duration_ms": retrieval_ms,
             "matched_terms": matched_terms,
             "rejected_terms": result.rejected_terms,
+            "table_evidence": semantic_table_evidence,
             "business_context": result.business_context or "",
         }
     )
@@ -1520,6 +1522,7 @@ def _run_query_impl(
                 "context_stats": result.context_stats,
                 "query_intent": result.query_intent,
                 "requested_fields": result.requested_fields,
+                "semantic_table_evidence": semantic_table_evidence,
             },
             "is_success": False,
             "retry_count": 0,
@@ -3268,6 +3271,7 @@ def _run_query_impl(
             "join_paths": result.join_paths,
             "matched_terms": result.matched_terms,
             "required_columns": result.required_columns,
+            "semantic_table_evidence": semantic_table_evidence,
             "inferred_biz_line": result.inferred_biz_line,
             "context_stats": result.context_stats,
             "query_intent": result.query_intent,

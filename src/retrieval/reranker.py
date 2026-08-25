@@ -23,7 +23,7 @@ Reranker 精排 — 支持本地 Cross-Encoder 和在线 API 两种模式。
 import logging
 from typing import Optional
 
-from src.retrieval.config import RERANKER_MODEL, ENABLE_RERANKER
+from src.retrieval.config import ENABLE_RERANKER, RERANKER_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,13 @@ class SchemaReranker(BaseReranker):
         for i, c in enumerate(candidates):
             c["rerank_score"] = float(scores[i])
 
-        ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                -candidate["rerank_score"],
+                str(candidate.get("table_name") or ""),
+            ),
+        )
 
         logger.info(
             f"Reranker 精排完成: {len(candidates)} -> {min(top_k, len(ranked))}, "
@@ -216,7 +222,13 @@ class ApiReranker(BaseReranker):
             if "rerank_score" not in c:
                 c["rerank_score"] = 0.0
 
-        ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                -candidate["rerank_score"],
+                str(candidate.get("table_name") or ""),
+            ),
+        )
 
         logger.info(
             f"API Reranker 精排完成: {len(candidates)} -> {min(top_k, len(ranked))}, "

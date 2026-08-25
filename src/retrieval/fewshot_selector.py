@@ -27,9 +27,9 @@ import numpy as np
 from pymilvus import DataType
 
 from src.retrieval.config import FEWSHOT_TOP_K, MMR_LAMBDA
-from src.retrieval.milvus_store import MilvusIndex
-from src.retrieval.milvus_filter import build_metadata_filter
 from src.retrieval.embedding import Qwen3Embedding
+from src.retrieval.milvus_filter import build_metadata_filter
+from src.retrieval.milvus_store import MilvusIndex
 from src.retrieval.ranker_strategy import CollectionSearchParams
 
 logger = logging.getLogger(__name__)
@@ -298,11 +298,11 @@ class FewShotSelector:
                 break
 
             if not selected:
-                best = max(remaining, key=lambda i: scores[i])
+                best = min(remaining, key=lambda index: (-scores[index], index))
             else:
                 best = None
                 best_mmr = -float("inf")
-                for c in remaining:
+                for c in sorted(remaining):
                     relevance = scores[c]
                     max_sim = max(float(np.dot(normed[c], normed[s])) for s in selected)
                     mmr = lambda_param * relevance - (1 - lambda_param) * max_sim

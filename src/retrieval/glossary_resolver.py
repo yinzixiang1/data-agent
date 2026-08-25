@@ -73,6 +73,7 @@ class GlossaryResolver:
         extra_keywords = []
         required_tables: set[str] = set()
         required_columns: set[str] = set()
+        table_evidence: list[dict] = []
 
         if self.glossary_index.count == 0:
             return {
@@ -81,6 +82,7 @@ class GlossaryResolver:
                 "matched_terms": [],
                 "related_tables": [],
                 "related_columns": [],
+                "table_evidence": [],
                 "rejected_terms": [],
             }
 
@@ -162,8 +164,19 @@ class GlossaryResolver:
             except (json.JSONDecodeError, TypeError):
                 parsed_tables = []
             if isinstance(parsed_tables, list):
-                extra_keywords.extend(parsed_tables)
-                required_tables.update(str(table) for table in parsed_tables)
+                normalized_tables = [str(table) for table in parsed_tables if table]
+                extra_keywords.extend(normalized_tables)
+                required_tables.update(normalized_tables)
+                if normalized_tables:
+                    table_evidence.append(
+                        {
+                            "term": term,
+                            "tables": normalized_tables,
+                            "columns": [
+                                str(column) for column in related_cols if column
+                            ],
+                        }
+                    )
 
         enriched_query = query
         if extra_keywords:
@@ -188,6 +201,7 @@ class GlossaryResolver:
             "matched_terms": matched_terms,
             "related_tables": sorted(required_tables),
             "related_columns": sorted(required_columns),
+            "table_evidence": table_evidence,
             "rejected_terms": rejected_terms,
         }
 

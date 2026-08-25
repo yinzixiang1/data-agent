@@ -5,7 +5,7 @@
     1. 表级混合检索（Dense + BM25，per-collection ranker）
     2. 列级混合检索 -> 命中的列反推其所属表，给表加分
     3. 枚举值检索 -> 命中的枚举反哺其关联表分数
-    4. 关联表补全 -> top 表的 relations 中的关联表获得 bonus 分
+    4. 确定性 Schema Linking -> 术语、显式表和会话继承表不可被裁剪
 
 使用示例::
 
@@ -19,11 +19,11 @@
 import logging
 import re
 
-from src.retrieval.embedding import Qwen3Embedding
-from src.retrieval.milvus_store import MilvusIndex
-from src.retrieval.milvus_filter import add_table_name_filter, build_metadata_filter
-from src.retrieval.ranker_strategy import get_search_params
 from src.retrieval.agent_config import AgentRuntimeConfig
+from src.retrieval.embedding import Qwen3Embedding
+from src.retrieval.milvus_filter import add_table_name_filter, build_metadata_filter
+from src.retrieval.milvus_store import MilvusIndex
+from src.retrieval.ranker_strategy import get_search_params
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,9 @@ class HybridSearcher:
             short_name = full_name.rsplit(".", 1)[-1]
             patterns = (full_name, short_name)
             if any(
-                re.search(rf"(?<![\w.]){re.escape(name)}(?![\w.])", normalized, re.I)
+                re.search(
+                    rf"(?<![\w.]){re.escape(name)}(?![\w.])", normalized, re.IGNORECASE
+                )
                 for name in patterns
             ):
                 matched.add(full_name)
@@ -297,27 +299,6 @@ class HybridSearcher:
         else:
             enum_boost_tables = set()
 
-        # ── 关联表补全 ──
-        current_top = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[
-            :top_k
-        ]
-        relation_boosted: set[str] = set()
-        for table_name, score in current_top:
-            schema = self.table_schemas.get(table_name, {})
-            for rel in schema.get("relations", []):
-                target_short = rel.get("target_table", "")
-                if not target_short:
-                    continue
-                related = self._resolve_full_name(target_short, source_table=table_name)
-                if not related or related == table_name:
-                    continue
-                bonus = score * 0.1
-                table_scores.setdefault(related, 0)
-                table_scores[related] += bonus
-                relation_boosted.add(related)
-        if relation_boosted:
-            logger.info(f"关联补全: {relation_boosted}")
-
         # ── 强制召回规则 ──
         deterministic_tables = set(required_tables or ())
         pinned_tables = self._inject_required_tables(table_scores, deterministic_tables)
@@ -327,9 +308,9 @@ class HybridSearcher:
         )
 
         # 按分数排序，pinned 表不受 top_k 截断
-        sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)[
-            :top_k
-        ]
+        sorted_tables = sorted(
+            table_scores.items(), key=lambda item: (-item[1], item[0])
+        )[:top_k]
         top_names = {t[0] for t in sorted_tables}
         for pt in pinned_tables:
             if pt not in top_names:
@@ -374,7 +355,7 @@ class HybridSearcher:
         logger.info(
             f"混合检索完成: query='{query[:50]}...', "
             f"表级候选={len(table_results)}, 列级反推={len(column_hit_tables)}, "
-            f"枚举反哺={len(enum_boost_tables)}, 关联补全={len(relation_boosted)}, "
+            f"枚举反哺={len(enum_boost_tables)}, "
             f"最终={len(results)} 张表: {[r['table_name'] for r in results]}"
         )
         return results
