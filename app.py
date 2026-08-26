@@ -1589,10 +1589,9 @@ def _run_query_impl(
             }
         )
 
-    # 上下文压缩发生在 Schema/术语检索之前，它提出的疑问只是预检信号。
-    # 检索已经给出候选表时，应让最终 SQL 模型基于完整证据作决定；只有
-    # 完全没有 Schema 证据时才提前澄清，避免已配置口径仍被预检拦截。
-    if pending_clarification is not None and not result.relevant_tables:
+    # 召回候选只表示存在可参考的证据，不能推翻已经识别出的用户意图歧义。
+    # 否则 Top1 表或最高分会在未确认口径时替用户作决定。
+    if pending_clarification is not None:
         table_references = _build_clarification_table_references(result.relevant_tables)
         clarification = {
             **pending_clarification,
@@ -1742,10 +1741,12 @@ def _run_query_impl(
             "5. 使用 Schema 中的精确列名和表名\n"
             "6. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值\n"
             "7. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）\n"
-            "8. 只有用户业务意图有歧义且不同解释会改变查询结果时，才输出："
+            "8. 只有当前证据能够唯一确定事实表、指标、字段、关联、筛选值和时间口径时才生成 SQL。"
+            "只要存在多种合理解释、证据不足或证据冲突，必须输出："
             'NEED_CLARIFY: {"question":"需要确认的问题",'
             '"options":[{"label":"选项文案","value":"用于补充原问题的含义"}]}。'
-            "候选项最多 4 个；没有可靠候选项时 options 输出空数组"
+            "候选项最多 4 个；没有可靠候选项时 options 输出空数组。"
+            "不得用检索排名、最高分、Few-shot、常见做法或默认习惯替用户作决定"
         )
         prompt_text = re.sub(
             r"【输出要求】.*", param_mode_rules, prompt_text, flags=re.DOTALL
@@ -1837,7 +1838,11 @@ def _run_query_impl(
         messages.append(
             {
                 "role": "user",
-                "content": "你没有生成 SQL，请根据上面的 Schema 生成可执行的 Doris SQL，用 ```sql ``` 包裹。",
+                "content": (
+                    "你没有返回有效结果。请先判断现有证据能否唯一确定 SQL："
+                    "能够唯一确定时生成可执行的 Doris SQL，并用 ```sql ``` 包裹；"
+                    "不能唯一确定时必须返回 NEED_CLARIFY，不得猜测。"
+                ),
             }
         )
         t0 = _time.monotonic()

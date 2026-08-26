@@ -152,15 +152,15 @@ class SchemaContextPlanner:
                     if not column_name:
                         continue
                     name_text = cls._normalize_semantic_text(column_name)
-                    labels = [
-                        cls._normalize_semantic_text(column.get(key) or "")
+                    labels = {
+                        key: cls._normalize_semantic_text(column.get(key) or "")
                         for key in (
                             "display_name",
                             "comment",
                             "description",
                             "business_logic",
                         )
-                    ]
+                    }
                     semantic_text = " ".join(
                         str(column.get(key) or "")
                         for key in (
@@ -176,12 +176,18 @@ class SchemaContextPlanner:
                         score = 12.0
                     elif field_text in name_text:
                         score = 9.0
-                    for label in labels:
+                    for key, label in labels.items():
                         if not label:
                             continue
                         if label == field_text:
                             score = max(score, 11.0)
-                        elif field_text in label:
+                        # Only names and display labels may establish a fuzzy
+                        # projection contract.  A mention inside a long
+                        # comment/business rule is retrieval evidence, not
+                        # proof that the column represents the requested
+                        # output field (for example “每天” in a rate-table
+                        # synchronization note).
+                        elif key == "display_name" and field_text in label:
                             score = max(score, 8.0)
                     if score:
                         score += 4.0 * len(

@@ -163,11 +163,8 @@ class _FollowupModel:
                         ),
                         "interpretation": "保留上一轮查询并增加订单类型维度。",
                         "confidence": 0.99,
-                        "needs_clarification": True,
-                        "clarification": {
-                            "question": "请确认最终状态口径",
-                            "options": [],
-                        },
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
                     },
                     ensure_ascii=False,
                 )
@@ -1182,6 +1179,84 @@ def test_pipeline_returns_whitespace_clarification_without_sql_retry(
     assert [call["role"] for call in generation_step["calls"]] == ["initial"]
 
 
+def test_pipeline_honors_context_clarification_even_with_retrieved_table(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    class _UncertainContextModel:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def invoke(self, messages):
+            self.calls.append(messages[-1].content)
+            if len(self.calls) > 1:
+                raise AssertionError("歧义未确认前不得进入 SQL 生成")
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "presentation_relation": "clear",
+                        "query_state": {
+                            "subject": "交易",
+                            "time_range": "最近7天",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["日期"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": 7,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": [],
+                            "set": ["最近7天每天的交易数量"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": "统计最近7天每天的交易数量",
+                        "query_question": "统计最近7天每天的交易数量",
+                        "interpretation": "交易对象尚未明确。",
+                        "direct_response": "",
+                        "confidence": 0.5,
+                        "needs_clarification": True,
+                        "clarification": {
+                            "question": "请确认要统计哪一种交易。",
+                            "options": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    model = _UncertainContextModel()
+    retriever = _Retriever()
+    monkeypatch.setattr(service, "retriever", retriever)
+    monkeypatch.setattr(service, "validator", None)
+    config = AgentRuntimeConfig(
+        enable_explain=False,
+        enable_execute=False,
+        enable_enum_validate=False,
+    )
+
+    result = service._run_query_impl(
+        "统计最近7天每天的交易数量",
+        config,
+        model,
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["clarification"]["question"] == "请确认要统计哪一种交易。"
+    assert result["sql"] == ""
+    assert result["matched_tables"] == ["analytics.orders"]
+    assert result["clarification"]["table_references"] == [
+        {"name": "analytics.orders", "description": "订单事实表"}
+    ]
+    assert len(model.calls) == 1
+
+
 def test_pipeline_turns_exhausted_schema_grounding_failure_into_clarification(
     monkeypatch,
 ) -> None:
@@ -1926,6 +2001,32 @@ def test_unmapped_dimension_stays_soft_context() -> None:
         "SELECT payload FROM analytics.orders",
         [{"field": "LOCAL/SWIFT", "columns": []}],
     ) == (True, "", {"required": False})
+
+
+def test_incidental_metadata_text_does_not_become_projection_contract() -> None:
+    candidates = [
+        {
+            "table_name": "warehouse_sys.sys_exchange_rate",
+            "schema": {
+                "columns": [
+                    {
+                        "name": "sync_time",
+                        "display_name": "同步时间",
+                        "business_logic": "每天只保留一条汇率记录",
+                    }
+                ]
+            },
+        }
+    ]
+
+    assert (
+        SchemaContextPlanner.resolve_requested_columns(
+            candidates,
+            ["每天"],
+            query="统计最近7天每天的交易数量",
+        )
+        == []
+    )
 
 
 def test_requested_field_keeps_all_direct_schema_candidates() -> None:
