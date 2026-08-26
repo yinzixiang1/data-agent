@@ -16,6 +16,9 @@ query_context 只说明动作所作用的数据查询，不得覆盖或改写本
 active_actions 是用户在上一轮已明确要求并仍然生效的展示动作；必须继续输出，不能因为本轮只修改查询条件、维度或指标就删除。
 active_actions 的参数需要与 query_projection 重新对齐；仍适用的参数应保留，引用失效字段的参数必须按当前投影修正。
 只能依据这些请求信息和提供的动作名称、显示名称、描述及意图短语做决定。
+trigger_mode=explicit_only 时，只有用户明确要求该能力才能选择；
+trigger_mode=intent_auto 时，只要完成用户问题在语义上需要该能力就可以自主选择；
+trigger_mode=always 时必须选择。
 如果请求中的结果呈现、交付、保存或传递意图与某项动作的能力语义匹配，必须选择该动作；
 请求同时包含数据查询不影响动作选择，也不要求用户逐字说出动作名称。
 每个 arguments 必须满足对应 input_schema：不得遗漏 required 字段，枚举值必须来自 enum，
@@ -196,6 +199,7 @@ def _public_tool_contracts(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for item in (tool.get("intent_phrases") or [])
                     if str(item).strip()
                 ],
+                "trigger_mode": str(tool.get("trigger_mode") or "intent_auto").strip(),
                 "input_schema": tool.get("input_schema")
                 or {"type": "object", "properties": {}},
             }

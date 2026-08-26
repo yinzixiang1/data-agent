@@ -483,14 +483,23 @@ class AgentConfigLoader:
                     "name": name,
                     "display_name": display_name or name,
                     "description": description or "",
+                    "executor_key": str(definition.get("executor_key") or ""),
+                    "execution_stage": str(
+                        definition.get("execution_stage") or "channel_post_query"
+                    ),
+                    "state_policy": str(definition.get("state_policy") or "sticky"),
                     "intent_phrases": [
                         str(item).strip()
                         for item in (definition.get("intent_phrases") or [])
                         if str(item).strip()
                     ],
                     "input_schema": input_schema,
+                    "output_schema": definition.get("output_schema") or {},
                     "requires_query_result": bool(
                         definition.get("requires_query_result")
+                    ),
+                    "trigger_mode": str(
+                        binding_config.get("trigger_mode") or "intent_auto"
                     ),
                     "binding_config": binding_config,
                 }

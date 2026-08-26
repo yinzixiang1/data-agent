@@ -43,6 +43,9 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
    本阶段尚未看到数据库 Schema、枚举和业务术语，因此不得因为“成功”“完成”“渠道”“主体”等业务词如何映射到物理字段而澄清；
    应原样保留这些词，由后续 RAG 和 SQL 生成阶段依据证据解释。只有指代不清、与上一轮要求互相冲突且无法形成完整问题时才澄清。
 7. effective_question 是完整需求的唯一文本事实来源，必须包含所有保留项和新增项，不能包含已移除项。
+   query_question 是只供数据检索和 SQL 生成使用的查询需求：必须保留取得基础结果所需的对象、指标、维度、筛选、排序和限制，
+   但移除只对结果执行的分析、解释、图表、导出、下载或发布动作。不得通过关键词机械删减；例如“按月统计交易额并分析趋势和异常”
+   的 query_question 应是“按月统计交易额”，因为月份维度是后续趋势分析所需的基础结果结构。
 8. relation=follow_up_add 仅表示增加内容且不改变任何已有结构；只要替换或删除已有条件、字段、维度或指标，就必须使用 follow_up_modify 或 correction_override，并在 changes.removed 中列出被替换或删除的内容。
 9. turn_intent 用于通用流程路由：
    - sql_query：首次查询、查询追问、纠正或澄清回答；
@@ -88,6 +91,7 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
     "joins": [], "order_by": [], "limit": []
   }},
   "effective_question": "合并后完整、独立且无歧义的问题",
+  "query_question": "仅包含数据检索和 SQL 生成语义的问题",
   "interpretation": "一句话说明本轮保留、修改和移除了什么",
   "direct_response": "仅 non_query 时填写",
   "confidence": 0.0,
@@ -222,6 +226,7 @@ class QueryState:
 @dataclass(frozen=True)
 class ContextMergeResult:
     effective_question: str
+    query_question: str
     query_state: QueryState
     relation: str = "follow_up_modify"
     turn_intent: str = "sql_query"
@@ -313,6 +318,7 @@ class ContextCompressor:
             if not prev_question and result.relation != "new_question":
                 result = ContextMergeResult(
                     effective_question=result.effective_question,
+                    query_question=result.query_question,
                     query_state=result.query_state,
                     relation="new_question",
                     turn_intent=result.turn_intent,
@@ -382,6 +388,9 @@ class ContextCompressor:
         effective_question = str(
             payload.get("effective_question") or current_question
         ).strip()[:2000]
+        query_question = str(
+            payload.get("query_question") or effective_question
+        ).strip()[:2000]
         relation = str(payload.get("relation") or "follow_up_modify")
         if relation not in _RELATIONS:
             relation = "follow_up_modify"
@@ -406,6 +415,7 @@ class ContextCompressor:
             }
         return ContextMergeResult(
             effective_question=effective_question,
+            query_question=query_question,
             query_state=QueryState.from_value(payload.get("query_state")),
             relation=relation,
             turn_intent=turn_intent,
@@ -499,6 +509,7 @@ class ContextCompressor:
             query_state = previous_query_state or QueryState()
         return ContextMergeResult(
             effective_question=effective_question,
+            query_question=effective_question,
             query_state=query_state,
             relation=relation,
             turn_intent="sql_query",

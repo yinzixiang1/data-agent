@@ -497,6 +497,7 @@ class _MixedChartQueryModel:
                         },
                         "removed_sql_context": {},
                         "effective_question": "按日期统计订单数量，并以折线图呈现",
+                        "query_question": "按日期统计订单数量",
                         "interpretation": "增加日期维度并要求折线图呈现。",
                         "direct_response": "",
                         "confidence": 0.99,
@@ -644,6 +645,78 @@ class _AddDownloadToChartModel:
                             "arguments": {"format": "xlsx"},
                         },
                     ]
+                },
+                ensure_ascii=False,
+            ),
+            usage_metadata=None,
+        )
+
+
+class _AnalyzePreviousResultModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "follow_up_add",
+                        "turn_intent": "result_operation",
+                        "presentation_relation": "add",
+                        "query_state": {
+                            "subject": "订单",
+                            "time_range": "",
+                            "filters": [],
+                            "metrics": ["数量"],
+                            "dimensions": ["日期"],
+                            "currency_conversion": "",
+                            "result_shape": "aggregate",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": ["上一轮完整查询"],
+                            "set": ["趋势和数据异常分析"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": "按日期统计订单数量并分析趋势和异常",
+                        "query_question": "按日期统计订单数量",
+                        "interpretation": "分析上一轮结果中的趋势和数据异常。",
+                        "direct_response": "",
+                        "confidence": 0.99,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if len(self.calls) == 2:
+            return SimpleNamespace(
+                content=(
+                    '{"actions":[{"name":"analyze_result",'
+                    '"arguments":{"modes":["trend","anomaly"]}}]}'
+                ),
+                usage_metadata=None,
+            )
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "title": "订单数量分析",
+                    "executive_summary": "",
+                    "findings": [
+                        {
+                            "type": "trend",
+                            "statement": "以确定性事实为准",
+                            "evidence_fact_ids": ["f4"],
+                            "confidence": "high",
+                        }
+                    ],
+                    "caveats": [],
+                    "suggested_followups": [],
                 },
                 ensure_ascii=False,
             ),
@@ -944,6 +1017,8 @@ def _render_chart_tool() -> dict:
         "name": "render_chart",
         "display_name": "生成图表",
         "description": "将查询结果呈现为图表",
+        "execution_stage": "channel_post_query",
+        "state_policy": "sticky",
         "intent_phrases": ["生成图表", "折线图", "曲线图"],
         "input_schema": {
             "type": "object",
@@ -965,6 +1040,8 @@ def _export_result_tool() -> dict:
         "name": "export_result",
         "display_name": "下载数据",
         "description": "把当前查询结果生成文件供用户下载",
+        "execution_stage": "channel_post_query",
+        "state_policy": "one_shot",
         "intent_phrases": ["下载数据", "导出数据"],
         "input_schema": {
             "type": "object",
@@ -978,6 +1055,36 @@ def _export_result_tool() -> dict:
             "additionalProperties": False,
         },
         "requires_query_result": True,
+    }
+
+
+def _analyze_result_tool() -> dict:
+    return {
+        "name": "analyze_result",
+        "display_name": "智能分析",
+        "description": "只分析当前查询结果中的趋势和数据异常",
+        "executor_key": "analyze_result",
+        "execution_stage": "agent_post_query",
+        "state_policy": "sticky",
+        "trigger_mode": "intent_auto",
+        "intent_phrases": ["分析结果", "趋势", "异常"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "modes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["trend", "anomaly"],
+                    },
+                    "minItems": 1,
+                    "maxItems": 2,
+                }
+            },
+            "additionalProperties": False,
+        },
+        "requires_query_result": True,
+        "binding_config": {"max_findings": 3},
     }
 
 
@@ -2114,7 +2221,15 @@ def test_mixed_query_change_and_chart_generates_sql_and_persists_chart(
     summary = ContextCompressor.parse_summary(result["context_summary"])
     assert summary["query_state"]["dimensions"] == ["日期"]
     assert summary["presentation_state"]["tool_calls"] == result["tool_calls"]
-    assert retriever.query == "按日期统计订单数量，并以折线图呈现"
+    assert retriever.query == "按日期统计订单数量"
+    assert retriever.kwargs["original_query"] == "按日期统计订单数量"
+    assert ContextCompressor.parse_summary(result["context_summary"])["question"] == (
+        "按日期统计订单数量"
+    )
+    assert result["trace"]["effective_question"] == (
+        "按日期统计订单数量，并以折线图呈现"
+    )
+    assert result["trace"]["query_question"] == "按日期统计订单数量"
 
 
 def test_prepare_accepts_additive_presentation_relation() -> None:
@@ -2141,6 +2256,8 @@ def test_prepare_accepts_additive_presentation_relation() -> None:
     assert prepared["relation"] == "follow_up_add"
     assert prepared["turn_intent"] == "sql_query"
     assert prepared["presentation_relation"] == "add"
+    assert prepared["effective_question"] == "按日期统计订单数量，并以折线图呈现"
+    assert prepared["query_question"] == "按日期统计订单数量"
 
 
 def test_prepare_failure_creates_failed_query_log(monkeypatch) -> None:
@@ -2288,6 +2405,105 @@ def test_result_operation_can_add_download_without_hiding_inherited_chart(
     assert tool_step["inherited_tools"] == ["render_chart"]
     assert tool_step["agent_bound_tools"] == ["render_chart", "export_result"]
     assert tool_step["channel_allowed_tools"] == ["render_chart", "export_result"]
+    summary = ContextCompressor.parse_summary(result["context_summary"])
+    assert [call["name"] for call in summary["presentation_state"]["tool_calls"]] == [
+        "render_chart"
+    ]
+
+
+def test_analysis_followup_uses_the_previous_result_without_rerunning_sql(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    class _DatabaseMustNotBeTouched:
+        def validate(self, *_args, **_kwargs):
+            raise AssertionError("result analysis must not run EXPLAIN")
+
+        def explain(self, *_args, **_kwargs):
+            raise AssertionError("result analysis must not run EXPLAIN")
+
+    previous_result = {
+        "columns": ["order_date", "order_count"],
+        "rows": [
+            ["2026-01-01", 10],
+            ["2026-01-02", 12],
+            ["2026-01-03", 11],
+            ["2026-01-04", 13],
+            ["2026-01-05", 12],
+            ["2026-01-06", 14],
+            ["2026-01-07", 13],
+            ["2026-01-08", 90],
+        ],
+        "row_count": 8,
+        "truncated": False,
+    }
+    model = _AnalyzePreviousResultModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", _DatabaseMustNotBeTouched())
+
+    result = service._run_query_impl(
+        "分析一下趋势和异常",
+        AgentRuntimeConfig(
+            enable_explain=True,
+            enable_execute=True,
+            enable_enum_validate=True,
+            tools=[_analyze_result_tool()],
+        ),
+        model,
+        history_summary=_dated_order_history(with_chart=False),
+        previous_query_result=previous_result,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["query_result"] == previous_result
+    assert result["tool_results"][0]["status"] == "success"
+    assert result["tool_results"][0]["output"]["findings"]
+    snapshot_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "result_snapshot_reuse"
+    )
+    assert snapshot_step == {
+        "step": "result_snapshot_reuse",
+        "available": True,
+        "sql_reexecuted": False,
+    }
+
+
+def test_analysis_followup_with_missing_snapshot_is_skipped_without_sql_execution(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    model = _AnalyzePreviousResultModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "分析一下趋势和异常",
+        AgentRuntimeConfig(
+            enable_explain=True,
+            enable_execute=True,
+            enable_enum_validate=True,
+            tools=[_analyze_result_tool()],
+        ),
+        model,
+        history_summary=_dated_order_history(with_chart=False),
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert result["query_result"] is None
+    assert len(result["tool_results"]) == 1
+    tool_result = result["tool_results"][0]
+    assert tool_result["name"] == "analyze_result"
+    assert tool_result["status"] == "skipped"
+    assert tool_result["output"] == {}
+    assert tool_result["error"] == (
+        "上一轮查询结果快照不存在或已过期，请重新执行数据查询后再分析"
+    )
+    assert tool_result["duration_ms"] >= 0
+    assert len(model.calls) == 2
 
 
 def test_explicit_presentation_clear_stops_and_forgets_chart(monkeypatch) -> None:

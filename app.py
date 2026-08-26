@@ -81,6 +81,8 @@ from src.retrieval.tool_planner import (
     extract_planned_tool_calls,
     tool_planning_messages,
 )
+from src.tools.executor import execute_agent_result_tools
+from src.tools.result_snapshot import ResultSnapshotStore
 
 
 # gRPC 后台线程可能阻止默认信号处理完成，服务进程必须直接退出。
@@ -147,6 +149,7 @@ query_logger: QueryLogger | None = None
 config_loader: AgentConfigLoader | None = None
 
 query_cache: QueryCache | None = None
+result_snapshot_store = ResultSnapshotStore(ttl_seconds=1800, max_size=500)
 codex_query_semaphore: asyncio.Semaphore | None = None
 codex_query_capacity = 0
 codex_runtime_swap_lock: asyncio.Lock | None = None
@@ -488,6 +491,7 @@ async def _run_query_in_worker(
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
     prepared_context: dict | None = None,
+    previous_query_result: dict | None = None,
 ) -> dict:
     """Run the complete blocking pipeline outside the FastAPI event loop."""
     call = partial(
@@ -500,6 +504,7 @@ async def _run_query_in_worker(
         metadata_filter=metadata_filter,
         metadata_context=metadata_context,
         prepared_context=prepared_context,
+        previous_query_result=previous_query_result,
     )
     if not _is_codex_config(config):
         return await anyio.to_thread.run_sync(call)
@@ -758,6 +763,7 @@ class PreparedQueryContext(BaseModel):
 
     input_fingerprint: str = Field(..., min_length=64, max_length=64)
     effective_question: str = Field(..., min_length=1, max_length=2000)
+    query_question: str = Field(..., min_length=1, max_length=2000)
     query_state: dict = Field(default_factory=dict)
     relation: Literal[
         "new_question",
@@ -806,6 +812,11 @@ class QueryRequest(BaseModel):
     prepared_context: PreparedQueryContext | None = Field(
         default=None,
         description="由 /query/prepare 返回的一次性轮次识别结果；传入后不重复调用模型识别",
+    )
+    previous_result_snapshot_id: str = Field(
+        default="",
+        max_length=128,
+        description="上一轮成功查询返回的短期结果快照 ID，供结果操作复用",
     )
 
 
@@ -878,6 +889,10 @@ class QueryResponse(BaseModel):
     query_result: dict | None = Field(
         default=None, description="SQL 执行结果: {columns, rows, row_count, truncated}"
     )
+    result_snapshot_id: str = Field(
+        default="",
+        description="本次查询结果的短期快照 ID，后续结果操作应原样带回",
+    )
     execution_error: str = Field(default="", description="SQL 执行错误信息")
     script: str = Field(
         default="", description="参数化 SQL 模板（? 占位符），仅 param_mode 时返回"
@@ -906,6 +921,10 @@ class QueryResponse(BaseModel):
     tool_calls: list[dict] = Field(
         default_factory=list,
         description="经注册表与输入 Schema 校验后的结果工具调用",
+    )
+    tool_results: list[dict] = Field(
+        default_factory=list,
+        description="Agent 侧受控结果工具的结构化执行结果",
     )
 
 
@@ -987,6 +1006,7 @@ def run_query(
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
     prepared_context: dict | None = None,
+    previous_query_result: dict | None = None,
 ) -> dict:
     """Run one pipeline with a shared cumulative deadline for Codex turns."""
     if _is_codex_config(config):
@@ -1002,6 +1022,7 @@ def run_query(
                 metadata_filter=metadata_filter,
                 metadata_context=metadata_context,
                 prepared_context=prepared_context,
+                previous_query_result=previous_query_result,
             )
     return _run_query_impl(
         question,
@@ -1012,6 +1033,7 @@ def run_query(
         metadata_filter=metadata_filter,
         metadata_context=metadata_context,
         prepared_context=prepared_context,
+        previous_query_result=previous_query_result,
     )
 
 
@@ -1029,6 +1051,7 @@ def prepare_query_context(
     return PreparedQueryContext(
         input_fingerprint=_query_context_fingerprint(question, history_summary),
         effective_question=result.effective_question,
+        query_question=result.query_question,
         query_state=result.query_state.to_dict(),
         relation=result.relation,
         turn_intent=result.turn_intent,
@@ -1132,6 +1155,7 @@ def _run_query_impl(
     metadata_filter: dict | None = None,
     metadata_context: dict | None = None,
     prepared_context: dict | None = None,
+    previous_query_result: dict | None = None,
 ) -> dict:
     """
     执行一次完整的 NL2SQL 查询（RAG + LLM + EXPLAIN）。
@@ -1162,6 +1186,7 @@ def _run_query_impl(
     )
 
     effective_question = question
+    query_question = question
     previous_sql = ""
     previous_sql_context: dict[str, list[str]] = {}
     previous_presentation_state: dict = {"tool_calls": []}
@@ -1193,6 +1218,7 @@ def _run_query_impl(
             raise ValueError("prepared_context 与当前问题或历史上下文不匹配")
         merge_result = ContextMergeResult(
             effective_question=prepared.effective_question,
+            query_question=prepared.query_question,
             query_state=QueryState.from_value(prepared.query_state),
             relation=prepared.relation,
             turn_intent=prepared.turn_intent,
@@ -1206,6 +1232,7 @@ def _run_query_impl(
             removed_sql_context=prepared.removed_sql_context,
         )
     effective_question = merge_result.effective_question
+    query_question = merge_result.query_question
     query_state = merge_result.query_state
     turn_intent = merge_result.turn_intent
     interpretation = merge_result.interpretation
@@ -1218,6 +1245,7 @@ def _run_query_impl(
         # chooses the route; state preservation is a deterministic contract.
         query_state = QueryState.from_value(previous_state["query_state"])
         effective_question = previous_state["question"] or effective_question
+        query_question = previous_state["question"] or query_question
         context_relation = "follow_up_add"
         context_changes = {
             "kept": ["上一轮完整查询"],
@@ -1225,6 +1253,8 @@ def _run_query_impl(
             "removed": [],
         }
         removed_sql_context = {section: [] for section in previous_sql_context}
+    result_only_turn = turn_intent in {"result_explanation", "result_operation"}
+    reuse_previous_result = result_only_turn and isinstance(previous_query_result, dict)
     metrics_were_replaced = (
         turn_intent == "sql_query"
         and context_relation != "new_question"
@@ -1252,6 +1282,7 @@ def _run_query_impl(
             "duration_ms": _elapsed_ms(t0),
             "input": question,
             "output": effective_question,
+            "query_question": query_question,
             "relation": context_relation,
             "turn_intent": merge_result.turn_intent,
             "resolved_turn_intent": turn_intent,
@@ -1267,6 +1298,7 @@ def _run_query_impl(
             "interpretation": merge_result.interpretation,
             "confidence": merge_result.confidence,
             "needs_clarification": context_needs_clarification,
+            "reuses_result_snapshot": reuse_previous_result,
         }
     )
     if history_summary and context_relation != "new_question":
@@ -1295,6 +1327,7 @@ def _run_query_impl(
             "trace": {
                 "question": question,
                 "effective_question": effective_question,
+                "query_question": query_question,
                 "steps": trace_steps,
                 "total_duration_ms": _elapsed_ms(t_start),
                 "tool_calls": [],
@@ -1311,6 +1344,7 @@ def _run_query_impl(
             "turn_intent": turn_intent,
             "context_relation": context_relation,
             "tool_calls": [],
+            "tool_results": [],
         }
 
     if turn_intent in {"result_explanation", "result_operation"} and not previous_sql:
@@ -1335,6 +1369,7 @@ def _run_query_impl(
             "trace": {
                 "question": question,
                 "effective_question": effective_question,
+                "query_question": query_question,
                 "steps": trace_steps,
                 "total_duration_ms": _elapsed_ms(t_start),
                 "tool_calls": [],
@@ -1351,6 +1386,7 @@ def _run_query_impl(
             "turn_intent": turn_intent,
             "context_relation": context_relation,
             "tool_calls": [],
+            "tool_results": [],
         }
 
     # SQL 查询轮执行 RAG。结果解释/操作轮只恢复上一轮表的当前
@@ -1395,13 +1431,13 @@ def _run_query_impl(
         )
     else:
         result = retriever.retrieve(
-            effective_question,
+            query_question,
             top_k=config.table_search_top_k,
             fewshot_k=config.fewshot_top_k,
             biz_line=biz_line,
             metadata_filter=metadata_filter,
             query_state=query_state.to_dict(),
-            original_query=question,
+            original_query=query_question,
             inherited_tables=inherited_tables,
             inherited_columns=inherited_columns,
         )
@@ -1591,6 +1627,7 @@ def _run_query_impl(
             "trace": {
                 "question": question,
                 "effective_question": effective_question,
+                "query_question": query_question,
                 "steps": trace_steps,
                 "total_duration_ms": _elapsed_ms(t_start),
             },
@@ -1606,6 +1643,7 @@ def _run_query_impl(
             "turn_intent": turn_intent,
             "context_relation": context_relation,
             "tool_calls": [],
+            "tool_results": [],
         }
 
     # param_mode: 从 metadata.context 读取，替换输出规则生成 ? 占位符 SQL
@@ -1639,17 +1677,18 @@ def _run_query_impl(
         for tool in available_tools
         if str(tool.get("name") or "") in pending_result_tool_names
     ]
-    available_tool_names = {
+    sticky_tool_names = {
         str(tool.get("name") or "").strip()
         for tool in available_tools
         if str(tool.get("name") or "").strip()
+        and str(tool.get("state_policy") or "sticky") == "sticky"
     }
     filtered_previous_presentation_state = {
         "tool_calls": [
             call
             for call in previous_presentation_state.get("tool_calls", [])
             if isinstance(call, dict)
-            and str(call.get("name") or "").strip() in available_tool_names
+            and str(call.get("name") or "").strip() in sticky_tool_names
         ]
     }
     should_execute_inherited_presentation = (
@@ -1819,6 +1858,7 @@ def _run_query_impl(
         extracted_sql = SQLValidator.extract_sql(answer) if not clarify_msg else None
 
     tool_calls: list[dict] = []
+    tool_results: list[dict] = []
 
     if not extracted_sql and not clarify_msg:
         is_success = False
@@ -1828,7 +1868,7 @@ def _run_query_impl(
     must_preserve_previous_structure = bool(
         previous_sql and context_relation != "new_question"
     )
-    if extracted_sql and must_preserve_previous_structure:
+    if extracted_sql and must_preserve_previous_structure and not result_only_turn:
         max_inheritance_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_inheritance_fix_retries + 1):
             inheritance_ok, inheritance_error, inheritance_detail = (
@@ -1898,7 +1938,7 @@ def _run_query_impl(
     # QueryState 中的自然日窗口是通用时间契约，不依赖具体业务表或时间字段名。
     time_validation_attempts = []
     calendar_day_window = SQLValidator.calendar_day_window(result.query_intent)
-    if extracted_sql and calendar_day_window and is_success:
+    if extracted_sql and calendar_day_window and is_success and not result_only_turn:
         max_time_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_time_fix_retries + 1):
             time_ok, time_error, time_detail = (
@@ -1969,6 +2009,7 @@ def _run_query_impl(
         extracted_sql
         and SQLValidator.currency_conversion_target(result.query_intent)
         and is_success
+        and not result_only_turn
     ):
         max_currency_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_currency_fix_retries + 1):
@@ -2120,6 +2161,7 @@ def _run_query_impl(
         extracted_sql
         and (result.requested_fields or SQLValidator.is_count_only(result.query_intent))
         and is_success
+        and not result_only_turn
     ):
         max_projection_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_projection_fix_retries + 1):
@@ -2199,7 +2241,7 @@ def _run_query_impl(
 
     # 配置化实体绑定是强约束；同时复核换汇和展示字段，避免一次修复破坏另一项口径。
     entity_validation_attempts = []
-    if extracted_sql and entity_filter_contract and is_success:
+    if extracted_sql and entity_filter_contract and is_success and not result_only_turn:
         max_entity_fix_retries = min(max(config.max_fix_retries, 0), 2)
         for attempt in range(max_entity_fix_retries + 1):
             entity_ok, entity_error, entity_detail = _validate_entity_filters(
@@ -2287,7 +2329,7 @@ def _run_query_impl(
         )
 
     schema_grounding_attempts = []
-    if extracted_sql and is_success:
+    if extracted_sql and is_success and not result_only_turn:
         max_schema_fix_retries = min(max(config.max_fix_retries, 0), 1)
         for attempt in range(max_schema_fix_retries + 1):
             schema_ok, schema_error, schema_detail = (
@@ -2396,6 +2438,7 @@ def _run_query_impl(
         and config.enable_explain
         and validator
         and not _param_mode
+        and not result_only_turn
     ):
         syntax_ok = False
         check = None
@@ -2599,7 +2642,7 @@ def _run_query_impl(
                 }
             )
 
-    if final_sql and is_success:
+    if final_sql and is_success and not result_only_turn:
         schema_allowed, schema_error, schema_detail = (
             SQLValidator.validate_schema_references(
                 final_sql,
@@ -2643,6 +2686,7 @@ def _run_query_impl(
         and config.enable_enum_validate
         and result.enum_hits
         and not _param_mode
+        and not result_only_turn
     ):
         where_values = SQLValidator.extract_where_values(final_sql)
         if where_values:
@@ -2714,7 +2758,7 @@ def _run_query_impl(
                 )
 
     # 任意后处理都不能绕过时间、换汇、结果数量和检索 Schema 约束。
-    if final_sql and is_success:
+    if final_sql and is_success and not result_only_turn:
         time_ok, time_error, time_detail = SQLValidator.validate_calendar_day_window(
             final_sql,
             result.query_intent,
@@ -2812,6 +2856,11 @@ def _run_query_impl(
             *pending_result_tools,
             *explicit_tools,
             *inherited_result_tools,
+            *[
+                tool
+                for tool in available_tools
+                if str(tool.get("trigger_mode") or "") == "always"
+            ],
         ]
         if str(tool.get("name") or "").strip()
     }
@@ -2962,9 +3011,18 @@ def _run_query_impl(
         )
 
     # SQL 执行（param_mode 下跳过执行，? 占位符无法直接执行）
-    query_result_data = None
+    query_result_data = previous_query_result if reuse_previous_result else None
     execution_error = ""
     summary = ""
+
+    if result_only_turn:
+        trace_steps.append(
+            {
+                "step": "result_snapshot_reuse",
+                "available": reuse_previous_result,
+                "sql_reexecuted": False,
+            }
+        )
 
     if (
         final_sql
@@ -2975,6 +3033,7 @@ def _run_query_impl(
         )
         and not _param_mode
         and validator
+        and not result_only_turn
     ):
         # 授权信息无法确认时必须拒绝执行，不能回退到环境变量权限。
         referenced_dbs: set[str] = set()
@@ -3402,6 +3461,39 @@ def _run_query_impl(
             }
         )
 
+    should_execute_agent_tools = query_result_data is not None or (
+        turn_intent == "result_operation" and not execution_error
+    )
+    if final_sql and is_success and tool_calls and should_execute_agent_tools:
+        t0 = _time.monotonic()
+        tool_results = execute_agent_result_tools(
+            tool_calls,
+            available_tools,
+            query_result=query_result_data,
+            missing_result_error=(
+                "上一轮查询结果快照不存在或已过期，请重新执行数据查询后再分析"
+                if turn_intent == "result_operation"
+                else "查询没有产生可供工具处理的结果"
+            ),
+            invoke=_invoke,
+        )
+        if tool_results:
+            trace_steps.append(
+                {
+                    "step": "agent_tool_execution",
+                    "duration_ms": _elapsed_ms(t0),
+                    "results": [
+                        {
+                            "name": item.get("name"),
+                            "status": item.get("status"),
+                            "duration_ms": item.get("duration_ms"),
+                            "error": item.get("error"),
+                        }
+                        for item in tool_results
+                    ],
+                }
+            )
+
     # 提取命中的 fewshot 信息（id + question）
     matched_fewshot = [
         {"id": ex.get("id"), "question": ex.get("question", "")}
@@ -3411,17 +3503,22 @@ def _run_query_impl(
 
     # 构建本轮摘要供下一轮使用（仅成功时更新，失败轮不污染上下文）
     context_summary = ""
+    sticky_tool_calls = [
+        call
+        for call in tool_calls
+        if str(call.get("name") or "").strip() in sticky_tool_names
+    ]
     presentation_state = ContextCompressor.update_presentation_state(
         filtered_previous_presentation_state,
-        tool_calls,
+        sticky_tool_calls,
         relation=presentation_relation,
         context_relation=context_relation,
     )
     if is_success and final_sql:
-        summary_question = effective_question
+        summary_question = query_question
         summary_query_state = query_state
         if turn_intent in {"result_explanation", "result_operation"}:
-            summary_question = previous_state["question"] or effective_question
+            summary_question = previous_state["question"] or query_question
             summary_query_state = previous_state["query_state"]
         context_summary = ContextCompressor.build_summary(
             summary_question,
@@ -3435,9 +3532,11 @@ def _run_query_impl(
     trace = {
         "question": question,
         "effective_question": effective_question,
+        "query_question": query_question,
         "steps": trace_steps,
         "total_duration_ms": _elapsed_ms(t_start),
         "tool_calls": tool_calls,
+        "tool_results": tool_results,
         "presentation_state": presentation_state,
     }
 
@@ -3479,6 +3578,7 @@ def _run_query_impl(
         "turn_intent": turn_intent,
         "context_relation": context_relation,
         "tool_calls": tool_calls,
+        "tool_results": tool_results,
     }
 
 
@@ -3790,6 +3890,28 @@ async def query(req: QueryRequest, request: Request):
         query_logger and meta.caller == "lark" and meta.trace_id and meta.user_id
     )
 
+    def attach_result_snapshot(response: QueryResponse) -> QueryResponse:
+        if not response.is_success or not isinstance(response.query_result, dict):
+            return response
+        snapshot_id = result_snapshot_store.put(
+            response.query_result,
+            session_id=session_id,
+            agent_id=config.agent_id,
+            user_id=meta.user_id,
+            context_summary=response.context_summary,
+        )
+        return response.model_copy(update={"result_snapshot_id": snapshot_id})
+
+    previous_query_result = None
+    if req.previous_result_snapshot_id:
+        previous_query_result = result_snapshot_store.get(
+            req.previous_result_snapshot_id,
+            session_id=session_id,
+            agent_id=config.agent_id,
+            user_id=meta.user_id,
+            context_summary=req.history_summary,
+        )
+
     def replay_lark_response() -> QueryResponse | None:
         if not is_lark_request:
             return None
@@ -3802,8 +3924,10 @@ async def query(req: QueryRequest, request: Request):
         if replay is not None:
             replay_log_id, replay_response = replay
             try:
-                return QueryResponse.model_validate(
-                    {**replay_response, "log_id": replay_log_id}
+                return attach_result_snapshot(
+                    QueryResponse.model_validate(
+                        {**replay_response, "log_id": replay_log_id}
+                    )
                 )
             except ValidationError:
                 logger.warning(
@@ -3826,6 +3950,7 @@ async def query(req: QueryRequest, request: Request):
             "metadata_context": meta.context or {},
             "expand_info": req.expand_info or {},
             "enable_explain": req.enable_explain,
+            "previous_result_snapshot_id": req.previous_result_snapshot_id,
             "prepared_context": (
                 req.prepared_context.model_dump() if req.prepared_context else None
             ),
@@ -3838,11 +3963,17 @@ async def query(req: QueryRequest, request: Request):
         cached = query_cache.get(req.question, context_key=_cache_ctx)
         if cached:
             elapsed_ms = int((time.time() - start_time) * 1000)
-            cached_response = QueryResponse(
-                session_id=session_id,
-                question=req.question,
-                execution_time_ms=elapsed_ms,
-                **{k: v for k, v in cached.items() if k in QueryResponse.model_fields},
+            cached_response = attach_result_snapshot(
+                QueryResponse(
+                    session_id=session_id,
+                    question=req.question,
+                    execution_time_ms=elapsed_ms,
+                    **{
+                        k: v
+                        for k, v in cached.items()
+                        if k in QueryResponse.model_fields
+                    },
+                )
             )
             if is_lark_request:
                 snapshot = QueryLogger.lark_response_snapshot(
@@ -3907,6 +4038,7 @@ async def query(req: QueryRequest, request: Request):
             prepared_context=(
                 req.prepared_context.model_dump() if req.prepared_context else None
             ),
+            previous_query_result=previous_query_result,
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -3935,37 +4067,41 @@ async def query(req: QueryRequest, request: Request):
                     "turn_intent": result.get("turn_intent", "sql_query"),
                     "context_relation": result.get("context_relation", "new_question"),
                     "tool_calls": result.get("tool_calls", []),
+                    "tool_results": result.get("tool_results", []),
                 },
                 context_key=_cache_ctx,
             )
 
-        response = QueryResponse(
-            session_id=session_id,
-            question=req.question,
-            sql=result["sql"],
-            raw_answer=result["raw_answer"],
-            matched_tables=result["matched_tables"],
-            matched_terms=result["matched_terms"],
-            enum_hits=result["enum_hits"],
-            retrieval_context=result.get("retrieval_context", {}),
-            is_success=result["is_success"],
-            retry_count=result["retry_count"],
-            execution_time_ms=elapsed_ms,
-            error=result["error"],
-            context_summary=result.get("context_summary", ""),
-            trace=result.get("trace"),
-            summary=result.get("summary", ""),
-            query_result=result.get("query_result"),
-            execution_error=result.get("execution_error", ""),
-            script=result.get("script", ""),
-            placeholder=result.get("placeholder", ""),
-            needs_clarification=result.get("needs_clarification", False),
-            clarification=result.get("clarification"),
-            interpretation=result.get("interpretation", ""),
-            query_state=result.get("query_state", {}),
-            turn_intent=result.get("turn_intent", "sql_query"),
-            context_relation=result.get("context_relation", "new_question"),
-            tool_calls=result.get("tool_calls", []),
+        response = attach_result_snapshot(
+            QueryResponse(
+                session_id=session_id,
+                question=req.question,
+                sql=result["sql"],
+                raw_answer=result["raw_answer"],
+                matched_tables=result["matched_tables"],
+                matched_terms=result["matched_terms"],
+                enum_hits=result["enum_hits"],
+                retrieval_context=result.get("retrieval_context", {}),
+                is_success=result["is_success"],
+                retry_count=result["retry_count"],
+                execution_time_ms=elapsed_ms,
+                error=result["error"],
+                context_summary=result.get("context_summary", ""),
+                trace=result.get("trace"),
+                summary=result.get("summary", ""),
+                query_result=result.get("query_result"),
+                execution_error=result.get("execution_error", ""),
+                script=result.get("script", ""),
+                placeholder=result.get("placeholder", ""),
+                needs_clarification=result.get("needs_clarification", False),
+                clarification=result.get("clarification"),
+                interpretation=result.get("interpretation", ""),
+                query_state=result.get("query_state", {}),
+                turn_intent=result.get("turn_intent", "sql_query"),
+                context_relation=result.get("context_relation", "new_question"),
+                tool_calls=result.get("tool_calls", []),
+                tool_results=result.get("tool_results", []),
+            )
         )
 
         # Lark 请求把完整、JSON-safe 的响应快照与查询日志一起提交；Admin

@@ -68,6 +68,7 @@ class QueryLogger:
             "needs_clarification",
             "clarification",
             "tool_calls",
+            "tool_results",
         }
         snapshot = {
             key: value for key, value in response.items() if key in replay_fields
