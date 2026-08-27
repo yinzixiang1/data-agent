@@ -37,6 +37,9 @@ from src.retrieval.value_indexer import ValueIndexer
 
 logger = logging.getLogger(__name__)
 
+RECALL_RANK_WEIGHT = 0.60
+RERANK_RANK_WEIGHT = 0.40
+
 
 @dataclass
 class RetrievalResult:
@@ -244,6 +247,117 @@ class SchemaRetriever:
         return self.rebuild_partial(["table", "enum", "value", "fewshot", "glossary"])
 
     @staticmethod
+    def _mark_fewshot_table_evidence(
+        candidates: list[dict],
+        examples: list[dict],
+    ) -> list[str]:
+        """Attach reviewed Few-shot evidence only to tables already recalled."""
+        variants: dict[str, list[dict]] = {}
+        for candidate in candidates:
+            table_name = str(candidate.get("table_name") or "").replace("`", "")
+            if not table_name:
+                continue
+            for variant in {
+                table_name.casefold(),
+                table_name.rsplit(".", 1)[-1].casefold(),
+            }:
+                variants.setdefault(variant, []).append(candidate)
+
+        evidenced: set[str] = set()
+        for example in examples:
+            example_id = example.get("id")
+            for table in example.get("tables") or []:
+                normalized = str(table).replace("`", "").strip().casefold()
+                matched = variants.get(normalized, [])
+                if len(matched) != 1:
+                    continue
+                candidate = matched[0]
+                candidate["hit_by_fewshot"] = True
+                evidence_ids = candidate.setdefault("fewshot_evidence_ids", [])
+                if example_id is not None and example_id not in evidence_ids:
+                    evidence_ids.append(example_id)
+                evidenced.add(str(candidate.get("table_name") or ""))
+        return sorted(evidenced)
+
+    @staticmethod
+    def _fuse_table_rankings(
+        recall_candidates: list[dict],
+        reranked_candidates: list[dict],
+        *,
+        top_k: int,
+    ) -> list[dict]:
+        """Fuse independent recall and rerank orders without discarding evidence."""
+        if not recall_candidates or top_k <= 0:
+            return []
+
+        rerank_positions = {
+            str(candidate.get("table_name") or ""): position
+            for position, candidate in enumerate(reranked_candidates, start=1)
+        }
+        fallback_rerank_position = len(recall_candidates) + 1
+        max_recall_score = max(
+            (float(candidate.get("score") or 0.0) for candidate in recall_candidates),
+            default=0.0,
+        )
+
+        for recall_position, candidate in enumerate(recall_candidates, start=1):
+            table_name = str(candidate.get("table_name") or "")
+            rerank_position = rerank_positions.get(table_name, fallback_rerank_position)
+            score = float(candidate.get("score") or 0.0)
+            score_ratio = score / max_recall_score if max_recall_score > 0 else 0.0
+            semantic_coverage = int(candidate.get("semantic_coverage") or 0)
+            required_evidence = bool(candidate.get("pinned")) or bool(
+                candidate.get("hit_by_fewshot")
+            )
+            recall_protected = required_evidence or bool(
+                candidate.get("hit_by_column")
+                and (
+                    recall_position == 1
+                    or (semantic_coverage >= 2 and score_ratio >= 0.75)
+                )
+            )
+            candidate["recall_rank"] = recall_position
+            candidate["rerank_rank"] = rerank_position
+            candidate["required_evidence"] = required_evidence
+            candidate["recall_protected"] = recall_protected
+            candidate["selection_score"] = (
+                RECALL_RANK_WEIGHT / recall_position
+                + RERANK_RANK_WEIGHT / rerank_position
+            )
+            candidate["selection_source"] = (
+                "required_evidence"
+                if required_evidence
+                else "recall_guard"
+                if recall_protected
+                else "rank_fusion"
+            )
+
+        ranked = sorted(
+            recall_candidates,
+            key=lambda candidate: (
+                -float(candidate.get("selection_score") or 0.0),
+                str(candidate.get("table_name") or ""),
+            ),
+        )
+        required = [
+            candidate for candidate in ranked if candidate.get("required_evidence")
+        ]
+        guarded = [
+            candidate
+            for candidate in ranked
+            if candidate.get("recall_protected")
+            and not candidate.get("required_evidence")
+        ]
+        remaining = [
+            candidate
+            for candidate in ranked
+            if not candidate.get("recall_protected") and not candidate.get("pinned")
+        ]
+        selected = [*required, *guarded]
+        selected.extend(remaining[: max(top_k - len(selected), 0)])
+        return selected[: max(top_k, len(required))]
+
+    @staticmethod
     def _drop_weak_table_candidates(
         candidates: list[dict],
         score_threshold: float | None,
@@ -260,6 +374,7 @@ class SchemaRetriever:
                 and float(rerank_score) < score_threshold
                 and not candidate.get("hit_by_column")
                 and not candidate.get("pinned")
+                and not candidate.get("recall_protected")
             )
             if is_weak:
                 dropped.append(str(candidate.get("table_name") or ""))
@@ -414,7 +529,7 @@ class SchemaRetriever:
             if cfg.enable_reranker and table_params.rerank
             else top_k
         )
-        candidates = self.searcher.search(
+        recall_candidates = self.searcher.search(
             enriched_query,
             top_k=max(rerank_k, top_k),
             biz_line=biz_line,
@@ -423,18 +538,46 @@ class SchemaRetriever:
             required_tables=required_tables,
         )
 
+        # Reviewed examples can strengthen an already recalled table, but they
+        # cannot independently inject a table that lacks current-query evidence.
+        preliminary_examples = self.fewshot.select(
+            query=user_query,
+            tables=[candidate["table_name"] for candidate in recall_candidates],
+            top_k=fewshot_k,
+            metadata_filter=metadata_filter,
+            biz_line=biz_line,
+            search_params=get_search_params(cfg.collection_search_config, "fewshot"),
+            mmr_lambda=cfg.mmr_lambda,
+        )
+        fewshot_evidence_tables = self._mark_fewshot_table_evidence(
+            recall_candidates,
+            preliminary_examples,
+        )
+
         # 4. Reranker 精排
         reranker = get_reranker()
-        pinned_candidates = [c for c in candidates if c.get("pinned")]
         if (
             reranker
             and cfg.enable_reranker
             and table_params.rerank
-            and len(candidates) > top_k
+            and len(recall_candidates) > top_k
         ):
-            candidates = reranker.rerank(enriched_query, candidates, top_k=top_k)
+            reranked_candidates = reranker.rerank(
+                enriched_query,
+                recall_candidates,
+                top_k=len(recall_candidates),
+            )
+            candidates = self._fuse_table_rankings(
+                recall_candidates,
+                reranked_candidates,
+                top_k=top_k,
+            )
         else:
-            candidates = candidates[:top_k]
+            candidates = self._fuse_table_rankings(
+                recall_candidates,
+                recall_candidates,
+                top_k=top_k,
+            )
 
         candidates, dropped_tables = self._drop_weak_table_candidates(
             candidates,
@@ -448,14 +591,6 @@ class SchemaRetriever:
                     "dropped_tables": dropped_tables,
                 },
             )
-
-        # 4b. 补回被 Reranker 砍掉的 pinned 表（如汇率表）
-        hit_names = {c["table_name"] for c in candidates}
-        for pc in pinned_candidates:
-            if pc["table_name"] not in hit_names:
-                candidates.append(pc)
-                hit_names.add(pc["table_name"])
-                logger.info(f"Reranker 后补回 pinned 表: {pc['table_name']}")
 
         # 5. 在关系图中搜索最多 N 跳最短路径，补齐中间桥接表。
         join_paths: list[list[str]] = []
@@ -521,6 +656,12 @@ class SchemaRetriever:
             )
             context_stats["weak_tables_dropped"] = len(dropped_tables)
             context_stats["unrelated_enums_dropped"] = dropped_enum_count
+        context_stats["fewshot_evidence_tables"] = fewshot_evidence_tables
+        context_stats["recall_protected_tables"] = [
+            candidate["table_name"]
+            for candidate in candidates
+            if candidate.get("recall_protected")
+        ]
 
         # 9. Prompt 组装
         intent_context = ""

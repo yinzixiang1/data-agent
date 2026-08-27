@@ -1,6 +1,7 @@
 from src.retrieval.tool_planner import (
     explicitly_requested_tools,
     extract_planned_tool_calls,
+    tool_planning_messages,
 )
 
 
@@ -81,3 +82,30 @@ def test_analysis_tool_accepts_compound_modes() -> None:
             "requires_query_result": True,
         }
     ]
+
+
+def test_personal_runtime_config_never_enters_tool_planning_prompt() -> None:
+    messages = tool_planning_messages(
+        "分析当前结果",
+        [
+            {
+                "name": "analyze_result",
+                "display_name": "智能分析",
+                "description": "分析已查询的数据",
+                "input_schema": {"type": "object", "properties": {}},
+                "runtime_config": {
+                    "user_config": {"detail_level": "concise"},
+                    "user_skill": {
+                        "name": "private-skill-name",
+                        "instructions": "private-instructions",
+                    },
+                },
+            }
+        ],
+    )
+
+    prompt = messages[-1]["content"]
+    assert "analyze_result" in prompt
+    assert "runtime_config" not in prompt
+    assert "private-skill-name" not in prompt
+    assert "private-instructions" not in prompt

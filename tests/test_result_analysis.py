@@ -120,6 +120,185 @@ def test_analysis_rejects_truncated_results_by_default() -> None:
         )
 
 
+def test_personal_preferences_and_skill_are_scoped_to_result_analysis() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    report, _ = execute_analysis(
+        query_result=_monthly_result(),
+        arguments={},
+        binding_config={"max_findings": 4},
+        runtime_config={
+            "user_config": {
+                "focus_modes": ["trend", "anomaly"],
+                "detail_level": "concise",
+                "max_findings": 2,
+                "audience_label": "private-team-name",
+            },
+            "user_skill": {
+                "name": "渠道经营分析",
+                "version": "1.2.0",
+                "instructions": "先总结趋势，再解释贡献度。",
+                "analysis_steps": ["定位变化最大的月份"],
+                "examples": [{"output": "示例中的数字不能作为事实"}],
+            },
+        },
+        invoke=invoke,
+    )
+
+    assert captured_payload["analysis_modes"] == ["trend", "anomaly"]
+    assert captured_payload["detail_level"] == "concise"
+    assert captured_payload["max_findings"] == 2
+    assert captured_payload["personal_skill"]["name"] == "渠道经营分析"
+    assert "sql" not in captured_payload
+    assert report["personalization"]["detail_level"] == "concise"
+    assert report["personalization"]["skill_name"] == "渠道经营分析"
+    assert report["personalization"]["skill_version"] == "1.2.0"
+    assert report["personalization"]["effective_preference_keys"] == [
+        "audience_label",
+        "detail_level",
+        "focus_modes",
+        "max_findings",
+    ]
+    assert "private-team-name" not in json.dumps(report, ensure_ascii=False)
+    assert report["personalization"]["sources"] == {
+        "tool_defaults": False,
+        "profile": True,
+        "skill": True,
+        "request_overrides": [],
+    }
+
+
+def test_analysis_preference_precedence_and_agent_limit() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    report, _ = execute_analysis(
+        query_result=_monthly_result(),
+        arguments={
+            "focus_modes": ["comparison"],
+            "detail_level": "deep",
+            "max_findings": 9,
+        },
+        binding_config={"max_findings": 5},
+        runtime_config={
+            "tool_defaults": {
+                "focus_modes": ["distribution"],
+                "detail_level": "standard",
+                "max_findings": 8,
+            },
+            "user_config": {
+                "focus_modes": ["trend"],
+                "detail_level": "standard",
+                "max_findings": 6,
+            },
+            "user_skill": {
+                "name": "我的分析方法",
+                "preferences": {
+                    "focus_modes": ["anomaly"],
+                    "detail_level": "concise",
+                    "max_findings": 4,
+                },
+                "analysis_steps": ["先比较，再总结"],
+            },
+        },
+        invoke=invoke,
+    )
+
+    assert captured_payload["analysis_modes"] == ["comparison"]
+    assert captured_payload["detail_level"] == "deep"
+    assert captured_payload["max_findings"] == 5
+    assert report["personalization"]["sources"] == {
+        "tool_defaults": True,
+        "profile": True,
+        "skill": True,
+        "request_overrides": ["detail_level", "focus_modes", "max_findings"],
+    }
+
+
+def test_verified_sql_projection_distinguishes_numeric_dimension_from_metric() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    report, _ = execute_analysis(
+        query_result={
+            "columns": ["month_number", "total_amount"],
+            "rows": [[1, 10], [2, 20]],
+            "row_count": 2,
+        },
+        arguments={},
+        binding_config={"max_findings": 3},
+        analysis_context={
+            "sql": (
+                "SELECT MONTH(created_at) AS month_number, "
+                "SUM(amount) AS total_amount FROM orders "
+                "GROUP BY MONTH(created_at)"
+            ),
+            "query_state": {},
+        },
+        invoke=invoke,
+    )
+
+    assert captured_payload["profile"]["metrics"] == ["total_amount"]
+    assert captured_payload["profile"]["dimensions"] == ["month_number"]
+    assert report["source"]["role_hints"] == {
+        "metrics": ["total_amount"],
+        "dimensions": ["month_number"],
+    }
+
+
+def test_explicit_analysis_modes_override_personal_default() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    execute_analysis(
+        query_result=_monthly_result(),
+        arguments={"modes": ["distribution"]},
+        binding_config={"max_findings": 3},
+        runtime_config={"user_config": {"focus_modes": ["anomaly"]}},
+        invoke=invoke,
+    )
+
+    assert captured_payload["analysis_modes"] == ["distribution"]
+
+
+def test_personal_skill_drops_oversized_nested_payloads() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    execute_analysis(
+        query_result=_monthly_result(),
+        arguments={},
+        binding_config={"max_findings": 3},
+        runtime_config={
+            "user_skill": {
+                "name": "oversized",
+                "output": {"template": "x" * 5_000},
+                "examples": [{"output": "y" * 21_000}],
+            }
+        },
+        invoke=invoke,
+    )
+
+    assert captured_payload["personal_skill"]["output"] == {}
+    assert captured_payload["personal_skill"]["examples"] == []
+
+
 def test_analysis_does_not_silently_replace_an_invalid_requested_metric() -> None:
     with pytest.raises(AnalysisSkipped, match="缺少足够"):
         execute_analysis(
@@ -159,6 +338,43 @@ def test_agent_executor_runs_only_agent_stage_tools() -> None:
     assert [result["name"] for result in results] == ["analyze_result"]
     assert results[0]["status"] == "success"
     assert results[0]["output"]["findings"]
+
+
+def test_agent_executor_applies_only_the_selected_tool_runtime_config() -> None:
+    captured_payload = {}
+
+    def invoke(messages):
+        captured_payload.update(json.loads(messages[-1]["content"]))
+        return "{}", None
+
+    results = execute_agent_result_tools(
+        [{"name": "analyze_result", "arguments": {}}],
+        [
+            {
+                "name": "analyze_result",
+                "executor_key": "analyze_result",
+                "execution_stage": "agent_post_query",
+                "binding_config": {"max_findings": 5},
+                "runtime_config": {
+                    "tool_defaults": {"detail_level": "standard"},
+                    "user_config": {"detail_level": "concise"},
+                },
+            }
+        ],
+        query_result=_monthly_result(),
+        analysis_context={
+            "sql": "SELECT month, SUM(amount) AS amount FROM metrics GROUP BY month",
+            "query_state": {},
+        },
+        invoke=invoke,
+    )
+
+    assert results[0]["status"] == "success"
+    assert captured_payload["detail_level"] == "concise"
+    assert results[0]["output"]["source"]["role_hints"] == {
+        "metrics": ["amount"],
+        "dimensions": ["month"],
+    }
 
 
 def test_agent_executor_does_not_analyze_a_sql_or_system_failure() -> None:

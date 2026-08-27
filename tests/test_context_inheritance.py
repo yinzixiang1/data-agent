@@ -1441,6 +1441,72 @@ def test_merge_fallback_keeps_previous_question_and_state() -> None:
     assert result.changes["kept"] == ["上一轮完整查询"]
 
 
+def test_relation_reconciliation_keeps_history_when_merged_question_inherits_it() -> (
+    None
+):
+    class ContradictingRelationModel:
+        def invoke(self, _messages):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "relation": "new_question",
+                        "turn_intent": "sql_query",
+                        "presentation_relation": "clear",
+                        "query_state": {
+                            "subject": "今日新注册的账号",
+                            "time_range": "今天",
+                            "filters": [],
+                            "metrics": [],
+                            "dimensions": [],
+                            "currency_conversion": "",
+                            "result_shape": "detail",
+                            "calendar_day_window": None,
+                            "requested_limit": None,
+                            "exclusions": [],
+                        },
+                        "changes": {
+                            "kept": [],
+                            "set": ["确认是否存在对应账户表"],
+                            "removed": [],
+                        },
+                        "removed_sql_context": {},
+                        "effective_question": (
+                            "查询今日新注册的账号。用户补充：没有这个表吗"
+                        ),
+                        "query_question": "查询今日新注册的账号。",
+                        "interpretation": "继续确认上一轮账户查询。",
+                        "direct_response": "",
+                        "confidence": 0.9,
+                        "needs_clarification": False,
+                        "clarification": {"question": "", "options": []},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    previous_question = "查询今日新注册的账号"
+    history = ContextCompressor.build_summary(
+        previous_question,
+        [],
+        "",
+        query_state=QueryState(
+            subject="今日新注册的账号",
+            time_range="今天",
+            result_shape="detail",
+        ),
+    )
+
+    result = ContextCompressor(ContradictingRelationModel()).merge(
+        history,
+        "没有这个表吗",
+    )
+
+    assert result.relation == "follow_up_add"
+    assert result.presentation_relation == "inherit"
+    assert result.query_question == "查询今日新注册的账号。"
+    assert result.changes["kept"][0] == previous_question
+
+
 def test_additive_followup_contract_detects_dropped_sql_structure() -> None:
     previous_sql = """
     SELECT o.channel_code, COUNT(*) AS order_count
@@ -1926,7 +1992,152 @@ def test_fewshot_is_selected_after_schema_and_cannot_pin_wrong_table(
     assert searcher.required_tables == set()
     assert result.relevant_tables[0]["table_name"] == "analytics.order_timeline"
     assert context_planner.required_columns == set()
-    assert fewshot.calls == [["analytics.order_timeline"]]
+    assert fewshot.calls == [
+        ["analytics.order_timeline"],
+        ["analytics.order_timeline"],
+    ]
+
+
+def test_rank_fusion_preserves_strong_recall_evidence_when_reranker_disagrees(
+    monkeypatch,
+) -> None:
+    import src.retrieval.retriever as retriever_module
+
+    class MisleadingReranker:
+        score_threshold = 0.3
+
+        def rerank(self, _query, candidates, top_k=5):
+            for candidate in candidates:
+                candidate["rerank_score"] = (
+                    0.0 if candidate["table_name"] == "analytics.accounts" else 0.9
+                )
+            return sorted(
+                candidates,
+                key=lambda candidate: -candidate["rerank_score"],
+            )[:top_k]
+
+    class MultiCandidateSearcher(_HybridSearcher):
+        def search(self, _query, **_kwargs):
+            rows = [
+                ("analytics.accounts", 1.4, True, 3),
+                ("analytics.balances", 0.9, False, 0),
+                ("analytics.beneficiaries", 0.8, True, 1),
+                ("analytics.funds", 0.7, False, 0),
+                ("analytics.snapshots", 0.6, False, 0),
+                ("analytics.rates", 0.5, False, 0),
+            ]
+            return [
+                {
+                    "table_name": table_name,
+                    "score": score,
+                    "hit_by_column": hit_by_column,
+                    "semantic_coverage": coverage,
+                    "schema": {
+                        "database": "analytics",
+                        "table_name": table_name,
+                        "table_name_short": table_name.rsplit(".", 1)[-1],
+                        "columns": [
+                            {"name": "account_id", "type": "varchar"},
+                            {"name": "create_time", "type": "datetime"},
+                        ],
+                    },
+                }
+                for table_name, score, hit_by_column, coverage in rows
+            ]
+
+    class AccountFewshotSelector:
+        def select(self, **_kwargs):
+            return [
+                {
+                    "id": 31,
+                    "question": "查询新注册账户",
+                    "sql": "SELECT * FROM analytics.accounts",
+                    "tables": ["analytics.accounts"],
+                }
+            ]
+
+    monkeypatch.setattr(
+        retriever_module,
+        "get_reranker",
+        lambda: MisleadingReranker(),
+    )
+    retriever = SchemaRetriever()
+    retriever._initialized = True
+    config = AgentRuntimeConfig(
+        enable_reranker=True,
+        table_search_top_k=5,
+        collection_search_config={
+            "table": {"rerank": True, "rerank_top_n": 8},
+        },
+    )
+    retriever.config = config
+    retriever.glossary_resolver = _GlossaryResolver()
+    retriever.value_indexer = None
+    retriever.searcher = MultiCandidateSearcher()
+    retriever.context_planner = _ContextPlanner()
+    retriever.fewshot = AccountFewshotSelector()
+    retriever.formatter = _Formatter()
+
+    result = retriever.retrieve("查询今日新注册的账号", biz_line="banking")
+
+    matched = {
+        candidate["table_name"]: candidate for candidate in result.relevant_tables
+    }
+    assert "analytics.accounts" in matched
+    assert matched["analytics.accounts"]["recall_protected"] is True
+    assert matched["analytics.accounts"]["hit_by_fewshot"] is True
+    assert matched["analytics.accounts"]["rerank_score"] == 0.0
+    assert result.context_stats["fewshot_evidence_tables"] == ["analytics.accounts"]
+    assert result.context_stats["recall_protected_tables"] == ["analytics.accounts"]
+
+
+def test_fewshot_evidence_cannot_introduce_a_table_absent_from_recall() -> None:
+    candidates = [
+        {
+            "table_name": "analytics.order_timeline",
+            "score": 0.9,
+        }
+    ]
+
+    evidence = SchemaRetriever._mark_fewshot_table_evidence(
+        candidates,
+        [
+            {
+                "id": 12,
+                "question": "订单数量",
+                "tables": ["analytics.orders"],
+            }
+        ],
+    )
+
+    assert evidence == []
+    assert "hit_by_fewshot" not in candidates[0]
+
+
+def test_fewshot_evidence_tables_survive_top_k_truncation() -> None:
+    candidates = [
+        {
+            "table_name": f"analytics.table_{index}",
+            "score": 1.0 - index / 10,
+            "hit_by_fewshot": index < 4,
+        }
+        for index in range(5)
+    ]
+    reranked = list(reversed(candidates))
+
+    selected = SchemaRetriever._fuse_table_rankings(
+        candidates,
+        reranked,
+        top_k=3,
+    )
+
+    assert {candidate["table_name"] for candidate in selected} == {
+        "analytics.table_0",
+        "analytics.table_1",
+        "analytics.table_2",
+        "analytics.table_3",
+    }
+    assert all(candidate["required_evidence"] for candidate in selected)
 
 
 def test_rebuild_all_rebuilds_every_persisted_collection(monkeypatch) -> None:
@@ -2570,6 +2781,64 @@ def test_analysis_followup_uses_the_previous_result_without_rerunning_sql(
         "available": True,
         "sql_reexecuted": False,
     }
+
+
+def test_personal_tool_runtime_config_reaches_only_the_bound_result_tool(
+    monkeypatch,
+) -> None:
+    import app as service
+
+    previous_result = {
+        "columns": ["order_date", "order_count"],
+        "rows": [["2026-08-01", 10], ["2026-08-02", 12]],
+        "row_count": 2,
+        "truncated": False,
+    }
+    captured_definitions = []
+
+    def capture_tool_execution(_calls, definitions, **_kwargs):
+        captured_definitions.extend(definitions)
+        return []
+
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+    monkeypatch.setattr(
+        service,
+        "execute_agent_result_tools",
+        capture_tool_execution,
+    )
+
+    result = service._run_query_impl(
+        "分析一下趋势和异常",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_analyze_result_tool()],
+        ),
+        _AnalyzePreviousResultModel(),
+        history_summary=_dated_order_history(with_chart=False),
+        previous_query_result=previous_result,
+        metadata_context={
+            "enabled_tools": ["analyze_result"],
+            "tool_runtime_configs": {
+                "analyze_result": {
+                    "user_config": {"detail_level": "concise"},
+                    "user_skill": {"name": "月度分析"},
+                },
+                "unbound_tool": {"secret": "must-not-leak"},
+            },
+        },
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert len(captured_definitions) == 1
+    assert captured_definitions[0]["name"] == "analyze_result"
+    assert captured_definitions[0]["runtime_config"] == {
+        "user_config": {"detail_level": "concise"},
+        "user_skill": {"name": "月度分析"},
+    }
+    assert "unbound_tool" not in str(captured_definitions)
 
 
 def test_analysis_followup_with_missing_snapshot_is_skipped_without_sql_execution(

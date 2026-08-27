@@ -21,7 +21,7 @@
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -39,6 +39,7 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
 3. “再展示/加上/带上”表示增量追加；“只要/仅查询/不要/去掉/改为”表示替换或移除对应状态。
 4. 修改指标或展示维度时，可以保留仍适用的时间和筛选条件，但不能保留用户明确移除的金额、币种、换算或维度。
 5. 新问题与历史无关时 relation=new_question，只使用本轮输入。没有历史时必须返回 new_question。
+   如果本轮是在质疑上一轮缺少的表、字段、证据或结论，必须保留上一轮查询需求，不能判定为 new_question。
 6. 只要当前信息存在会实质改变 SQL 的歧义、冲突或缺失，必须 needs_clarification=true；不得选择一个“最可能”的解释补全用户意图。
    本阶段尚未看到数据库 Schema、枚举和业务术语，因此不要擅自把“成功”“完成”“渠道”“主体”等业务词映射到物理字段；
    可以完整保留这些词交给后续证据判断。若仅凭用户原话和已确认的历史仍无法形成唯一、完整的问题，例如指代不清、修改目标不明或要求互相冲突，必须立即澄清。
@@ -315,6 +316,11 @@ class ContextCompressor:
                 previous_presentation_state=previous_presentation_state,
                 previous_sql_context=prev_sql_context,
             )
+            result = self._reconcile_new_question_relation(
+                result,
+                current_question=current_question,
+                previous_question=prev_question,
+            )
             if not prev_question and result.relation != "new_question":
                 result = ContextMergeResult(
                     effective_question=result.effective_question,
@@ -354,6 +360,52 @@ class ContextCompressor:
                 prev_question,
                 previous_query_state,
             )
+
+    @classmethod
+    def _reconcile_new_question_relation(
+        cls,
+        result: ContextMergeResult,
+        *,
+        current_question: str,
+        previous_question: str,
+    ) -> ContextMergeResult:
+        """Reject a model relation that contradicts its own merged question."""
+        if result.relation != "new_question" or not previous_question.strip():
+            return result
+
+        previous = cls._normalize_relation_text(previous_question)
+        current = cls._normalize_relation_text(current_question)
+        merged = cls._normalize_relation_text(
+            f"{result.effective_question}\n{result.query_question}"
+        )
+        if not previous or previous in current or previous not in merged:
+            return result
+
+        changes = {key: list(values) for key, values in result.changes.items()}
+        if previous_question not in changes["kept"]:
+            changes["kept"].insert(0, previous_question)
+        logger.info(
+            "context relation reconciled",
+            extra={
+                "model_relation": "new_question",
+                "reconciled_relation": "follow_up_add",
+                "reason": "merged_question_inherits_previous",
+            },
+        )
+        return replace(
+            result,
+            relation="follow_up_add",
+            presentation_relation=(
+                "inherit"
+                if result.presentation_relation == "clear"
+                else result.presentation_relation
+            ),
+            changes=changes,
+        )
+
+    @staticmethod
+    def _normalize_relation_text(value: object) -> str:
+        return re.sub(r"[^\w]+", "", str(value).casefold(), flags=re.UNICODE)
 
     @classmethod
     def _parse_merge_response(

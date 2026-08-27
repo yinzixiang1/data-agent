@@ -16,6 +16,7 @@ def execute_agent_result_tools(
     tool_definitions: list[dict[str, Any]],
     *,
     query_result: dict[str, Any] | None,
+    analysis_context: dict[str, Any] | None = None,
     missing_result_error: str = "查询没有产生可供工具处理的结果",
     invoke: AnalysisInvoker,
 ) -> list[dict[str, Any]]:
@@ -49,6 +50,8 @@ def execute_agent_result_tools(
         arguments = arguments if isinstance(arguments, dict) else {}
         binding_config = definition.get("binding_config")
         binding_config = binding_config if isinstance(binding_config, dict) else {}
+        runtime_config = definition.get("runtime_config")
+        runtime_config = runtime_config if isinstance(runtime_config, dict) else {}
         try:
             if executor_key != "analyze_result":
                 raise RuntimeError(f"未注册的 Agent 结果工具执行器: {executor_key}")
@@ -56,6 +59,8 @@ def execute_agent_result_tools(
                 query_result=query_result,
                 arguments=arguments,
                 binding_config=binding_config,
+                runtime_config=runtime_config,
+                analysis_context=analysis_context,
                 invoke=invoke,
             )
             result = _tool_result(name, "success", started, output=output)

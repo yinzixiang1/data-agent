@@ -1666,6 +1666,23 @@ def _run_query_impl(
         available_tools = [
             tool for tool in available_tools if str(tool.get("name") or "") in allowed
         ]
+    raw_runtime_configs = _ctx.get("tool_runtime_configs")
+    runtime_configs = (
+        raw_runtime_configs if isinstance(raw_runtime_configs, dict) else {}
+    )
+    available_tools = [
+        {
+            **tool,
+            "runtime_config": (
+                runtime_configs.get(str(tool.get("name") or ""), {})
+                if isinstance(
+                    runtime_configs.get(str(tool.get("name") or ""), {}), dict
+                )
+                else {}
+            ),
+        }
+        for tool in available_tools
+    ]
     pending_result_tool_names = {
         str(name).strip()
         for name in _ctx.get("pending_result_tools", [])
@@ -3475,6 +3492,10 @@ def _run_query_impl(
             tool_calls,
             available_tools,
             query_result=query_result_data,
+            analysis_context={
+                "query_state": query_state.to_dict(),
+                "sql": final_sql,
+            },
             missing_result_error=(
                 "上一轮查询结果快照不存在或已过期，请重新执行数据查询后再分析"
                 if turn_intent == "result_operation"
