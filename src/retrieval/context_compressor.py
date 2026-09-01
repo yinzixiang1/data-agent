@@ -26,6 +26,8 @@ from dataclasses import dataclass, field, replace
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
+from src.retrieval.tool_planner import validate_tool_calls
+
 logger = logging.getLogger(__name__)
 
 COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手。不要机械拼接历史文本，而要理解用户是在追加、修改、纠正、操作上一轮结果，还是开始新问题。
@@ -68,6 +70,10 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
     requested_limit 仅记录用户明确要求的 Top N、前 N 条或数量限制；系统默认限制不算用户要求，没有明确限制时填写 null。
 12. removed_sql_context 是对上一轮 SQL 结构的精确删除授权。仅当用户明确删除或替换上一轮结构时填写，并从【上一轮 SQL 结构】中逐字复制对应片段；没有删除时各项必须为空。未列入其中的上一轮结构必须继续保留。
 13. turn_intent=non_query 时 direct_response 给出简短回复且不得虚构查询结果；其他意图 direct_response 为空字符串。
+14. interaction_calls 是独立于 turn_intent 的会话交互工具调用。只能调用【可用会话交互工具】中列出的名称，arguments 必须满足其 input_schema。
+15. 用户明确要打开、查看或配置某项能力时才调用对应工具；不得因为关键词相似而猜测。多个工具都可能匹配、缺少必填参数或目标不明确时，必须 needs_clarification=true 且 interaction_calls=[]。
+16. 每轮最多选择一个会话交互工具。纯配置或工单操作使用 turn_intent=non_query；同一句同时包含数据查询和配置操作时必须先澄清要先执行哪一个，不得静默丢失其中一项。
+17. interaction_calls 只描述用户意图，不得生成用户、租户、Agent、会话、消息、查询日志等可信上下文字段，这些字段由接入层注入。需要提交或修改数据的工具只负责打开确认卡片，不表示已经执行写入。
 
 输出格式:
 {{
@@ -98,7 +104,11 @@ COMPRESS_PROMPT = """你是一个查询状态更新与轮次意图识别助手�
   "confidence": 0.0,
   "needs_clarification": false,
   "clarification": {{"question": "", "options": []}}
+  ,"interaction_calls": [{{"name": "工具名", "arguments": {{}}}}]
 }}
+
+## 可用会话交互工具
+{interaction_tools}
 
 ## 历史查询
 {history}
@@ -239,13 +249,20 @@ class ContextMergeResult:
     clarification: dict = field(default_factory=dict)
     changes: dict = field(default_factory=dict)
     removed_sql_context: dict = field(default_factory=dict)
+    interaction_calls: list[dict] = field(default_factory=list)
 
 
 class ContextCompressor:
     """多轮对话上下文压缩器。"""
 
-    def __init__(self, model: BaseChatModel, custom_prompt: str = ""):
+    def __init__(
+        self,
+        model: BaseChatModel,
+        custom_prompt: str = "",
+        interaction_tools: list[dict] | None = None,
+    ):
         self.model = model
+        self.interaction_tools = list(interaction_tools or [])
         custom_instructions = custom_prompt.strip()
         self.prompt_template = (
             f"{custom_instructions}\n\n{COMPRESS_PROMPT}"
@@ -303,7 +320,9 @@ class ContextCompressor:
             )
 
         prompt = self.prompt_template.format(
-            history=history_text, current=current_question
+            history=history_text,
+            current=current_question,
+            interaction_tools=self._interaction_tool_evidence(),
         )
 
         try:
@@ -340,6 +359,7 @@ class ContextCompressor:
                     clarification=result.clarification,
                     changes=result.changes,
                     removed_sql_context=result.removed_sql_context,
+                    interaction_calls=result.interaction_calls,
                 )
             logger.info(
                 "context state merged",
@@ -407,9 +427,8 @@ class ContextCompressor:
     def _normalize_relation_text(value: object) -> str:
         return re.sub(r"[^\w]+", "", str(value).casefold(), flags=re.UNICODE)
 
-    @classmethod
     def _parse_merge_response(
-        cls,
+        self,
         content: str,
         *,
         current_question: str,
@@ -425,13 +444,13 @@ class ContextCompressor:
         try:
             payload = json.loads(stripped)
         except (json.JSONDecodeError, TypeError):
-            return cls._fallback_result(
+            return self._fallback_result(
                 current_question,
                 previous_question,
                 previous_query_state,
             )
         if not isinstance(payload, dict):
-            return cls._fallback_result(
+            return self._fallback_result(
                 current_question,
                 previous_question,
                 previous_query_state,
@@ -458,7 +477,7 @@ class ContextCompressor:
             confidence = min(1.0, max(0.0, float(payload.get("confidence", 1.0))))
         except (TypeError, ValueError):
             confidence = 1.0
-        clarification = cls._normalize_clarification(payload.get("clarification"))
+        clarification = self._normalize_clarification(payload.get("clarification"))
         needs_clarification = bool(payload.get("needs_clarification"))
         if needs_clarification and not clarification.get("question"):
             clarification = {
@@ -477,12 +496,44 @@ class ContextCompressor:
             confidence=confidence,
             needs_clarification=needs_clarification,
             clarification=clarification,
-            changes=cls._normalize_changes(payload.get("changes")),
-            removed_sql_context=cls._normalize_removed_sql_context(
+            changes=self._normalize_changes(payload.get("changes")),
+            removed_sql_context=self._normalize_removed_sql_context(
                 payload.get("removed_sql_context"),
                 previous_sql_context,
             ),
+            interaction_calls=validate_tool_calls(
+                payload.get("interaction_calls")
+                if isinstance(payload.get("interaction_calls"), list)
+                else [],
+                self.interaction_tools,
+                max_calls=1,
+            ),
         )
+
+    def _interaction_tool_evidence(self) -> str:
+        """Render only public contracts; executor and binding data stay private."""
+        contracts = []
+        for tool in self.interaction_tools:
+            name = str(tool.get("name") or "").strip()
+            if not name:
+                continue
+            contracts.append(
+                {
+                    "name": name,
+                    "display_name": str(tool.get("display_name") or name).strip(),
+                    "description": str(tool.get("description") or "").strip(),
+                    "intent_examples": [
+                        str(item).strip()
+                        for item in (tool.get("intent_phrases") or [])
+                        if str(item).strip()
+                    ],
+                    "input_schema": tool.get("input_schema")
+                    or {"type": "object", "properties": {}},
+                }
+            )
+        if not contracts:
+            return "[]（本轮没有可调用的会话交互工具，interaction_calls 必须为空）"
+        return json.dumps(contracts, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
     def _normalize_clarification(value: object) -> dict:

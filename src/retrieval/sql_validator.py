@@ -523,6 +523,78 @@ class SQLValidator:
         current = normalized_metrics(current_query_state)
         return bool(previous and current and previous.isdisjoint(current))
 
+    @staticmethod
+    def _expand_removed_sql_dependencies(
+        previous_context: dict[str, list[str]],
+        removed_context: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        """Include ORDER BY fragments that depend on an explicitly removed SELECT item."""
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        expanded = {
+            section: list(removed_context.get(section) or [])
+            for section in previous_context
+        }
+        removed_aliases: set[str] = set()
+        removed_expressions: set[str] = set()
+
+        def normalized(expression: exp.Expression) -> str:
+            return re.sub(
+                r"\s+",
+                " ",
+                expression.sql(dialect="mysql").replace("`", "").strip(),
+            ).casefold()
+
+        for fragment in expanded.get("projections", []):
+            try:
+                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+            except sqlglot.errors.ParseError:
+                continue
+            projection = next(iter(statement.expressions), None)
+            if projection is None:
+                continue
+            if isinstance(projection, exp.Alias):
+                removed_aliases.add(projection.alias.casefold())
+                projection = projection.this
+            removed_expressions.add(normalized(projection))
+
+        for fragment in expanded.get("dimensions", []):
+            try:
+                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+            except sqlglot.errors.ParseError:
+                continue
+            dimension = next(iter(statement.expressions), None)
+            if dimension is not None:
+                removed_expressions.add(normalized(dimension))
+
+        removed_order_by = expanded.setdefault("order_by", [])
+        for fragment in previous_context.get("order_by") or []:
+            try:
+                statement = sqlglot.parse_one(
+                    f"SELECT 1 ORDER BY {fragment}",
+                    read="mysql",
+                )
+            except sqlglot.errors.ParseError:
+                continue
+            order = statement.args.get("order")
+            ordered = next(iter(order.expressions), None) if order else None
+            if ordered is None:
+                continue
+            expression = ordered.this if isinstance(ordered, exp.Ordered) else ordered
+            references_removed_alias = (
+                isinstance(expression, exp.Column)
+                and not expression.table
+                and expression.name.casefold() in removed_aliases
+            )
+            if (
+                references_removed_alias
+                or normalized(expression) in removed_expressions
+            ) and fragment not in removed_order_by:
+                removed_order_by.append(fragment)
+
+        return expanded
+
     @classmethod
     def validate_followup_inheritance(
         cls,
@@ -560,7 +632,10 @@ class SQLValidator:
                 result.add(re.sub(r"\s+", " ", fragment).casefold())
             return result
 
-        removed_context = removed_context or {}
+        removed_context = cls._expand_removed_sql_dependencies(
+            previous_context,
+            removed_context or {},
+        )
         allowed_removed: dict[str, list[str]] = {}
         missing: dict[str, list[str]] = {}
         for section in (

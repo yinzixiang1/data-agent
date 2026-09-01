@@ -487,6 +487,9 @@ class AgentConfigLoader:
                     "execution_stage": str(
                         definition.get("execution_stage") or "channel_post_query"
                     ),
+                    "capability_kind": str(
+                        definition.get("capability_kind") or "result"
+                    ),
                     "state_policy": str(definition.get("state_policy") or "sticky"),
                     "intent_phrases": [
                         str(item).strip()
@@ -497,6 +500,16 @@ class AgentConfigLoader:
                     "output_schema": definition.get("output_schema") or {},
                     "requires_query_result": bool(
                         definition.get("requires_query_result")
+                    ),
+                    "supported_channels": [
+                        str(item).strip()
+                        for item in (definition.get("supported_channels") or [])
+                        if str(item).strip()
+                    ],
+                    "interaction": (
+                        definition.get("interaction")
+                        if isinstance(definition.get("interaction"), dict)
+                        else {}
                     ),
                     "trigger_mode": str(
                         binding_config.get("trigger_mode") or "intent_auto"

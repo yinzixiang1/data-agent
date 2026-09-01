@@ -150,7 +150,7 @@ def extract_planned_tool_calls(
     actions = payload.get("actions")
     if not isinstance(actions, list):
         return []
-    return _validate_tool_calls(actions, tools, max_calls=max_calls)
+    return validate_tool_calls(actions, tools, max_calls=max_calls)
 
 
 def declared_action_count(answer: str) -> int:
@@ -180,7 +180,7 @@ def extract_tool_calls(
     if not isinstance(payload, list):
         return []
 
-    return _validate_tool_calls(payload, tools, max_calls=max_calls)
+    return validate_tool_calls(payload, tools, max_calls=max_calls)
 
 
 def _public_tool_contracts(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -229,12 +229,13 @@ def _decode_planner_payload(answer: str) -> Any:
         return None
 
 
-def _validate_tool_calls(
+def validate_tool_calls(
     payload: list[Any],
     tools: list[dict[str, Any]],
     *,
     max_calls: int,
 ) -> list[dict[str, Any]]:
+    """Validate declarative calls against the currently callable tool contracts."""
     registry = {
         str(tool.get("name") or "").strip(): tool
         for tool in tools

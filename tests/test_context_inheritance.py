@@ -1638,6 +1638,72 @@ def test_modify_followup_only_allows_explicit_sql_fragment_removal() -> None:
     assert "projections" in invalid_detail["missing"]
 
 
+def test_modify_followup_removes_sort_dependent_on_replaced_dimension() -> None:
+    previous_sql = """
+        SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
+               COUNT(*) AS order_count
+        FROM analytics.orders
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY month
+    """
+    previous = ContextCompressor.extract_sql_context(previous_sql)
+    removed_context = {
+        "projections": [previous["projections"][0]],
+        "dimensions": [previous["dimensions"][0]],
+    }
+    current = """
+        SELECT DATE(created_at) AS day,
+               COUNT(*) AS order_count
+        FROM analytics.orders
+        GROUP BY DATE(created_at)
+        ORDER BY day
+    """
+
+    valid, error, detail = SQLValidator.validate_followup_inheritance(
+        current,
+        previous,
+        "follow_up_modify",
+        removed_context,
+    )
+
+    assert valid is True
+    assert error == ""
+    assert detail["allowed_removed"]["order_by"] == ["month"]
+
+
+def test_modify_followup_keeps_unrelated_sort_contract() -> None:
+    previous_sql = """
+        SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
+               COUNT(*) AS order_count
+        FROM analytics.orders
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY order_count DESC
+    """
+    previous = ContextCompressor.extract_sql_context(previous_sql)
+    removed_context = {
+        "projections": [previous["projections"][0]],
+        "dimensions": [previous["dimensions"][0]],
+    }
+    current = """
+        SELECT DATE(created_at) AS day,
+               COUNT(*) AS order_count
+        FROM analytics.orders
+        GROUP BY DATE(created_at)
+        ORDER BY day
+    """
+
+    valid, error, detail = SQLValidator.validate_followup_inheritance(
+        current,
+        previous,
+        "follow_up_modify",
+        removed_context,
+    )
+
+    assert valid is False
+    assert "order_by" in detail["missing"]
+    assert "order_count DESC" in error
+
+
 def test_replaced_metrics_reject_stale_aggregate_projection() -> None:
     previous_sql = """
         SELECT DATE_FORMAT(create_time, '%Y-%m') AS month,
@@ -2680,6 +2746,149 @@ def test_query_followup_replans_inherited_chart_against_new_projection(
     assert summary["presentation_state"]["tool_calls"] == result["tool_calls"]
 
 
+def test_query_followup_replaces_dimension_and_keeps_chart(monkeypatch) -> None:
+    import app as service
+
+    previous_sql = """
+    SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
+           COUNT(*) AS payout_order_count
+    FROM analytics.orders
+    WHERE order_type = 'payout'
+      AND created_at >= '2026-01-01 00:00:00'
+      AND created_at < '2027-01-01 00:00:00'
+    GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+    ORDER BY month
+    """
+    previous_context = ContextCompressor.extract_sql_context(previous_sql)
+
+    class _DimensionReplacementModel:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def invoke(self, messages):
+            self.calls.append(messages[-1].content)
+            if len(self.calls) == 1:
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "relation": "follow_up_modify",
+                            "turn_intent": "sql_query",
+                            "presentation_relation": "inherit",
+                            "query_state": {
+                                "subject": "payout 订单",
+                                "time_range": "最近六个月",
+                                "filters": [],
+                                "metrics": ["订单数量"],
+                                "dimensions": ["天"],
+                                "currency_conversion": "",
+                                "result_shape": "aggregate",
+                                "calendar_day_window": None,
+                                "requested_limit": None,
+                                "exclusions": [],
+                            },
+                            "changes": {
+                                "kept": ["payout 订单", "订单数量", "折线图"],
+                                "set": ["最近六个月", "按天统计"],
+                                "removed": ["今年", "按月统计"],
+                            },
+                            "removed_sql_context": {
+                                "projections": [previous_context["projections"][0]],
+                                "dimensions": [previous_context["dimensions"][0]],
+                                "filters": previous_context["filters"][1:],
+                            },
+                            "effective_question": (
+                                "按天统计最近六个月的 payout 订单数量，并以折线图展示"
+                            ),
+                            "query_question": ("按天统计最近六个月的 payout 订单数量"),
+                            "interpretation": (
+                                "保留 payout 订单数量和折线图，改为最近六个月按天统计。"
+                            ),
+                            "direct_response": "",
+                            "confidence": 0.99,
+                            "needs_clarification": False,
+                            "clarification": {"question": "", "options": []},
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            if len(self.calls) == 2:
+                return SimpleNamespace(
+                    content="""```sql
+SELECT DATE(created_at) AS day,
+       COUNT(*) AS payout_order_count
+FROM analytics.orders
+WHERE order_type = 'payout'
+  AND created_at >= DATE_SUB(CURDATE(), INTERVAL 5 MONTH)
+  AND created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+GROUP BY DATE(created_at)
+ORDER BY day
+```""",
+                    usage_metadata=None,
+                )
+            return SimpleNamespace(
+                content=(
+                    '{"actions":[{"name":"render_chart",'
+                    '"arguments":{"chart_type":"line"}}]}'
+                ),
+                usage_metadata=None,
+            )
+
+    history = ContextCompressor.build_summary(
+        "按月统计今年 payout 订单数量",
+        ["analytics.orders"],
+        previous_sql,
+        query_state=QueryState(
+            subject="payout 订单",
+            time_range="今年",
+            metrics=("订单数量",),
+            dimensions=("月",),
+            result_shape="aggregate",
+        ),
+        presentation_state={
+            "tool_calls": [
+                {
+                    "name": "render_chart",
+                    "arguments": {"chart_type": "line"},
+                    "requires_query_result": True,
+                }
+            ]
+        },
+    )
+    model = _DimensionReplacementModel()
+    monkeypatch.setattr(service, "retriever", _Retriever())
+    monkeypatch.setattr(service, "validator", None)
+
+    result = service._run_query_impl(
+        "改成最近六个月，并按天统计，折线图继续保留",
+        AgentRuntimeConfig(
+            enable_explain=False,
+            enable_execute=False,
+            enable_enum_validate=False,
+            tools=[_render_chart_tool()],
+        ),
+        model,
+        history_summary=history,
+    )
+
+    assert result["is_success"] is True, result["error"]
+    assert "ORDER BY day" in result["sql"]
+    assert result["tool_calls"][0]["name"] == "render_chart"
+    assert len(model.calls) == 3
+    inheritance_step = next(
+        step
+        for step in result["trace"]["steps"]
+        if step["step"] == "followup_inheritance_validate"
+    )
+    assert inheritance_step["attempts"] == [
+        {
+            "attempt": 1,
+            "valid": True,
+            "error": "",
+            "missing": {},
+        }
+    ]
+
+
 def test_result_operation_can_add_download_without_hiding_inherited_chart(
     monkeypatch,
 ) -> None:
@@ -2980,3 +3189,134 @@ def test_non_query_turn_bypasses_retrieval_and_preserves_context(monkeypatch) ->
     assert result["sql"] == ""
     assert result["summary"] == "我可以继续帮你查询数据库。"
     assert result["context_summary"] == history
+
+
+class _InteractionIntentModel:
+    def __init__(self, arguments: dict | None = None) -> None:
+        self.arguments = arguments or {}
+        self.calls: list[str] = []
+
+    def invoke(self, messages):
+        self.calls.append(messages[-1].content)
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "relation": "new_question",
+                    "turn_intent": "non_query",
+                    "presentation_relation": "clear",
+                    "query_state": {},
+                    "changes": {"kept": [], "set": [], "removed": []},
+                    "removed_sql_context": {},
+                    "effective_question": "打开我的分析偏好",
+                    "query_question": "打开我的分析偏好",
+                    "interpretation": "打开个人配置卡片。",
+                    "direct_response": "正在打开个人配置。",
+                    "confidence": 0.99,
+                    "needs_clarification": False,
+                    "clarification": {"question": "", "options": []},
+                    "interaction_calls": [
+                        {
+                            "name": "configure_analysis_preferences",
+                            "arguments": self.arguments,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def _interaction_tool() -> dict:
+    return {
+        "name": "configure_analysis_preferences",
+        "display_name": "配置智能分析偏好",
+        "description": "打开当前用户的分析偏好配置",
+        "capability_kind": "interaction",
+        "execution_stage": "conversation_pre_query",
+        "intent_phrases": ["打开我的分析偏好"],
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "requires_query_result": False,
+    }
+
+
+def test_prepare_returns_only_enabled_schema_valid_interaction_call() -> None:
+    import app as service
+
+    model = _InteractionIntentModel()
+    prepared = service.prepare_query_context(
+        "打开我的分析偏好",
+        AgentRuntimeConfig(tools=[_interaction_tool()]),
+        model,
+        enabled_tools=["configure_analysis_preferences"],
+    )
+
+    assert prepared["turn_intent"] == "non_query"
+    assert prepared["interaction_calls"] == [
+        {
+            "name": "configure_analysis_preferences",
+            "arguments": {},
+            "requires_query_result": False,
+        }
+    ]
+    assert "配置智能分析偏好" in model.calls[0]
+
+
+def test_prepare_drops_disabled_or_schema_invalid_interaction_call() -> None:
+    import app as service
+
+    invalid = service.prepare_query_context(
+        "打开我的分析偏好",
+        AgentRuntimeConfig(tools=[_interaction_tool()]),
+        _InteractionIntentModel({"unexpected": True}),
+        enabled_tools=["configure_analysis_preferences"],
+    )
+    disabled = service.prepare_query_context(
+        "打开我的分析偏好",
+        AgentRuntimeConfig(tools=[_interaction_tool()]),
+        _InteractionIntentModel(),
+        enabled_tools=["another_tool"],
+    )
+    explicitly_empty = service.prepare_query_context(
+        "打开我的分析偏好",
+        AgentRuntimeConfig(tools=[_interaction_tool()]),
+        _InteractionIntentModel(),
+        enabled_tools=[],
+    )
+
+    assert invalid["interaction_calls"] == []
+    assert disabled["interaction_calls"] == []
+    assert explicitly_empty["interaction_calls"] == []
+
+
+def test_interaction_turn_short_circuits_rag_and_sql(monkeypatch) -> None:
+    import app as service
+
+    model = _InteractionIntentModel()
+    config = AgentRuntimeConfig(tools=[_interaction_tool()])
+    prepared = service.prepare_query_context(
+        "打开我的分析偏好",
+        config,
+        model,
+        enabled_tools=["configure_analysis_preferences"],
+    )
+
+    class _FailRetriever:
+        def retrieve(self, *_args, **_kwargs):
+            raise AssertionError("interaction turn must not enter RAG")
+
+    monkeypatch.setattr(service, "retriever", _FailRetriever())
+    result = service._run_query_impl(
+        "打开我的分析偏好",
+        config,
+        model,
+        metadata_context={"enabled_tools": ["configure_analysis_preferences"]},
+        prepared_context=prepared,
+    )
+
+    assert result["is_success"] is True
+    assert result["sql"] == ""
+    assert result["interaction_calls"][0]["name"] == ("configure_analysis_preferences")
