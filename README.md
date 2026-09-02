@@ -21,13 +21,18 @@
 
 ```text
 data-agen/
-├── app.py                       FastAPI 服务和 NL2SQL 主流程
+├── app.py                       FastAPI 入口、生命周期和 HTTP 路由
 ├── pyproject.toml               Python 项目及依赖声明
 ├── uv.lock                      可复现依赖锁文件
 └── src/
+    ├── api/                     HTTP DTO
+    ├── runtime/                 数据库和日志运行时边界
+    ├── tools/                   查询结果工具执行
     ├── request_params.py        请求级可覆盖参数定义
     └── retrieval/
         ├── agent_config.py      Agent 动态配置与资源绑定
+        ├── query_preparation.py 轮次预理解和澄清准备
+        ├── query_pipeline.py    检索、生成、校验、执行编排
         ├── config.py            环境变量和启动配置校验
         ├── schema_loader.py     MySQL 语义层与 Doris Schema 合并
         ├── index_manager.py     Milvus 索引构建、连接和局部重建
