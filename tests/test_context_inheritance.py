@@ -2678,6 +2678,7 @@ def test_prepare_failure_creates_failed_query_log(monkeypatch) -> None:
 
     assert query_logger.calls == [
         {
+            "tenant_key": "",
             "session_id": "7017d5cc0db4db3d3a6ebc9bee7e4c59",
             "user_query": "按天为维度生成图表",
             "intent": "prepare_failed",

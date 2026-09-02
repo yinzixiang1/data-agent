@@ -858,6 +858,7 @@ async def prepare_query(req: QueryPrepareRequest, request: Request):
                 "error": str(exc)[:2000],
             }
             query_logger.log(
+                tenant_key=str((meta.context or {}).get("tenant_key") or ""),
                 session_id=req.session_id,
                 user_query=req.question,
                 intent="prepare_failed",
@@ -942,6 +943,7 @@ async def query(req: QueryRequest, request: Request):
         if not is_lark_request:
             return None
         replay = query_logger.get_lark_response(
+            tenant_key=str((meta.context or {}).get("tenant_key") or ""),
             trace_id=meta.trace_id,
             user_id=meta.user_id,
             agent_id=config.agent_id,
@@ -1006,6 +1008,7 @@ async def query(req: QueryRequest, request: Request):
                     cached_response.model_dump(mode="json", exclude={"log_id"})
                 )
                 log_id = query_logger.log(
+                    tenant_key=str((meta.context or {}).get("tenant_key") or ""),
                     session_id=session_id,
                     user_query=req.question,
                     matched_tables=cached_response.matched_tables,
@@ -1142,6 +1145,7 @@ async def query(req: QueryRequest, request: Request):
                     response.model_dump(mode="json", exclude={"log_id"})
                 )
             log_id = query_logger.log(
+                tenant_key=str((meta.context or {}).get("tenant_key") or ""),
                 session_id=session_id,
                 user_query=req.question,
                 matched_tables=result["matched_tables"],
@@ -1192,6 +1196,7 @@ async def query(req: QueryRequest, request: Request):
                     error_response.model_dump(mode="json", exclude={"log_id"})
                 )
             log_id = query_logger.log(
+                tenant_key=str((meta.context or {}).get("tenant_key") or ""),
                 session_id=session_id,
                 user_query=req.question,
                 execution_result=execution_result,

@@ -90,13 +90,20 @@ class QueryLogger:
     def get_lark_response(
         self,
         *,
+        tenant_key: str,
         trace_id: str,
         user_id: str,
         agent_id: int,
         user_query: str,
     ) -> tuple[int, dict] | None:
         """Load the completed response for the same authenticated Lark request."""
-        if not trace_id or not user_id or agent_id <= 0 or not user_query:
+        if (
+            not tenant_key
+            or not trace_id
+            or not user_id
+            or agent_id <= 0
+            or not user_query
+        ):
             return None
         try:
             with self.engine.connect() as conn:
@@ -104,12 +111,14 @@ class QueryLogger:
                     conn.execute(
                         text(
                             "SELECT id, execution_result FROM sys_query_log "
-                            "WHERE caller = 'lark' AND trace_id = :trace_id "
+                            "WHERE tenant_key = :tenant_key "
+                            "AND caller = 'lark' AND trace_id = :trace_id "
                             "AND user_id = :user_id AND agent_id = :agent_id "
                             "AND user_query = :user_query "
                             "ORDER BY id DESC LIMIT 1"
                         ),
                         {
+                            "tenant_key": tenant_key,
                             "trace_id": trace_id,
                             "user_id": user_id,
                             "agent_id": agent_id,
@@ -132,6 +141,7 @@ class QueryLogger:
 
     def log(
         self,
+        tenant_key: str = "",
         session_id: str = "",
         user_query: str = "",
         intent: str = "",
@@ -174,18 +184,19 @@ class QueryLogger:
                 result = conn.execute(
                     text(
                         "INSERT INTO sys_query_log "
-                        "(session_id, user_query, intent, matched_tables, matched_terms, "
+                        "(tenant_key, session_id, user_query, intent, matched_tables, matched_terms, "
                         "generated_sql, execution_result, execution_time_ms, retry_count, is_success, "
                         "user_feedback, feedback_score, feedback_reason, feedback_comment, "
                         "agent_id, scenario, business, caller, user_id, user_name, trace_id, "
                         "matched_fewshot, enum_hits, trace_detail) "
-                        "VALUES (:session_id, :user_query, :intent, :matched_tables, :matched_terms, "
+                        "VALUES (:tenant_key, :session_id, :user_query, :intent, :matched_tables, :matched_terms, "
                         ":generated_sql, :execution_result, :execution_time_ms, :retry_count, :is_success, "
                         "'', 0, '', '', "
                         ":agent_id, :scenario, :business, :caller, :user_id, :user_name, :trace_id, "
                         ":matched_fewshot, :enum_hits, :trace_detail)"
                     ),
                     {
+                        "tenant_key": tenant_key,
                         "session_id": session_id,
                         "user_query": user_query,
                         "intent": intent,
