@@ -78,12 +78,12 @@ from src.retrieval.query_preparation import (
     query_context_fingerprint,
 )
 from src.retrieval.retriever import SchemaRetriever
-from src.retrieval.schema_loader import AgentDatasourceNotConfiguredError
 from src.retrieval.sql_validator import SQLValidator
 from src.runtime.database import (
-    create_doris_engine,
+    AgentDatasourceNotConfiguredError,
+    create_database_runtime,
     load_agent_databases,
-    load_doris_config,
+    load_execution_config,
 )
 from src.runtime.logging_setup import configure_process_runtime
 from src.tools.executor import execute_agent_result_tools
@@ -136,13 +136,15 @@ def print_infra_config(config: AgentRuntimeConfig | None = None) -> None:
         rnk_model = config.index_build_config["reranker"]["model"]
         rnk_source = "Agent 配置"
 
-    doris_config = load_doris_config(config.agent_id if config else None)
-    if doris_config:
-        doris_endpoint = f"{doris_config['host']}:{doris_config['port']}"
-        doris_source = str(doris_config["source"])
+    execution_config = load_execution_config(config.agent_id if config else None)
+    if execution_config:
+        execution_endpoint = f"{execution_config['host']}:{execution_config['port']}"
+        execution_source = str(execution_config["source"])
+        execution_type = str(execution_config.get("db_type") or "doris").upper()
     else:
-        doris_endpoint = "(尚未绑定)"
-        doris_source = "全局数据库资源"
+        execution_endpoint = "(尚未绑定)"
+        execution_source = "全局数据库资源"
+        execution_type = "执行数据库"
 
     lines = [
         "",
@@ -150,8 +152,8 @@ def print_infra_config(config: AgentRuntimeConfig | None = None) -> None:
         "  NL2SQL Data Agent 基础设施配置",
         "=" * 60,
         "",
-        f"  [Doris] (来源: {doris_source})",
-        f"    Host:     {doris_endpoint}",
+        f"  [{execution_type}] (来源: {execution_source})",
+        f"    Host:     {execution_endpoint}",
         "",
         "  [MySQL 语义层]",
         f"    Host:     {MYSQL_HOST}:{MYSQL_PORT}",
@@ -179,9 +181,11 @@ def _initialize_nl2sql_runtime(config: AgentRuntimeConfig) -> None:
     """使用 Agent 引用的全局数据库资源初始化 NL2SQL 运行时。"""
     global retriever, validator
 
-    engine = create_doris_engine(config.agent_id)
+    runtime = create_database_runtime(config.agent_id)
+    engine = runtime.engine
     candidate = SchemaRetriever(
-        connection_string=engine.url.render_as_string(hide_password=False)
+        execution_engine=engine,
+        dialect=runtime.dialect,
     )
     try:
         with engine.connect() as conn:
@@ -193,10 +197,13 @@ def _initialize_nl2sql_runtime(config: AgentRuntimeConfig) -> None:
 
     old_validator = validator
     retriever = candidate
-    validator = SQLValidator(engine)
+    validator = SQLValidator(engine, runtime.dialect)
     if old_validator:
         old_validator.engine.dispose()
-    logger.info("Doris、Schema 索引与 EXPLAIN 校验器已就绪")
+    logger.info(
+        "%s、Schema 索引与 EXPLAIN 校验器已就绪",
+        runtime.dialect.display_name,
+    )
 
 
 def _register_engine_url(agent_id: int):
@@ -790,10 +797,11 @@ async def execute_saved_query(req: SavedQueryRequest, request: Request):
             execution_error=f"安全拦截: {access_error}",
         )
 
-    engine = create_doris_engine(config.agent_id)
+    runtime = create_database_runtime(config.agent_id)
+    engine = runtime.engine
     try:
         result = await anyio.to_thread.run_sync(
-            lambda: SQLValidator(engine).execute(
+            lambda: SQLValidator(engine, runtime.dialect).execute(
                 req.sql,
                 row_limit=req.row_limit,
                 timeout=config.execute_timeout,

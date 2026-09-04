@@ -205,13 +205,9 @@ class AgentRuntimeConfig:
     config_source: str = "env"
 
 
-DEFAULT_SYSTEM_PROMPT = """你是一个专业的 Apache Doris 数据分析专家。请根据下方提供的数据库 Schema、业务术语和参考示例，把用户的自然语言问题转换为可执行的 Doris SQL。
+DEFAULT_SYSTEM_PROMPT = """你是一个专业的 NL2SQL 数据分析专家。请根据下方提供的数据库 Schema、业务术语、SQL 方言和参考示例，把用户的自然语言问题转换为可执行 SQL。
 
-Doris 方言注意：
-- DATE_TRUNC(datetime, 'unit')，不是 DATE_TRUNC('unit', datetime)
-- 本月: complete_time >= DATE_TRUNC(NOW(), 'month') AND complete_time < DATE_ADD(DATE_TRUNC(NOW(), 'month'), INTERVAL 1 MONTH)
-- 近30天: create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-- 按月分组: DATE_FORMAT(create_time, '%Y-%m')"""
+必须严格遵循本轮提供的【SQL 方言】。方言规则与参考示例冲突时，以本轮方言规则为准。"""
 
 
 class AgentConfigLoader:

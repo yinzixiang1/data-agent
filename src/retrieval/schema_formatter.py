@@ -27,8 +27,7 @@ OUTPUT_RULES = """【输出要求】
 6. 参考示例只用于学习 SQL 写法，不能替代当前 Schema 决定表和字段；示例与当前问题粒度或维度不一致时不得照搬
 7. 优先使用已提供表中的字段，避免不必要的 JOIN
 8. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值
-9. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）
-   “最近/近 N 天”默认表示包含今天的 N 个自然日，使用下界 DATE_SUB(CURDATE(), INTERVAL N-1 DAY) 和上界 DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+9. 时间函数和日期边界必须遵循【SQL 方言】；“最近/近 N 天”默认表示包含今天的 N 个自然日，下界为今天减 N-1 天，上界为明天零点
 10. 列别名使用中文双引号，如 COUNT(*) AS "数量"
 11. 优先用 WHERE 条件过滤，避免全表扫描
 12. 只有用户原话、已确认的会话上下文以及本轮提供的术语、Schema、关系、枚举和 Value 证据能够唯一确定事实表、指标、字段、关联路径、筛选值和时间口径时，才生成 SQL。
@@ -43,6 +42,9 @@ OUTPUT_RULES = """【输出要求】
 
 class SchemaFormatter:
     """将检索到的 Schema 格式化为析言风格 Prompt（M-Schema + 【】标记）。"""
+
+    def __init__(self, dialect=None):
+        self.dialect = dialect
 
     def format_tables(self, tables: list[dict]) -> str:
         """将检索命中的表格式化为 M-Schema 文本。"""
@@ -166,6 +168,9 @@ class SchemaFormatter:
         if question:
             sections.append(f"【用户问题】\n{question}")
 
+        if self.dialect is not None:
+            sections.append(self.dialect.prompt_rules)
+
         # 【输出要求】— 优先用传入的配置，否则用内置默认
         sections.append(output_rules.strip() if output_rules.strip() else OUTPUT_RULES)
 
@@ -175,7 +180,14 @@ class SchemaFormatter:
         """格式化单张表为 M-Schema 文本。"""
         short_name = schema.get("table_name_short", schema["table_name"])
         database = schema.get("database", "")
-        sql_name = f"`{database}`.`{short_name}`" if database else f"`{short_name}`"
+        if self.dialect is not None:
+            sql_name = (
+                self.dialect.qualify_table(database, short_name)
+                if database
+                else self.dialect.quote_identifier(short_name)
+            )
+        else:
+            sql_name = f"`{database}`.`{short_name}`" if database else f"`{short_name}`"
 
         desc = schema.get("description") or schema.get("table_comment", "")
         header = f"【表】{sql_name}（{desc}）" if desc else f"【表】{sql_name}"

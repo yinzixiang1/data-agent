@@ -12,6 +12,9 @@ MYSQL_USER: your-mysql-user
 MYSQL_PASSWORD: your-mysql-password
 MYSQL_DATABASE: your-admin-database
 
+# 与 Admin 使用同一 Fernet 密钥，用于解密全局数据库资源中的连接凭据
+INTEGRATION_ENCRYPTION_KEY: replace-with-the-admin-fernet-key
+
 # Agent 未绑定 vector_db 资源时使用以下 Milvus 配置
 MILVUS_URI: http://your-milvus-host:19530
 MILVUS_DB: data_agen

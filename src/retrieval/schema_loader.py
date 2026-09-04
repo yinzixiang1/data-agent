@@ -1,5 +1,5 @@
 """
-数据源加载 — Doris DDL + MySQL 语义层合并出完整 Schema。
+数据源加载 — 物理数据库 Schema + MySQL 语义层合并。
 
 连接 Doris 读取 DDL，再从 MySQL（data_agent 库）加载语义层数据，
 合并为完整 Schema。MySQL 表结构对接 dataAgent-admin-api 定义的 da_* 系列表。
@@ -15,6 +15,7 @@ import logging
 from collections import OrderedDict
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.retrieval.config import (
@@ -28,21 +29,22 @@ from src.retrieval.config import (
     MYSQL_PORT,
     MYSQL_USER,
 )
+from src.runtime.database import AgentDatasourceNotConfiguredError
+from src.runtime.sql_dialect import (
+    DorisDialectAdapter,
+    SQLDialectAdapter,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class AgentDatasourceNotConfiguredError(RuntimeError):
-    """Agent 尚未绑定可用执行数据库。"""
-
-
 class SchemaLoadIncompleteError(RuntimeError):
-    """Doris Schema 未能完整加载。"""
+    """Physical database Schema could not be loaded completely."""
 
 
 class SchemaLoader:
     """
-    加载 Doris DDL + MySQL 语义层，合并为完整 Schema。
+    加载目标执行库物理结构 + MySQL 语义层，合并为完整 Schema。
 
     MySQL 表结构（dataAgent-admin-api 定义）:
         da_semantic_table          — 表语义
@@ -59,15 +61,21 @@ class SchemaLoader:
         self,
         connection_string: str | None = None,
         mysql_connection_string: str | None = None,
+        execution_engine: Engine | None = None,
+        dialect: SQLDialectAdapter | None = None,
     ):
-        if connection_string is None:
-            connection_string = (
-                f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
-                f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
+        self.dialect = dialect or DorisDialectAdapter()
+        if execution_engine is not None:
+            self.execution_engine = execution_engine
+        else:
+            if connection_string is None:
+                connection_string = (
+                    f"mysql+pymysql://{DORIS_USER}:{DORIS_PASSWORD_URL}"
+                    f"@{DORIS_HOST}:{DORIS_PORT}/information_schema?charset=utf8mb4"
+                )
+            self.execution_engine = create_engine(
+                connection_string, pool_size=5, pool_recycle=3600
             )
-        self.doris_engine = create_engine(
-            connection_string, pool_size=5, pool_recycle=3600
-        )
 
         if mysql_connection_string is None:
             mysql_connection_string = (
@@ -78,56 +86,13 @@ class SchemaLoader:
             mysql_connection_string, pool_size=5, pool_recycle=3600
         )
 
-    # ── Doris 元数据加载 ──
+    # ── 物理数据库元数据加载 ──
 
-    def get_all_tables(self) -> list[str]:
-        """获取 Doris 数据库中所有表名。"""
-        with self.doris_engine.connect() as conn:
-            rows = conn.execute(text("SHOW TABLES")).fetchall()
-            return [row[0] for row in rows]
-
-    def get_table_schema(self, table_name: str, database: str) -> dict:
-        """通过 DESCRIBE + SHOW CREATE TABLE 获取单张表的 Schema。"""
-        db = database
-        with self.doris_engine.connect() as conn:
-            col_rows = conn.execute(text(f"DESCRIBE `{db}`.`{table_name}`")).fetchall()
-            columns = []
-            for row in col_rows:
-                columns.append(
-                    {
-                        "name": row[0],
-                        "type": row[1],
-                        "nullable": str(row[2]).upper() == "YES",
-                        "key": row[3] or "",
-                        "default": row[4],
-                        "comment": row[5] if len(row) > 5 else "",
-                    }
-                )
-
-            table_comment = ""
-            try:
-                create_rows = conn.execute(
-                    text(f"SHOW CREATE TABLE `{db}`.`{table_name}`")
-                ).fetchone()
-                if create_rows:
-                    import re
-
-                    match = re.search(r"COMMENT\s*[=']?\s*'([^']*)'", create_rows[1])
-                    if match:
-                        table_comment = match.group(1)
-            except SQLAlchemyError as exc:
-                logger.debug(
-                    "SHOW CREATE TABLE comment lookup skipped",
-                    extra={"table": table_name, "error_type": type(exc).__name__},
-                )
-
-            return {
-                "database": db,
-                "table_name": f"{db}.{table_name}",
-                "table_name_short": table_name,
-                "table_comment": table_comment,
-                "columns": columns,
-            }
+    def get_table_schema(self, table_name: str, namespace: str) -> dict:
+        """Load one physical table through the configured dialect adapter."""
+        return self.dialect.load_table_schema(
+            self.execution_engine, namespace, table_name
+        )
 
     # ── MySQL 语义层加载（对接 dataAgent-admin-api 的 da_* 表） ──
 
@@ -174,7 +139,8 @@ class SchemaLoader:
     ) -> dict[str, dict]:
         """从 da_semantic_table 加载表语义 → {db.table: {display_name, description, tags, query_tips, metadata}}"""
         sql = (
-            "SELECT t.name, b.database_name, t.display_name, t.description, t.tags, t.query_tips, b.business_line, b.meta_json "
+            "SELECT t.name, b.database_name, b.schema_name, t.display_name, "
+            "t.description, t.tags, t.query_tips, b.business_line, b.meta_json "
             "FROM da_semantic_table t "
             "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
             "WHERE t.status = 1 AND t.available = 1"
@@ -186,26 +152,28 @@ class SchemaLoader:
 
         result = {}
         for row in rows:
-            db_name = row[1]
+            db_name = row[2] or row[1]
             full_key = f"{db_name}.{row[0]}"
             tags = []
-            if row[4]:
+            if row[5]:
                 try:
-                    tags = json.loads(row[4])
+                    tags = json.loads(row[5])
                 except (json.JSONDecodeError, TypeError):
-                    tags = [t.strip() for t in row[4].split(",") if t.strip()]
+                    tags = [t.strip() for t in row[5].split(",") if t.strip()]
             try:
-                metadata = json.loads(row[7] or "{}")
+                metadata = json.loads(row[8] or "{}")
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
             result[full_key] = {
                 "database_name": db_name,
+                "connection_database": row[1],
+                "schema_name": row[2] or "",
                 "table_name_short": row[0],
-                "display_name": row[2] or "",
-                "description": row[3] or "",
+                "display_name": row[3] or "",
+                "description": row[4] or "",
                 "tags": tags,
-                "query_tips": row[5] or "",
-                "biz_line": row[6] or "",
+                "query_tips": row[6] or "",
+                "biz_line": row[7] or "",
                 "metadata": metadata,
             }
 
@@ -219,7 +187,7 @@ class SchemaLoader:
         sql = (
             "SELECT t.name, c.name, c.display_name, c.description, "
             "c.enum_values, c.business_logic, c.is_sensitive, c.is_skip_index, "
-            "b.database_name "
+            "b.database_name, b.schema_name "
             "FROM da_semantic_column c "
             "JOIN da_semantic_table t ON c.table_id = t.id "
             "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
@@ -233,7 +201,7 @@ class SchemaLoader:
 
         result: dict[str, list[dict]] = {}
         for row in rows:
-            db_name = row[8]
+            db_name = row[9] or row[8]
             full_key = f"{db_name}.{row[0]}"
             enum_values = None
             if row[4]:
@@ -264,7 +232,7 @@ class SchemaLoader:
         """从 da_semantic_relation JOIN da_semantic_table 加载关联关系 → {db.table: [relation_dict, ...]}"""
         sql = (
             "SELECT t.name, r.column_name, r.target_table, r.target_column, r.join_type, "
-            "b.database_name, r.cardinality "
+            "b.database_name, r.cardinality, b.schema_name "
             "FROM da_semantic_relation r "
             "JOIN da_semantic_table t ON r.table_id = t.id "
             "JOIN da_agent_exec_db b ON t.exec_db_id = b.id "
@@ -277,7 +245,7 @@ class SchemaLoader:
 
         result: dict[str, list[dict]] = {}
         for row in rows:
-            db_name = row[5]
+            db_name = row[7] or row[5]
             full_key = f"{db_name}.{row[0]}"
             rel = {
                 "column": row[1],
@@ -420,9 +388,11 @@ class SchemaLoader:
         with self.mysql_engine.connect() as conn:
             # 全局 Few-shot
             fewshot_sql = (
-                "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, b.meta_json, b.business_line "
+                "SELECT f.id, f.question, f.`sql`, f.tables, f.difficulty, "
+                "b.meta_json, b.business_line, r.config_json "
                 "FROM da_semantic_fewshot f "
                 "LEFT JOIN da_agent_exec_db b ON f.exec_db_id = b.id "
+                "LEFT JOIN sys_resource r ON b.resource_id = r.id "
                 "WHERE f.status = 1 AND f.scope IN ('all', 'nl2sql')"
             )
             if exec_db_ids:
@@ -442,6 +412,15 @@ class SchemaLoader:
                 biz_line = row[6] if len(row) > 6 else None
                 if biz_line:
                     metadata["business"] = biz_line
+                try:
+                    resource_config = json.loads(
+                        (row[7] if len(row) > 7 else None) or "{}"
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    resource_config = {}
+                metadata["dialect"] = str(
+                    resource_config.get("db_type") or metadata.get("dialect") or "doris"
+                ).casefold()
                 examples.append(
                     {
                         "id": row[0],
@@ -460,13 +439,13 @@ class SchemaLoader:
 
     def merge_schema(
         self,
-        doris_schema: dict,
+        physical_schema: dict,
         table_sem: dict | None,
         col_sems: list[dict] | None,
         relations: list[dict] | None,
     ) -> dict:
-        """将 Doris DDL + MySQL 语义层合并为完整 Schema。"""
-        schema = doris_schema.copy()
+        """将执行库物理结构 + MySQL 语义层合并为完整 Schema。"""
+        schema = physical_schema.copy()
 
         # 表级信息
         if table_sem:
@@ -540,21 +519,21 @@ class SchemaLoader:
 
         logger.info(f"MySQL 可用表: {len(table_semantics)} 张 (status=1, available=1)")
 
-        # 以 MySQL 为基准，逐表从 Doris 获取 DDL 补充列类型
+        # 以 MySQL 语义配置为基准，逐表从物理数据库补充列类型
         schemas = []
         skipped: list[tuple[str, str]] = []
         for full_key, sem in table_semantics.items():
             short_name = sem["table_name_short"]
             try:
-                doris_schema = self.get_table_schema(
-                    short_name, database=sem.get("database_name")
+                physical_schema = self.get_table_schema(
+                    short_name, namespace=sem.get("database_name")
                 )
             except (SQLAlchemyError, KeyError, TypeError, ValueError) as exc:
                 skipped.append((full_key, str(exc)))
                 continue
 
             merged = self.merge_schema(
-                doris_schema,
+                physical_schema,
                 table_sem=sem,
                 col_sems=column_semantics.get(full_key),
                 relations=relations.get(full_key),
@@ -565,7 +544,8 @@ class SchemaLoader:
             failed_tables = ", ".join(table for table, _ in skipped[:10])
             first_error = skipped[0][1]
             raise SchemaLoadIncompleteError(
-                f"Doris Schema 加载不完整: {len(skipped)}/{len(table_semantics)} 张表，"
+                f"{self.dialect.display_name} Schema 加载不完整: "
+                f"{len(skipped)}/{len(table_semantics)} 张表，"
                 f"tables=[{failed_tables}]，first_error={first_error}"
             )
         logger.info(f"Schema 合并完成: {len(schemas)} 张表进入索引")

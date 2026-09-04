@@ -631,8 +631,14 @@ class ContextCompressor:
         del question
         return QueryState()
 
-    @staticmethod
-    def extract_sql_context(sql: str) -> dict[str, list[str]]:
+    _SQL_DIALECT = "mysql"
+
+    @classmethod
+    def configure_sql_dialect(cls, dialect: str) -> None:
+        cls._SQL_DIALECT = dialect
+
+    @classmethod
+    def extract_sql_context(cls, sql: str) -> dict[str, list[str]]:
         """Extract reusable SQL structure without interpreting business meaning."""
         empty = {
             "tables": [],
@@ -650,7 +656,7 @@ class ContextCompressor:
             import sqlglot
             from sqlglot import expressions as exp
 
-            tree = sqlglot.parse_one(sql, read="mysql")
+            tree = sqlglot.parse_one(sql, read=cls._SQL_DIALECT)
         except (ImportError, ValueError):
             return empty
         except sqlglot.errors.SqlglotError as exc:
@@ -697,26 +703,26 @@ class ContextCompressor:
             "tables": tables,
             "columns": list(dict.fromkeys(columns)),
             "projections": [
-                expression.sql(dialect="mysql")
+                expression.sql(dialect=cls._SQL_DIALECT)
                 for expression in (select.expressions if select is not None else [])
             ],
             "dimensions": [
-                expression.sql(dialect="mysql")
+                expression.sql(dialect=cls._SQL_DIALECT)
                 for expression in (group.expressions if group else [])
             ],
             "filters": [
-                expression.sql(dialect="mysql")
+                expression.sql(dialect=cls._SQL_DIALECT)
                 for expression in (split_filters(where.this) if where else [])
             ],
             "joins": [
-                join.sql(dialect="mysql")
+                join.sql(dialect=cls._SQL_DIALECT)
                 for join in (select.args.get("joins") or [] if select else [])
             ],
             "order_by": [
-                expression.sql(dialect="mysql")
+                expression.sql(dialect=cls._SQL_DIALECT)
                 for expression in (order.expressions if order else [])
             ],
-            "limit": [limit.sql(dialect="mysql")] if limit else [],
+            "limit": [limit.sql(dialect=cls._SQL_DIALECT)] if limit else [],
         }
 
     @staticmethod

@@ -22,6 +22,9 @@ dependencies = [
     "anthropic>=0.40",
     "jieba>=0.42",
     "sqlglot>=26.0",
+    "redshift-connector>=2.1.16",
+    "sqlalchemy-redshift>=1.0.0",
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]

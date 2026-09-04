@@ -25,7 +25,7 @@ from src.retrieval.tool_planner import (
     extract_planned_tool_calls,
     tool_planning_messages,
 )
-from src.runtime.database import create_doris_engine, load_agent_databases
+from src.runtime.database import create_database_runtime, load_agent_databases
 from src.tools.executor import execute_agent_result_tools
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ def run_query_pipeline(
 
     trace_steps = []
     t_start = _time.monotonic()
+    dialect = getattr(validator, "dialect", None)
+    dialect_sql_name = dialect.display_name if dialect is not None else "SQL"
 
     _ctx = metadata_context or {}
     allowed_tool_names = _ctx.get("enabled_tools")
@@ -685,7 +687,7 @@ def run_query_pipeline(
             "4. SQL 之后另起一行输出占位符声明，格式：PLACEHOLDER: field1;field2（按 ? 在 SQL 中出现的顺序，分号分隔）\n"
             "5. 使用 Schema 中的精确列名和表名\n"
             "6. 状态码、类型码等枚举字段使用【枚举映射】中提供的数值\n"
-            "7. 时间字段使用 Doris 函数（CURDATE()、DATE_FORMAT()、DATE_TRUNC() 等）\n"
+            "7. 时间函数必须遵循本轮【SQL 方言】规则\n"
             "8. 只有当前证据能够唯一确定事实表、指标、字段、关联、筛选值和时间口径时才生成 SQL。"
             "只要存在多种合理解释、证据不足或证据冲突，必须输出："
             'NEED_CLARIFY: {"question":"需要确认的问题",'
@@ -698,7 +700,10 @@ def run_query_pipeline(
         )
     # 构建对话（注入当前日期，避免 LLM 因知识截止而误判年份）
     current_date = _datetime.now().astimezone().date().isoformat()
-    _system_content = f"{config.system_prompt}\n\n当前日期: {current_date}"
+    dialect_rules = dialect.prompt_rules if dialect is not None else ""
+    _system_content = (
+        f"{config.system_prompt}\n\n{dialect_rules}\n\n当前日期: {current_date}"
+    )
     messages = [
         {"role": "system", "content": _system_content},
         {"role": "user", "content": prompt_text},
@@ -785,7 +790,8 @@ def run_query_pipeline(
                 "role": "user",
                 "content": (
                     "你没有返回有效结果。请先判断现有证据能否唯一确定 SQL："
-                    "能够唯一确定时生成可执行的 Doris SQL，并用 ```sql ``` 包裹；"
+                    f"能够唯一确定时生成可执行的 {dialect_sql_name}，"
+                    "并用 ```sql ``` 包裹；"
                     "不能唯一确定时必须返回 NEED_CLARIFY，不得猜测。"
                 ),
             }
@@ -850,7 +856,7 @@ def run_query_pipeline(
                         f"{json.dumps(removed_sql_context, ensure_ascii=False)}\n\n"
                         "请以上一轮 SQL 为基线，只删除明确授权删除的结构，并恢复其他缺失的投影、"
                         "过滤、分组、关联、排序和限制。指标被替换时同步更新聚合投影别名。"
-                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                        f"输出完整 {dialect_sql_name}，用 ```sql ``` 包裹。"
                     ),
                 }
             )
@@ -919,7 +925,7 @@ def run_query_pipeline(
                         "你生成的 SQL 不符合已确定的滚动自然日时间范围。\n\n"
                         f"## 时间范围问题\n{time_error}\n\n"
                         "请保留当前查询选择的时间字段和其他查询结构，只修正时间边界。"
-                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                        f"输出完整 {dialect_sql_name}，用 ```sql ``` 包裹。"
                     ),
                 }
             )
@@ -993,7 +999,8 @@ def run_query_pipeline(
                         "请使用 `warehouse_sys`.`sys_exchange_rate`，按原币种关联 "
                         "source_currency，按目标币种限定 target_currency，按交易日期关联 "
                         "sync_time，使用 原金额 * mid 换算；原币种已经等于目标币种时直接使用原金额。"
-                        "汇率表必须 LEFT JOIN。请输出完整修复后的 Doris SQL，用 ```sql ``` 包裹。"
+                        "汇率表必须 LEFT JOIN。"
+                        f"请输出完整修复后的 {dialect_sql_name}，用 ```sql ``` 包裹。"
                     ),
                 }
             )
@@ -1070,7 +1077,7 @@ def run_query_pipeline(
                         "你生成的 SQL 会错误截断聚合结果。\n\n"
                         f"## 结果数量问题\n{limit_error}\n\n"
                         f"{repair_instruction}保留其他查询结构不变。"
-                        "输出完整 Doris SQL，用 ```sql ``` 包裹。"
+                        f"输出完整 {dialect_sql_name}，用 ```sql ``` 包裹。"
                     ),
                 }
             )
@@ -1150,7 +1157,7 @@ def run_query_pipeline(
                         "你生成的 SQL 不符合用户本轮明确要求的结果结构。\n\n"
                         f"## 结果字段问题\n{projection_error}\n\n"
                         f"{repair_instruction}"
-                        "请输出完整修复后的 Doris SQL，用 ```sql ``` 包裹。"
+                        f"请输出完整修复后的 {dialect_sql_name}，用 ```sql ``` 包裹。"
                     ),
                 }
             )
@@ -1241,7 +1248,8 @@ def run_query_pipeline(
                         f"## 校验问题\n{'；'.join(contract_errors)}\n\n"
                         f"## 必须保留的实体过滤\n{expected_filters}\n\n"
                         "请使用指定表、指定字段和原值修复 WHERE 条件；需要时补充正确 JOIN。"
-                        "同时保留完整换汇口径和用户要求展示的字段。请输出完整 Doris SQL，"
+                        "同时保留完整换汇口径和用户要求展示的字段。"
+                        f"请输出完整 {dialect_sql_name}，"
                         "用 ```sql ``` 包裹。"
                     ),
                 }
@@ -1324,7 +1332,8 @@ def run_query_pipeline(
                         "你生成的 SQL 使用了本轮检索证据未提供的表或字段。\n\n"
                         f"## Schema 证据问题\n{schema_error}\n\n"
                         "只能使用当前对话中已经提供的 Schema、术语、关系和枚举证据。"
-                        "如果这些证据足以表达用户要求，请输出完整修复后的 Doris SQL；"
+                        "如果这些证据足以表达用户要求，"
+                        f"请输出完整修复后的 {dialect_sql_name}；"
                         "如果证据不足，请不要猜测，输出 "
                         'NEED_CLARIFY: {"question":"需要用户补充的业务口径或字段映射",'
                         '"options":[]}。'
@@ -2019,9 +2028,9 @@ def run_query_pipeline(
 
         if not execution_error:
             t0 = _time.monotonic()
-            # 使用 Agent 绑定的 Doris 连接执行 SQL（可能与 EXPLAIN 引擎不同）
-            exec_engine = create_doris_engine(config.agent_id)
-            exec_validator = SQLValidator(exec_engine)
+            execution_runtime = create_database_runtime(config.agent_id)
+            exec_engine = execution_runtime.engine
+            exec_validator = SQLValidator(exec_engine, execution_runtime.dialect)
             current_exec_sql = final_sql
             try:
                 exec_result = exec_validator.execute(
@@ -2159,8 +2168,11 @@ def run_query_pipeline(
                     if not simp_check["valid"]:
                         continue
 
-                    exec_engine = create_doris_engine(config.agent_id)
-                    exec_validator_t = SQLValidator(exec_engine)
+                    execution_runtime = create_database_runtime(config.agent_id)
+                    exec_engine = execution_runtime.engine
+                    exec_validator_t = SQLValidator(
+                        exec_engine, execution_runtime.dialect
+                    )
                     try:
                         exec_result = exec_validator_t.execute(
                             simplified,
@@ -2327,8 +2339,11 @@ def run_query_pipeline(
 
                     # 重新执行
                     current_exec_sql = new_sql
-                    exec_engine = create_doris_engine(config.agent_id)
-                    exec_validator_retry = SQLValidator(exec_engine)
+                    execution_runtime = create_database_runtime(config.agent_id)
+                    exec_engine = execution_runtime.engine
+                    exec_validator_retry = SQLValidator(
+                        exec_engine, execution_runtime.dialect
+                    )
                     try:
                         exec_result = exec_validator_retry.execute(
                             current_exec_sql,
@@ -2423,6 +2438,9 @@ def run_query_pipeline(
             analysis_context={
                 "query_state": query_state.to_dict(),
                 "sql": final_sql,
+                "sql_dialect": (
+                    dialect.sqlglot_dialect if dialect is not None else "mysql"
+                ),
             },
             missing_result_error=(
                 "上一轮查询结果快照不存在或已过期，请重新执行数据查询后再分析"

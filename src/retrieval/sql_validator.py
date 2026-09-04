@@ -1,5 +1,5 @@
 """
-SQL 校验 — 通过 Doris EXPLAIN 预执行验证 SQL 语法。
+SQL 校验 — 通过执行数据库的 EXPLAIN 预执行验证 SQL 语法。
 
 EXPLAIN 不会真正执行 SQL，只检查语法和生成执行计划，因此是安全的校验方式。
 校验通过后可将执行计划交给 LLM 分析，检测笛卡尔积、全表扫描等性能问题。
@@ -30,23 +30,32 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
+from src.runtime.sql_dialect import DorisDialectAdapter, SQLDialectAdapter
+
 logger = logging.getLogger(__name__)
 
 
 class SQLValidator:
     """
-    通过 Doris EXPLAIN 校验 SQL 语法，返回执行计划供 LLM 分析。
+    通过目标数据库 EXPLAIN 校验 SQL 语法，返回执行计划供 LLM 分析。
 
     Attributes:
-        engine: SQLAlchemy Engine 实例（连接到 Doris）
+        engine: SQLAlchemy Engine 实例（连接到当前目标执行库）
     """
 
-    def __init__(self, engine: Engine):
+    _DEFAULT_SQLGLOT_DIALECT: ClassVar[str] = "mysql"
+
+    def __init__(self, engine: Engine, dialect: SQLDialectAdapter | None = None):
         """
         Args:
-            engine: SQLAlchemy Engine 实例，需要有 Doris 的连接权限
+            engine: SQLAlchemy Engine 实例，需要有目标数据库的连接权限
         """
         self.engine = engine
+        self.dialect = dialect or DorisDialectAdapter()
+        type(self)._DEFAULT_SQLGLOT_DIALECT = self.dialect.sqlglot_dialect
+        from src.retrieval.context_compressor import ContextCompressor
+
+        ContextCompressor.configure_sql_dialect(self.dialect.sqlglot_dialect)
 
     # NEED_CLARIFY 检测
     _CLARIFY_RE = re.compile(
@@ -229,7 +238,9 @@ class SQLValidator:
         return "".join(output)
 
     @classmethod
-    def validate_read_only(cls, sql: str) -> tuple[bool, str]:
+    def validate_read_only(
+        cls, sql: str, sqlglot_dialect: str = "mysql"
+    ) -> tuple[bool, str]:
         """只允许单条 SELECT/WITH 查询，拒绝写操作和导出语句。"""
         if not sql or "\x00" in sql:
             return False, "SQL 为空或包含非法字符"
@@ -258,26 +269,30 @@ class SQLValidator:
             r"\bSELECT\b", statement, re.IGNORECASE
         ):
             return False, "WITH 查询必须包含 SELECT"
-        ast_valid, ast_reason = cls._validate_ast_read_only(sql)
+        ast_valid, ast_reason = cls._validate_ast_read_only(sql, sqlglot_dialect)
         if not ast_valid:
             return False, ast_reason
         return True, ""
 
-    @staticmethod
-    def _parse_ast(sql: str):
-        """使用 MySQL 兼容语法解析 Doris SQL；依赖缺失时保留旧校验能力。"""
+    @classmethod
+    def _parse_ast(cls, sql: str, dialect: str | None = None):
+        """Parse SQL with the selected engine dialect."""
         try:
             import sqlglot
         except ImportError:
             return None, ""
         try:
-            return sqlglot.parse_one(sql, read="mysql"), ""
+            return sqlglot.parse_one(
+                sql, read=dialect or cls._DEFAULT_SQLGLOT_DIALECT
+            ), ""
         except sqlglot.errors.ParseError as exc:
             return None, f"SQL AST 解析失败: {exc}"
 
     @classmethod
-    def _validate_ast_read_only(cls, sql: str) -> tuple[bool, str]:
-        tree, error = cls._parse_ast(sql)
+    def _validate_ast_read_only(
+        cls, sql: str, dialect: str = "mysql"
+    ) -> tuple[bool, str]:
+        tree, error = cls._parse_ast(sql, dialect)
         if error:
             return False, error
         if tree is None:
@@ -493,7 +508,9 @@ class SQLValidator:
         aggregates = []
         for fragment in context.get("projections") or []:
             try:
-                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+                statement = sqlglot.parse_one(
+                    f"SELECT {fragment}", read=cls._DEFAULT_SQLGLOT_DIALECT
+                )
             except sqlglot.errors.ParseError:
                 continue
             projection = next(iter(statement.expressions), None)
@@ -523,8 +540,9 @@ class SQLValidator:
         current = normalized_metrics(current_query_state)
         return bool(previous and current and previous.isdisjoint(current))
 
-    @staticmethod
+    @classmethod
     def _expand_removed_sql_dependencies(
+        cls,
         previous_context: dict[str, list[str]],
         removed_context: dict[str, list[str]],
     ) -> dict[str, list[str]]:
@@ -543,12 +561,16 @@ class SQLValidator:
             return re.sub(
                 r"\s+",
                 " ",
-                expression.sql(dialect="mysql").replace("`", "").strip(),
+                expression.sql(dialect=cls._DEFAULT_SQLGLOT_DIALECT)
+                .replace("`", "")
+                .strip(),
             ).casefold()
 
         for fragment in expanded.get("projections", []):
             try:
-                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+                statement = sqlglot.parse_one(
+                    f"SELECT {fragment}", read=cls._DEFAULT_SQLGLOT_DIALECT
+                )
             except sqlglot.errors.ParseError:
                 continue
             projection = next(iter(statement.expressions), None)
@@ -561,7 +583,9 @@ class SQLValidator:
 
         for fragment in expanded.get("dimensions", []):
             try:
-                statement = sqlglot.parse_one(f"SELECT {fragment}", read="mysql")
+                statement = sqlglot.parse_one(
+                    f"SELECT {fragment}", read=cls._DEFAULT_SQLGLOT_DIALECT
+                )
             except sqlglot.errors.ParseError:
                 continue
             dimension = next(iter(statement.expressions), None)
@@ -573,7 +597,7 @@ class SQLValidator:
             try:
                 statement = sqlglot.parse_one(
                     f"SELECT 1 ORDER BY {fragment}",
-                    read="mysql",
+                    read=cls._DEFAULT_SQLGLOT_DIALECT,
                 )
             except sqlglot.errors.ParseError:
                 continue
@@ -769,10 +793,19 @@ class SQLValidator:
             def column_key(expression) -> str:
                 if not isinstance(expression, exp.Column):
                     return ""
-                return expression.sql(dialect="mysql").replace("`", "").casefold()
+                return (
+                    expression.sql(dialect=cls._DEFAULT_SQLGLOT_DIALECT)
+                    .replace("`", "")
+                    .casefold()
+                )
 
-            def interval_value(expression, expression_type) -> int | None:
-                if not isinstance(expression, expression_type):
+            def signed_day_offset(expression) -> int | None:
+                temporal_types = tuple(
+                    item
+                    for name in ("DateAdd", "DateSub", "TsOrDsAdd")
+                    if (item := getattr(exp, name, None)) is not None
+                )
+                if not temporal_types or not isinstance(expression, temporal_types):
                     return None
                 if not isinstance(expression.this, exp.CurrentDate):
                     return None
@@ -780,20 +813,27 @@ class SQLValidator:
                 if unit != "DAY":
                     return None
                 interval = expression.expression
+                sign = 1
+                if isinstance(interval, exp.Neg):
+                    sign = -1
+                    interval = interval.this
                 if not isinstance(interval, exp.Literal):
                     return None
                 try:
-                    return int(interval.this)
+                    value = sign * int(interval.this)
+                    if isinstance(expression, exp.DateSub):
+                        value = -abs(value)
+                    return value
                 except (TypeError, ValueError):
                     return None
 
             def is_lower_boundary(expression) -> bool:
                 if expected_offset == 0 and isinstance(expression, exp.CurrentDate):
                     return True
-                return interval_value(expression, exp.DateSub) == expected_offset
+                return signed_day_offset(expression) == -expected_offset
 
             def is_upper_boundary(expression) -> bool:
-                return interval_value(expression, exp.DateAdd) == 1
+                return signed_day_offset(expression) == 1
 
             for comparison in tree.find_all(exp.GTE):
                 if is_lower_boundary(comparison.expression) and (
@@ -948,7 +988,7 @@ class SQLValidator:
                 has_group_by = select.args.get("group") is not None
                 if len(select.expressions) != 1:
                     invalid_projections.extend(
-                        expression.sql(dialect="mysql")
+                        expression.sql(dialect=cls._DEFAULT_SQLGLOT_DIALECT)
                         for expression in select.expressions
                     )
                 for expression in select.expressions:
@@ -962,9 +1002,12 @@ class SQLValidator:
                     )
                     if (
                         not has_count
-                        and expression.sql(dialect="mysql") not in invalid_projections
+                        and expression.sql(dialect=cls._DEFAULT_SQLGLOT_DIALECT)
+                        not in invalid_projections
                     ):
-                        invalid_projections.append(expression.sql(dialect="mysql"))
+                        invalid_projections.append(
+                            expression.sql(dialect=cls._DEFAULT_SQLGLOT_DIALECT)
+                        )
             has_exchange_rate = any(
                 table.name.casefold() == "sys_exchange_rate"
                 for table in tree.find_all(exp.Table)
@@ -1551,7 +1594,7 @@ class SQLValidator:
                 - "error" (str | None): 语法错误信息（valid=True 时为 None）
                 - "plan" (str | None): 完整执行计划文本（valid=False 时为 None）
         """
-        read_only, reason = self.validate_read_only(sql)
+        read_only, reason = self.validate_read_only(sql, self.dialect.sqlglot_dialect)
         if not read_only:
             return {"valid": False, "error": reason, "plan": None}
 
@@ -1559,6 +1602,7 @@ class SQLValidator:
         while True:
             try:
                 with self.engine.connect() as conn:
+                    self.dialect.prepare_execution(conn, 30)
                     rows = conn.execute(text(f"EXPLAIN {sql}")).fetchall()
 
                 plan_lines = [
@@ -1604,8 +1648,8 @@ class SQLValidator:
                     "infrastructure_error": connection_error,
                 }
 
-    @staticmethod
-    def extract_databases(sql: str) -> set[str]:
+    @classmethod
+    def extract_databases(cls, sql: str) -> set[str]:
         """
         从 SQL 中提取引用的数据库名。
 
@@ -1614,14 +1658,16 @@ class SQLValidator:
         Returns:
             set[str]: 数据库名集合（小写）
         """
-        structural_sql = SQLValidator._strip_literals_and_comments(
-            sql,
-            preserve_quoted_identifiers=True,
-        )
-        pattern = r"(?:FROM|JOIN)\s+`?(\w+)`?\s*\.\s*`?\w+`?"
+        tree, error = cls._parse_ast(sql)
+        if tree is None or error:
+            return set()
+
+        from sqlglot import expressions as exp
+
         return {
-            match.lower()
-            for match in re.findall(pattern, structural_sql, re.IGNORECASE)
+            str(table.db).strip().casefold()
+            for table in tree.find_all(exp.Table)
+            if table.db
         }
 
     @classmethod
@@ -1634,34 +1680,27 @@ class SQLValidator:
         if not authorized_databases:
             return False, "当前 Agent 没有匹配的授权数据库", set()
 
-        structural_sql = cls._strip_literals_and_comments(
-            sql,
-            preserve_quoted_identifiers=True,
-        )
+        tree, parse_error = cls._parse_ast(sql)
+        if tree is None:
+            return False, parse_error or "SQL AST 解析失败", set()
+
+        from sqlglot import expressions as exp
+
         cte_names = {
-            match.lower()
-            for match in re.findall(
-                r"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*`?(\w+)`?"
-                r"(?:\s*\([^)]*\))?\s+AS\s*\(",
-                structural_sql,
-                re.IGNORECASE,
-            )
+            cte.alias_or_name.strip().casefold()
+            for cte in tree.find_all(exp.CTE)
+            if cte.alias_or_name
         }
-        relation_pattern = re.compile(
-            r"\b(?:FROM|JOIN)\s+(?!\s*\()"
-            r"(?P<first>`?\w+`?)"
-            r"(?:\s*\.\s*(?P<second>`?\w+`?))?",
-            re.IGNORECASE,
-        )
         referenced_databases: set[str] = set()
         unqualified_tables: set[str] = set()
-        for match in relation_pattern.finditer(structural_sql):
-            first = match.group("first").strip("`").lower()
-            if match.group("second"):
-                referenced_databases.add(first)
-            elif first not in cte_names:
-                unqualified_tables.add(first)
+        for table in tree.find_all(exp.Table):
+            table_name = table.name.strip().casefold()
+            if table.db:
+                referenced_databases.add(str(table.db).strip().casefold())
+            elif table_name not in cte_names:
+                unqualified_tables.add(table_name)
 
+        structural_sql = cls._strip_literals_and_comments(sql)
         if cls._has_implicit_comma_join(structural_sql):
             return False, "不允许使用逗号连接表，请使用显式 JOIN", referenced_databases
         if unqualified_tables:
@@ -1728,7 +1767,7 @@ class SQLValidator:
                 - "truncated" (bool): 是否截断
                 - "error" (str | None)
         """
-        read_only, reason = self.validate_read_only(sql)
+        read_only, reason = self.validate_read_only(sql, self.dialect.sqlglot_dialect)
         if not read_only:
             return {
                 "success": False,
@@ -1748,8 +1787,9 @@ class SQLValidator:
                 exec_sql = f"{exec_sql} LIMIT {row_limit + 1}"
 
             with self.engine.connect() as conn:
+                self.dialect.prepare_execution(conn, timeout)
                 result = conn.execute(
-                    text(f"/*+ SET_VAR(query_timeout={timeout}) */ {exec_sql}")
+                    text(self.dialect.execution_sql(exec_sql, timeout))
                 )
                 columns = list(result.keys())
                 all_rows = result.fetchall()

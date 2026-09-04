@@ -260,7 +260,10 @@ def _analysis_role_hints(
             exp = None
         if sqlglot is not None and exp is not None:
             try:
-                statement = sqlglot.parse_one(sql, read="mysql")
+                statement = sqlglot.parse_one(
+                    sql,
+                    read=str(context.get("sql_dialect") or "mysql"),
+                )
             except sqlglot.errors.SqlglotError:
                 statement = None
             select = statement.find(exp.Select) if statement is not None else None

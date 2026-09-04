@@ -110,6 +110,7 @@ class FewShotSelector:
         biz_line: str | None = None,
         search_params: CollectionSearchParams | None = None,
         mmr_lambda: float = MMR_LAMBDA,
+        dialect: str = "doris",
     ) -> list[dict]:
         """
         选择最相关且多样化的 Few-shot 示例。
@@ -170,6 +171,20 @@ class FewShotSelector:
         else:
             return []
 
+        expected_dialects = (
+            {"doris", "mysql"}
+            if dialect.casefold() == "doris"
+            else {dialect.casefold()}
+        )
+        candidate_indices = [
+            idx
+            for idx in candidate_indices
+            if str(
+                (self.examples[idx].get("metadata") or {}).get("dialect") or "doris"
+            ).casefold()
+            in expected_dialects
+        ]
+
         if search_params is None or search_params.rerank:
             query_tables = self._normalized_table_set(tables or [])
             query_signature = self._question_signature(query)
@@ -190,13 +205,13 @@ class FewShotSelector:
                     else 0.0
                 )
                 metadata = example.get("metadata") or {}
-                dialect = str(metadata.get("dialect") or "doris").casefold()
+                example_dialect = str(metadata.get("dialect") or "doris").casefold()
                 similarities[idx] = (
                     0.40 * similarities[idx]
                     + 0.25 * table_score
                     + 0.20 * structure_score
                     + 0.10 * self._quality_score(example, metadata)
-                    + 0.05 * (1.0 if dialect in {"doris", "mysql"} else 0.0)
+                    + 0.05 * (1.0 if example_dialect in expected_dialects else 0.0)
                 )
 
         # MMR 多样性选择

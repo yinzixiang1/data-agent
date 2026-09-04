@@ -21,6 +21,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 
+from sqlalchemy.engine import Engine
+
 from src.retrieval.agent_config import AgentConfigLoader, AgentRuntimeConfig
 from src.retrieval.context_planner import SchemaContextPlanner
 from src.retrieval.embedding import get_embedding
@@ -34,6 +36,7 @@ from src.retrieval.reranker import get_reranker
 from src.retrieval.schema_formatter import SchemaFormatter
 from src.retrieval.schema_loader import SchemaLoader
 from src.retrieval.value_indexer import ValueIndexer
+from src.runtime.sql_dialect import SQLDialectAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +88,20 @@ class SchemaRetriever:
         result = retriever.retrieve("目前有多少活跃商户")
     """
 
-    def __init__(self, connection_string: str | None = None):
-        self.schema_loader = SchemaLoader(connection_string=connection_string)
+    def __init__(
+        self,
+        connection_string: str | None = None,
+        execution_engine: Engine | None = None,
+        dialect: SQLDialectAdapter | None = None,
+    ):
+        self.schema_loader = SchemaLoader(
+            connection_string=connection_string,
+            execution_engine=execution_engine,
+            dialect=dialect,
+        )
+        self.sql_dialect = dialect.name if dialect is not None else "doris"
         self.index_manager = IndexManager()
-        self.formatter = SchemaFormatter()
+        self.formatter = SchemaFormatter(dialect=dialect)
         self.glossary_resolver: GlossaryResolver | None = None
         self.value_indexer: ValueIndexer | None = None
 
@@ -548,6 +561,7 @@ class SchemaRetriever:
             biz_line=biz_line,
             search_params=get_search_params(cfg.collection_search_config, "fewshot"),
             mmr_lambda=cfg.mmr_lambda,
+            dialect=self.sql_dialect,
         )
         fewshot_evidence_tables = self._mark_fewshot_table_evidence(
             recall_candidates,
@@ -638,6 +652,7 @@ class SchemaRetriever:
             biz_line=biz_line,
             search_params=get_search_params(cfg.collection_search_config, "fewshot"),
             mmr_lambda=cfg.mmr_lambda,
+            dialect=self.sql_dialect,
         )
 
         # 8. 字段级上下文规划：只保留问题相关字段，主键/Join/口径字段始终保留。
